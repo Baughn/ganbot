@@ -333,6 +333,7 @@ dependencies = [
  "kameo",
  "kameo_actors",
  "kameo_macros",
+ "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
 ]
