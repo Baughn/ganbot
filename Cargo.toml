@@ -6,3 +6,7 @@ edition = "2024"
 [dependencies]
 irc = "1.1.0"
 kameo = "0.17.2"
+kameo_actors = "0.2.0"
+kameo_macros = "0.17.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
