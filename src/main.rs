@@ -1,7 +1,8 @@
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, error};
 use tracing_subscriber::EnvFilter;
 
-
+mod config;
+mod network;
 
 fn main() {
     // Initialize tracing with environment-based configuration
@@ -22,7 +23,20 @@ fn main() {
     info!("Starting ganbot3");
     debug!("Debug logging enabled");
     trace!("Trace logging enabled");
+
+    // Load configuration
+    let config = match config::load() {
+        Ok(config) => {
+            info!("Configuration loaded successfully");
+            debug!("Config: {:#?}", config);
+            config
+        }
+        Err(e) => {
+            error!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
     
     // Your application code here
-    info!("Application initialized successfully");
+    info!("Application initialized successfully with {} IRC server(s)", config.irc.len());
 }

@@ -1,0 +1,29 @@
+# Ganbot3 Configuration File
+# This file contains the main configuration for ganbot3
+# Environment variables with GANBOT_ prefix will override these values
+# Example: GANBOT_INVOKEAI__URL=http://localhost:9090 will override invokeai.url
+# Example: GANBOT_OPENROUTER__TOKEN=sk-or... will override openrouter.token
+
+[invokeai]
+url = "http://localhost:9090"
+
+[openrouter]
+token = "your-openrouter-token-here"
+
+# IRC server configurations
+# You can have multiple IRC servers
+[[irc]]
+server = "irc.libera.chat"
+tls = true
+port = 6697
+channels = ["#your-channel"]
+nick = "ganbot3"
+# nickserv_password = "your-nickserv-password"  # Optional
+
+# Example of additional IRC server
+# [[irc]]
+# server = "irc.oftc.net"
+# tls = true
+# port = 6697
+# channels = ["#another-channel"]
+# nick = "ganbot3-oftc"

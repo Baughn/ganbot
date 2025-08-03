@@ -1,6 +1,6 @@
 # Kameo Actor Framework Guide (v0.17.2)
 
-*Last updated: August 3, 2025*
+Last updated: August 3, 2025
 
 ## Table of Contents
 
@@ -50,6 +50,7 @@ Requires Rust 1.79 or later.
 ### Actors
 
 Actors are the fundamental unit of computation in Kameo. Each actor:
+
 - Encapsulates state and behavior
 - Processes messages sequentially (no shared mutable state)
 - Runs in its own async task
@@ -59,6 +60,7 @@ Actors are the fundamental unit of computation in Kameo. Each actor:
 ### Messages
 
 Messages are the way actors communicate. They are:
+
 - Rust structs that represent requests or notifications
 - Type-safe and checked at compile time
 - Processed asynchronously
@@ -67,6 +69,7 @@ Messages are the way actors communicate. They are:
 ### ActorRef
 
 An `ActorRef` is a reference to an actor that allows you to:
+
 - Send messages to the actor
 - Check if the actor is still alive
 - Link actors for supervision
@@ -74,6 +77,7 @@ An `ActorRef` is a reference to an actor that allows you to:
 ### Context
 
 The `Context` provides actors with:
+
 - Access to their own `ActorRef`
 - Ability to spawn child actors
 - Control over message processing
@@ -82,6 +86,7 @@ The `Context` provides actors with:
 ### Mailbox
 
 Each actor has a mailbox that:
+
 - Queues incoming messages
 - Can be bounded (with backpressure) or unbounded
 - Processes messages in FIFO order
