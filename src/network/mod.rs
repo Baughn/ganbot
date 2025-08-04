@@ -1,1 +1,1 @@
-pub use irc;
+pub mod irc;

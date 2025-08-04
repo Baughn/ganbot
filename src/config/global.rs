@@ -22,7 +22,7 @@ pub struct OpenrouterConfig {
     // Per-purpose model choices will be listed here.
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
 pub struct IrcConfig {
     pub server: String,
     #[serde(default = "default_true")]

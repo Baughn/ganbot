@@ -1,14 +1,20 @@
-use tracing::{debug, info, trace, error};
+use anyhow::{Context, Result};
+
+use kameo::Actor as _;
+use tracing::{debug, error, info, trace};
 use tracing_subscriber::EnvFilter;
+
+use crate::supervisor::Supervisor;
 
 mod config;
 mod network;
+mod supervisor;
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Initialize tracing with environment-based configuration
     // RUST_LOG env var controls log levels (e.g., RUST_LOG=debug or RUST_LOG=ganbot3=trace,warn)
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -24,19 +30,13 @@ fn main() {
     debug!("Debug logging enabled");
     trace!("Trace logging enabled");
 
-    // Load configuration
-    let config = match config::load() {
-        Ok(config) => {
-            info!("Configuration loaded successfully");
-            debug!("Config: {:#?}", config);
-            config
-        }
-        Err(e) => {
-            error!("Failed to load configuration: {}", e);
-            std::process::exit(1);
-        }
-    };
-    
-    // Your application code here
-    info!("Application initialized successfully with {} IRC server(s)", config.irc.len());
+    // Initialize supervisor.
+    let config = config::load().context("while loading initial configuration")?;
+    let supervisor_ref = Supervisor::spawn(config);
+    info!("Application initialized successfully");
+
+    // Wait for... a !restart probably.
+    supervisor_ref.wait_for_shutdown().await;
+    info!("Application shutdown complete");
+    Ok(())
 }
