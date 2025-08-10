@@ -137,14 +137,19 @@ async fn client_loop_inner(
     };
 
     // Try to connect
-    let mut client = Client::from_config(irc_config)
-        .await
-        .context("while creating IRC client")?;
+    let mut client = tokio::time::timeout(Duration::from_secs(10), async {
+        let client = Client::from_config(irc_config)
+            .await
+            .context("while creating IRC client")?;
 
-    // Identify to the server
-    client
-        .identify()
-        .context("while identifying to IRC server")?;
+        // Identify to the server
+        client
+            .identify()
+            .context("while identifying to IRC server")?;
+
+        Ok::<Client, anyhow::Error>(client)
+    })
+    .await??;
 
     // Send connected message
     actor_ref
