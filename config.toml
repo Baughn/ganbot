@@ -13,11 +13,11 @@ token = "your-openrouter-token-here"
 # IRC server configurations
 # You can have multiple IRC servers
 [[irc]]
-server = "irc.libera.chat"
+server = "irc.rizon.net"
 tls = true
 port = 6697
-channels = ["#your-channel"]
-nick = "ganbot3"
+channels = ["#nanobot"]
+nick = "GANBot-dev"
 # nickserv_password = "your-nickserv-password"  # Optional
 
 # Example of additional IRC server

@@ -21,8 +21,6 @@ async fn main() -> Result<()> {
         .with_target(true)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .with_file(true)
-        .with_line_number(true)
         .with_level(true)
         .init();
 
