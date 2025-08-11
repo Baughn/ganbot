@@ -1,5 +1,4 @@
 /// Global configuration from config.toml & environment variables
-
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -31,8 +30,14 @@ pub struct IrcConfig {
     pub channels: Vec<String>,
     pub nick: String,
     pub nickserv_password: Option<String>,
+    #[serde(default = "default_bang")]
+    pub command_prefix: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_bang() -> String {
+    "!".to_string()
 }

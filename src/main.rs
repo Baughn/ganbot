@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 use crate::supervisor::Supervisor;
 
 mod config;
+mod messages;
 mod network;
 mod supervisor;
 

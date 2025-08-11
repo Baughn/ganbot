@@ -3,17 +3,18 @@ use futures::StreamExt;
 use irc::client::prelude::{Client, Command, Config};
 use kameo::prelude::*;
 use std::collections::HashMap;
-use tokio::sync::SetOnce;
+use tokio::sync::oneshot;
 use tokio::time::{Duration, Instant, timeout};
 
 use crate::config::global::IrcConfig;
 
 pub struct IrcActor {
     name: String,
+    config: IrcConfig,
     /// Handle to the IRC client task
     loop_aborter: tokio::task::AbortHandle,
     /// Handle for sending IRC messages
-    sender: SetOnce<irc::client::Sender>,
+    sender: irc::client::Sender,
 }
 
 impl Actor for IrcActor {
@@ -28,13 +29,30 @@ impl Actor for IrcActor {
         let config = state.clone();
 
         // Spawn the IRC client loop
-        let sender_mbox = tokio::sync::SetOnce::new();
-        let sender_mbox_clone = sender_mbox.clone();
+        let (sender_tx, sender_rx) = oneshot::channel();
         let actor_ref_clone = actor_ref.clone();
         let connection_task = tokio::spawn(async move {
-            client_loop(config, sender_mbox_clone, actor_ref_clone).await;
+            client_loop(config, sender_tx, actor_ref_clone).await;
         });
         tracing::info!("Started IRC actor for server: {}", state.server);
+
+        // Wait for the sender from the client task
+        let sender = match tokio::time::timeout(Duration::from_secs(15), sender_rx).await {
+            Ok(Ok(sender)) => {
+                tracing::info!("Received IRC sender from client task");
+                sender
+            }
+            Ok(Err(_)) => {
+                tracing::error!("Client task dropped sender without sending");
+                connection_task.abort();
+                bail!("Failed to receive IRC sender from client task");
+            }
+            Err(_) => {
+                tracing::error!("Timeout waiting for IRC sender from client task");
+                connection_task.abort();
+                bail!("Timeout waiting for IRC connection");
+            }
+        };
 
         // Kill actor if the connection task fails
         let loop_aborter = connection_task.abort_handle();
@@ -46,9 +64,10 @@ impl Actor for IrcActor {
         });
 
         Ok(IrcActor {
-            name: state.server,
+            name: state.server.clone(),
+            config: state,
             loop_aborter,
-            sender: sender_mbox,
+            sender,
         })
     }
 }
@@ -65,7 +84,29 @@ impl Message<IrcMessage> for IrcActor {
                 tracing::info!("IRC connected");
             }
             IrcMessage::PrivMsg(privmsg) => {
-                tracing::info!("IRC PRIVMSG from {}: {}", privmsg.user, privmsg.message);
+                tracing::debug!("IRC PRIVMSG from {}: {}", privmsg.user, privmsg.message);
+                // So what do we do with this message?
+                if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
+                    tracing::info!("Received command: {}", command);
+                    match command {
+                        "ping" => {
+                            tracing::debug!("Sending pong to {}", privmsg.user);
+                            if let Err(e) = self.sender.send_privmsg(
+                                privmsg.channel.as_deref().unwrap_or(&self.config.nick),
+                                "pong".to_string(),
+                            ) {
+                                tracing::error!("Failed to send pong: {}", e);
+                            } else {
+                                tracing::info!("Sent pong to {}", privmsg.user);
+                            }
+                        }
+                        _ => {
+                            tracing::warn!("Unknown command: {}", command);
+                        }
+                    }
+                } else {
+                    // Chat-db stuff goes here.
+                }
             }
             IrcMessage::Error(err) => {
                 tracing::error!("IRC error: {}", err);
@@ -102,10 +143,10 @@ struct BufferedMessage {
 #[tracing::instrument(skip_all, fields(server = %config.server))]
 async fn client_loop(
     config: IrcConfig,
-    sender_mbox: tokio::sync::SetOnce<irc::client::Sender>,
+    sender_tx: oneshot::Sender<irc::client::Sender>,
     actor_ref: ActorRef<IrcActor>,
 ) {
-    let err = match client_loop_inner(config, sender_mbox, actor_ref.clone()).await {
+    let err = match client_loop_inner(config, sender_tx, actor_ref.clone()).await {
         Ok(_) => "IRC client loop completed successfully?!".to_string(),
         Err(e) => {
             format!("IRC client loop error: {}", e)
@@ -121,7 +162,7 @@ async fn client_loop(
 
 async fn client_loop_inner(
     config: IrcConfig,
-    sender_mbox: SetOnce<irc::client::Sender>,
+    sender_tx: oneshot::Sender<irc::client::Sender>,
     actor_ref: ActorRef<IrcActor>,
 ) -> Result<()> {
     tracing::info!("Connecting to IRC server: {}", config.server);
@@ -151,12 +192,12 @@ async fn client_loop_inner(
     })
     .await??;
 
-    // Send connected message
-    actor_ref
-        .tell(IrcMessage::Connected)
-        .await
-        .context("while sending connected message to actor")?;
-    tracing::info!("Successfully connected to IRC server");
+    // Send the client sender back to the actor
+    let client_sender = client.sender();
+    if sender_tx.send(client_sender).is_err() {
+        bail!("Failed to send IRC sender back to actor - receiver dropped");
+    }
+    tracing::info!("IRC client sender sent to actor, starting message loop");
 
     // Handle NickServ authentication if configured
     if let Some(ref password) = config.nickserv_password {
@@ -166,14 +207,18 @@ async fn client_loop_inner(
         }
     }
 
-    // Main message handling loop
-    sender_mbox
-        .set(client.sender())
-        .expect("Failed to set sender mbox");
-    let mut stream = client.stream()?;
+    // Send connected message
+    actor_ref
+        .tell(IrcMessage::Connected)
+        .await
+        .context("while sending connected message to actor")?;
+    tracing::info!("Successfully connected to IRC server");
 
     // Buffer for joining split messages
     let mut message_buffer: HashMap<(String, Option<String>), BufferedMessage> = HashMap::new();
+
+    // Main message handling loop
+    let mut stream = client.stream()?;
 
     loop {
         // Use a short timeout to regularly check buffer ages

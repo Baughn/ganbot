@@ -76,10 +76,10 @@ impl Actor for Supervisor {
 
         if let Some(config) = matching_config {
             let now = Instant::now();
-            
+
             // Use the pure function to calculate restart strategy
             let existing_info = self.restart_tracker.remove(&id);
-            let (restart_info, backoff, should_give_up) = 
+            let (restart_info, backoff, should_give_up) =
                 Self::calculate_restart_strategy(now, existing_info, config.clone());
 
             // Check if we should give up
@@ -160,7 +160,8 @@ impl Supervisor {
         };
 
         // Check if we've been failing for more than 5 minutes
-        let should_give_up = now.duration_since(restart_info.first_failure) > Duration::from_secs(300);
+        let should_give_up =
+            now.duration_since(restart_info.first_failure) > Duration::from_secs(300);
 
         // Calculate exponential backoff (1s, 2s, 4s, 8s, ..., capped at 5 minutes)
         let backoff_secs = (2_u64.pow(restart_info.failure_count.saturating_sub(1))).min(300);
@@ -190,9 +191,10 @@ mod tests {
             nick: "testbot".to_string(),
             channels: vec![],
             nickserv_password: None,
+            command_prefix: "!".to_string(),
         };
 
-        let (restart_info, backoff, should_give_up) = 
+        let (restart_info, backoff, should_give_up) =
             Supervisor::calculate_restart_strategy(now, None, config.clone());
 
         assert_eq!(restart_info.failure_count, 1);
@@ -212,22 +214,28 @@ mod tests {
             nick: "testbot".to_string(),
             channels: vec![],
             nickserv_password: None,
+            command_prefix: "!".to_string(),
         };
 
         // Expected backoffs: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, then capped at 300s
         let expected_backoffs = vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300];
-        
+
         let mut current_info: Option<RestartInfo> = None;
-        
+
         for (i, expected_secs) in expected_backoffs.iter().enumerate() {
-            let (restart_info, backoff, _) = 
+            let (restart_info, backoff, _) =
                 Supervisor::calculate_restart_strategy(now, current_info, config.clone());
-            
+
             assert_eq!(restart_info.failure_count, (i + 1) as u32);
-            assert_eq!(backoff, Duration::from_secs(*expected_secs), 
-                      "Failed at attempt {}: expected {}s, got {:?}", 
-                      i + 1, expected_secs, backoff);
-            
+            assert_eq!(
+                backoff,
+                Duration::from_secs(*expected_secs),
+                "Failed at attempt {}: expected {}s, got {:?}",
+                i + 1,
+                expected_secs,
+                backoff
+            );
+
             current_info = Some(restart_info);
         }
     }
@@ -242,6 +250,7 @@ mod tests {
             nick: "testbot".to_string(),
             channels: vec![],
             nickserv_password: None,
+            command_prefix: "!".to_string(),
         };
 
         // Create an existing failure from >5 minutes ago
@@ -253,7 +262,7 @@ mod tests {
         };
 
         let now = base_time;
-        let (restart_info, backoff, should_give_up) = 
+        let (restart_info, backoff, should_give_up) =
             Supervisor::calculate_restart_strategy(now, Some(old_info), config);
 
         // Should reset to first failure
@@ -274,6 +283,7 @@ mod tests {
             nick: "testbot".to_string(),
             channels: vec![],
             nickserv_password: None,
+            command_prefix: "!".to_string(),
         };
 
         // Create an existing failure from <5 minutes ago
@@ -285,13 +295,16 @@ mod tests {
         };
 
         let now = base_time;
-        let (restart_info, backoff, should_give_up) = 
+        let (restart_info, backoff, should_give_up) =
             Supervisor::calculate_restart_strategy(now, Some(old_info), config);
 
         // Should increment failure count, not reset
         assert_eq!(restart_info.failure_count, 4);
         assert_eq!(restart_info.last_failure, now);
-        assert_eq!(restart_info.first_failure, base_time - Duration::from_secs(299));
+        assert_eq!(
+            restart_info.first_failure,
+            base_time - Duration::from_secs(299)
+        );
         assert_eq!(backoff, Duration::from_secs(8)); // 4th failure = 8s backoff
         assert!(!should_give_up);
     }
@@ -306,6 +319,7 @@ mod tests {
             nick: "testbot".to_string(),
             channels: vec![],
             nickserv_password: None,
+            command_prefix: "!".to_string(),
         };
 
         // Create a failure that started >5 minutes ago but last failed recently
@@ -317,7 +331,7 @@ mod tests {
         };
 
         let now = base_time;
-        let (restart_info, _, should_give_up) = 
+        let (restart_info, _, should_give_up) =
             Supervisor::calculate_restart_strategy(now, Some(old_info), config);
 
         // Should give up because first_failure was >5 minutes ago
@@ -335,6 +349,7 @@ mod tests {
             nick: "testbot".to_string(),
             channels: vec![],
             nickserv_password: None,
+            command_prefix: "!".to_string(),
         };
 
         // Create a failure that started <5 minutes ago
@@ -346,7 +361,7 @@ mod tests {
         };
 
         let now = base_time;
-        let (_, _, should_give_up) = 
+        let (_, _, should_give_up) =
             Supervisor::calculate_restart_strategy(now, Some(old_info), config);
 
         // Should NOT give up yet
