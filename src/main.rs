@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use kameo::Actor as _;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info, trace};
 use tracing_subscriber::EnvFilter;
 
 use crate::supervisor::Supervisor;

@@ -1,312 +1,257 @@
 use anyhow::{Context, Result, bail};
-use futures::StreamExt;
 use irc::client::prelude::{Client, Command, Config};
+use kameo::message::StreamMessage;
 use kameo::prelude::*;
 use std::collections::HashMap;
-use tokio::sync::oneshot;
-use tokio::time::{Duration, Instant, timeout};
+use tokio::spawn;
+use tokio::sync::OnceCell;
+use tokio::time::{Duration, Instant};
+use tracing::{error, info, instrument, trace};
 
 use crate::config::global::IrcConfig;
 
 pub struct IrcActor {
     name: String,
     config: IrcConfig,
-    /// Handle to the IRC client task
-    loop_aborter: tokio::task::AbortHandle,
-    /// Handle for sending IRC messages
-    sender: irc::client::Sender,
+    client: OnceCell<Client>,
+    /// Buffer for joining split messages
+    /// Keyed by (user, channel)
+    message_buffer: HashMap<(String, Option<String>), BufferedMessage>,
 }
 
-impl Actor for IrcActor {
-    type Args = IrcConfig;
-    type Error = anyhow::Error;
-
-    #[tracing::instrument(skip_all, fields(server = %state.server))]
-    async fn on_start(state: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-        tracing::info!("Starting IRC actor for server: {}", state.server);
-
-        // Clone config for the client loop
-        let config = state.clone();
-
-        // Spawn the IRC client loop
-        let (sender_tx, sender_rx) = oneshot::channel();
-        let actor_ref_clone = actor_ref.clone();
-        let connection_task = tokio::spawn(async move {
-            client_loop(config, sender_tx, actor_ref_clone).await;
-        });
-        tracing::info!("Started IRC actor for server: {}", state.server);
-
-        // Wait for the sender from the client task
-        let sender = match tokio::time::timeout(Duration::from_secs(15), sender_rx).await {
-            Ok(Ok(sender)) => {
-                tracing::info!("Received IRC sender from client task");
-                sender
-            }
-            Ok(Err(_)) => {
-                tracing::error!("Client task dropped sender without sending");
-                connection_task.abort();
-                bail!("Failed to receive IRC sender from client task");
-            }
-            Err(_) => {
-                tracing::error!("Timeout waiting for IRC sender from client task");
-                connection_task.abort();
-                bail!("Timeout waiting for IRC connection");
-            }
-        };
-
-        // Kill actor if the connection task fails
-        let loop_aborter = connection_task.abort_handle();
-        tokio::spawn(async move {
-            connection_task.await.unwrap_or_else(|e| {
-                tracing::error!("IRC connection task failed: {}", e);
-            });
-            actor_ref.kill();
-        });
-
-        Ok(IrcActor {
-            name: state.server.clone(),
-            config: state,
-            loop_aborter,
-            sender,
-        })
-    }
-}
-
-/// Handler for messages sent by the client loop to the actor.
-impl Message<IrcMessage> for IrcActor {
-    type Reply = ();
-
-    #[tracing::instrument(skip_all, fields(server = %self.name))]
-    async fn handle(&mut self, msg: IrcMessage, ctx: &mut kameo::message::Context<Self, ()>) {
-        // Handle incoming IRC messages here
-        match msg {
-            IrcMessage::Connected => {
-                tracing::info!("IRC connected");
-            }
-            IrcMessage::PrivMsg(privmsg) => {
-                tracing::debug!("IRC PRIVMSG from {}: {}", privmsg.user, privmsg.message);
-                // So what do we do with this message?
-                if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
-                    tracing::info!("Received command: {}", command);
-                    match command {
-                        "ping" => {
-                            tracing::debug!("Sending pong to {}", privmsg.user);
-                            if let Err(e) = self.sender.send_privmsg(
-                                privmsg.channel.as_deref().unwrap_or(&self.config.nick),
-                                "pong".to_string(),
-                            ) {
-                                tracing::error!("Failed to send pong: {}", e);
-                            } else {
-                                tracing::info!("Sent pong to {}", privmsg.user);
-                            }
-                        }
-                        _ => {
-                            tracing::warn!("Unknown command: {}", command);
-                        }
-                    }
-                } else {
-                    // Chat-db stuff goes here.
-                }
-            }
-            IrcMessage::Error(err) => {
-                tracing::error!("IRC error: {}", err);
-            }
-        }
-    }
-}
-
-/// Messages sent by the client loop to the actor.
-#[derive(Debug)]
-enum IrcMessage {
-    Connected,
-    PrivMsg(PrivMsg),
-    Error(String),
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PrivMsg {
-    /// The channel this message was sent to, if any.
-    /// If this is a private message, this will be None.
     channel: Option<String>,
     user: String,
     message: String,
 }
 
-/// Tracks a message being buffered for potential joining with subsequent messages
 struct BufferedMessage {
     content: String,
     last_updated: Instant,
 }
 
-/// The main IRC client loop that handles connecting, receiving messages, and sending them to the actor.
-/// Exits on any error, including disconnection.
-#[tracing::instrument(skip_all, fields(server = %config.server))]
-async fn client_loop(
-    config: IrcConfig,
-    sender_tx: oneshot::Sender<irc::client::Sender>,
-    actor_ref: ActorRef<IrcActor>,
-) {
-    let err = match client_loop_inner(config, sender_tx, actor_ref.clone()).await {
-        Ok(_) => "IRC client loop completed successfully?!".to_string(),
-        Err(e) => {
-            format!("IRC client loop error: {}", e)
-        }
-    };
-    tracing::error!("{}", err);
-    // Notify the actor of the error
-    actor_ref
-        .tell(IrcMessage::Error(err))
-        .await
-        .expect("Failed to send error message to actor");
+struct Connect;
+
+struct ProcessBufferedMessages;
+
+impl Actor for IrcActor {
+    type Args = IrcConfig;
+    type Error = anyhow::Error;
+
+    #[instrument(skip_all, fields(server = %args.server))]
+    async fn on_start(
+        args: Self::Args,
+        actor_ref: ActorRef<Self>,
+    ) -> std::result::Result<Self, Self::Error> {
+        tracing::info!("Starting IRC actor for server: {}", args.server);
+        actor_ref.tell(Connect).try_send().unwrap();
+        Ok(IrcActor {
+            name: args.server.clone(),
+            config: args,
+            client: OnceCell::new(),
+            message_buffer: HashMap::new(),
+        })
+    }
 }
 
-async fn client_loop_inner(
-    config: IrcConfig,
-    sender_tx: oneshot::Sender<irc::client::Sender>,
-    actor_ref: ActorRef<IrcActor>,
-) -> Result<()> {
-    tracing::info!("Connecting to IRC server: {}", config.server);
+impl IrcActor {
+    async fn process_privmsg(&mut self, privmsg: PrivMsg) {
+        // First off, is this a command?
+        if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
+            // Handle command logic here
+            info!("Processing command: {}", privmsg.message);
+            let (command, args) = command.split_once(' ').unwrap_or((command, ""));
+            match command {
+                "ping" => {
+                    // Example command: respond to ping
+                    if let Some(channel) = &privmsg.channel {
+                        self.client
+                            .get()
+                            .unwrap()
+                            .send_privmsg(channel, "pong")
+                            .expect("Failed to send pong message");
+                    }
+                }
+                _ => {
+                    error!("Unknown command: {}", command);
+                }
+            }
+        }
+    }
+}
 
-    // Create IRC client configuration
-    let irc_config = Config {
-        server: Some(config.server.clone()),
-        port: Some(config.port),
-        use_tls: Some(config.tls),
-        nickname: Some(config.nick.clone()),
-        channels: config.channels.clone(),
-        ..Default::default()
-    };
+impl Message<Connect> for IrcActor {
+    type Reply = Result<()>;
 
-    // Try to connect
-    let mut client = tokio::time::timeout(Duration::from_secs(10), async {
-        let client = Client::from_config(irc_config)
-            .await
-            .context("while creating IRC client")?;
+    #[instrument(skip_all, fields(server = %self.name))]
+    async fn handle(
+        &mut self,
+        msg: Connect,
+        ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        tracing::info!("Connecting to IRC server: {}", self.config.server);
+        if self.client.get().is_some() {
+            bail!("Already connected to IRC server: {}", self.config.server);
+        }
+
+        // Create IRC client configuration
+        let irc_config = Config {
+            server: Some(self.config.server.clone()),
+            port: Some(self.config.port),
+            use_tls: Some(self.config.tls),
+            nickname: Some(self.config.nick.clone()),
+            channels: self.config.channels.clone(),
+            ..Default::default()
+        };
+
+        // Try to connect
+        let mut client = tokio::time::timeout(Duration::from_secs(20), async {
+            Client::from_config(irc_config)
+                .await
+                .context("while creating IRC client")
+        })
+        .await??;
 
         // Identify to the server
         client
             .identify()
             .context("while identifying to IRC server")?;
 
-        Ok::<Client, anyhow::Error>(client)
-    })
-    .await??;
+        let stream = client.stream()?;
+        ctx.actor_ref().attach_stream(stream, "start", "end");
 
-    // Send the client sender back to the actor
-    let client_sender = client.sender();
-    if sender_tx.send(client_sender).is_err() {
-        bail!("Failed to send IRC sender back to actor - receiver dropped");
+        // Identify with NickServ if password is provided
+        if let Some(password) = &self.config.nickserv_password {
+            tracing::debug!("Authenticating with NickServ");
+            client
+                .send_privmsg("nickserv", format!("IDENTIFY {}", password))
+                .context("while sending NickServ IDENTIFY command")?;
+        }
+
+        // Store the client in the actor
+        self.client
+            .set(client)
+            .context("while setting IRC client")?;
+        tracing::info!("Connected to IRC server: {}", self.config.server);
+
+        Ok(())
     }
-    tracing::info!("IRC client sender sent to actor, starting message loop");
+}
 
-    // Handle NickServ authentication if configured
-    if let Some(ref password) = config.nickserv_password {
-        tracing::debug!("Authenticating with NickServ");
-        if let Err(e) = client.send_privmsg("NickServ", format!("IDENTIFY {}", password)) {
-            tracing::warn!("Failed to authenticate with NickServ: {}", e);
+impl
+    Message<
+        StreamMessage<Result<irc::proto::Message, irc::error::Error>, &'static str, &'static str>,
+    > for IrcActor
+{
+    type Reply = ();
+
+    #[instrument(skip_all, fields(server = %self.name))]
+    async fn handle(
+        &mut self,
+        msg: StreamMessage<Result<irc::proto::Message, irc::error::Error>, &str, &str>,
+        ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        trace!("Received IRC message: {:?}", msg);
+
+        match msg {
+            StreamMessage::Next(Ok(message)) => {
+                if let Err(e) = handle_irc_message(message, self, ctx).await {
+                    error!("Error processing IRC message: {}", e);
+                }
+            }
+            StreamMessage::Next(Err(e)) => {
+                error!("Error in IRC stream: {}", e);
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn handle_irc_message(
+    message: irc::proto::Message,
+    actor: &mut IrcActor,
+    ctx: &mut kameo::prelude::Context<IrcActor, ()>,
+) -> Result<()> {
+    trace!("Handling IRC message: {:?}", message);
+
+    match message.command {
+        Command::PRIVMSG(ref target, ref text) => {
+            let channel = if target.starts_with('#') {
+                Some(target.clone())
+            } else {
+                None
+            };
+
+            let user = message.source_nickname().unwrap_or("unknown").to_string();
+            let key = (user.clone(), channel.clone());
+
+            // Check if we already have a buffered message from this user/channel
+            if let Some(buffered) = actor.message_buffer.get_mut(&key) {
+                // Append to existing message and update timestamp
+                buffered.content.push(' ');
+                buffered.content.push_str(&text);
+                buffered.last_updated = Instant::now();
+                trace!("Appending to buffered message from {:?}", key);
+            } else {
+                // Start a new buffered message
+                actor.message_buffer.insert(
+                    key.clone(),
+                    BufferedMessage {
+                        content: text.clone(),
+                        last_updated: Instant::now(),
+                    },
+                );
+                trace!("Starting new buffered message from {:?}", key);
+            }
+
+            // Either way, process the buffered messages in 500ms or so.
+            let actor_ref = ctx.actor_ref().clone();
+            spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let _ = actor_ref.tell(ProcessBufferedMessages).try_send();
+            });
+        }
+        _ => {
+            trace!("Unhandled IRC command: {:?}", message.command);
         }
     }
 
-    // Send connected message
-    actor_ref
-        .tell(IrcMessage::Connected)
-        .await
-        .context("while sending connected message to actor")?;
-    tracing::info!("Successfully connected to IRC server");
+    Ok(())
+}
 
-    // Buffer for joining split messages
-    let mut message_buffer: HashMap<(String, Option<String>), BufferedMessage> = HashMap::new();
+impl Message<ProcessBufferedMessages> for IrcActor {
+    type Reply = ();
 
-    // Main message handling loop
-    let mut stream = client.stream()?;
+    #[instrument(skip_all, fields(server = %self.name))]
+    async fn handle(
+        &mut self,
+        _msg: ProcessBufferedMessages,
+        ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        trace!("Processing buffered messages");
 
-    loop {
-        // Use a short timeout to regularly check buffer ages
-        match timeout(Duration::from_millis(50), stream.next()).await {
-            Ok(Some(msg)) => {
-                let msg = msg?;
-                tracing::trace!("Received IRC message: {:?}", msg);
-
-                match &msg.command {
-                    Command::PRIVMSG(target, text) => {
-                        let channel = if target.starts_with('#') || target.starts_with('&') {
-                            Some(target.clone())
-                        } else {
-                            None
-                        };
-
-                        let user = msg.source_nickname().unwrap_or("unknown").to_string();
-
-                        let key = (user, channel);
-
-                        // Check if we already have a buffered message from this user/channel
-                        if let Some(buffered) = message_buffer.get_mut(&key) {
-                            // Append to existing message and update timestamp
-                            buffered.content.push(' ');
-                            buffered.content.push_str(text);
-                            buffered.last_updated = Instant::now();
-                            tracing::trace!("Appending to buffered message from {:?}", key);
-                        } else {
-                            // Start a new buffered message
-                            message_buffer.insert(
-                                key.clone(),
-                                BufferedMessage {
-                                    content: text.clone(),
-                                    last_updated: Instant::now(),
-                                },
-                            );
-                            tracing::trace!("Starting new buffered message from {:?}", key);
-                        }
-                    }
-                    _ => {
-                        tracing::trace!("Unhandled IRC message");
-                    }
-                }
-            }
-            Ok(None) => {
-                // Stream ended - flush all remaining messages before exiting
-                for ((user, channel), buffered) in message_buffer.drain() {
-                    let privmsg = PrivMsg {
-                        channel,
-                        user,
-                        message: buffered.content,
-                    };
-                    actor_ref
-                        .tell(IrcMessage::PrivMsg(privmsg))
-                        .await
-                        .context("while sending final PRIVMSG to actor")?;
-                }
-                bail!("IRC stream ended");
-            }
-            Err(_) => {
-                // Timeout - check if any messages need flushing
-            }
-        }
-
-        // Check and flush messages that have been idle for 500ms
         let now = Instant::now();
         let mut to_flush = Vec::new();
 
-        for (key, buffered) in &message_buffer {
+        // Check and flush messages that have been idle for 500ms
+        for (key, buffered) in &self.message_buffer {
             if now.duration_since(buffered.last_updated) >= Duration::from_millis(500) {
                 to_flush.push(key.clone());
             }
         }
 
-        // Flush old messages
+        // Process old messages
         for key in to_flush {
-            if let Some(buffered) = message_buffer.remove(&key) {
+            if let Some(buffered) = self.message_buffer.remove(&key) {
                 let (user, channel) = key;
                 let privmsg = PrivMsg {
                     channel,
                     user,
                     message: buffered.content,
                 };
-                tracing::debug!("Flushing buffered message: {:?}", privmsg);
-                actor_ref
-                    .tell(IrcMessage::PrivMsg(privmsg))
-                    .await
-                    .context("while sending PRIVMSG to actor")?;
+                trace!("Flushing buffered message: {:?}", privmsg);
+                self.process_privmsg(privmsg).await;
             }
         }
     }
