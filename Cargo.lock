@@ -725,6 +725,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "image",
+ "indexmap",
  "irc",
  "kameo",
  "kameo_actors",
