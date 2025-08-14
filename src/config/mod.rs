@@ -16,8 +16,8 @@ pub fn load() -> Result<Config, ConfigError> {
     // Layer environment variables with GANBOT_ prefix
     builder = builder.add_source(
         Environment::with_prefix("GANBOT")
-            .prefix_separator("_")
-            .separator("__")
+            .prefix_separator("__")
+            .separator("_"),
     );
 
     let config = builder.build()?;
