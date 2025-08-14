@@ -981,37 +981,134 @@ impl Message<SendMessage> for BotController {
 ### Stream Processing Integration
 
 ```rust
-use tokio_stream::{Stream, StreamExt};
+use kameo::message::StreamMessage;
 
 #[derive(Actor)]
-pub struct StreamProcessor<T> {
-    processor: Box<dyn Fn(T) -> T + Send>,
+pub struct StreamProcessor {
+    processed_count: usize,
 }
 
-// Attach stream to actor
-impl StreamProcessor<String> {
-    pub async fn process_stream<S>(&self, mut stream: S)
-    where
-        S: Stream<Item = String> + Unpin,
-    {
-        while let Some(item) = stream.next().await {
-            let processed = (self.processor)(item);
-            println!("Processed: {}", processed);
+// Custom marker types (can be any type)
+#[derive(Debug, Clone)]
+pub struct StreamStarted {
+    pub stream_id: String,
+    pub timestamp: std::time::Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamEnded {
+    pub stream_id: String,
+    pub total_processed: usize,
+}
+
+// Attach stream to actor using Context
+impl Message<ConnectStream> for StreamProcessor {
+    type Reply = Result<(), ProcessorError>;
+
+    async fn handle(
+        &mut self,
+        msg: ConnectStream,
+        ctx: &mut Context<Self, Self::Reply>
+    ) -> Self::Reply {
+        let stream = msg.stream;
+        
+        // Markers can be any type - strings, structs, enums, etc.
+        let start_marker = StreamStarted {
+            stream_id: "processor-1".to_string(),
+            timestamp: std::time::Instant::now(),
+        };
+        let end_marker = StreamEnded {
+            stream_id: "processor-1".to_string(),
+            total_processed: 0, // Will be updated when stream ends
+        };
+        
+        // Attach stream with typed markers
+        ctx.actor_ref().attach_stream(stream, start_marker, end_marker);
+        
+        Ok(())
+    }
+}
+
+// Handle stream messages with custom marker types
+impl Message<StreamMessage<Result<String, ProcessorError>, StreamStarted, StreamEnded>>
+    for StreamProcessor
+{
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        msg: StreamMessage<Result<String, ProcessorError>, StreamStarted, StreamEnded>,
+        ctx: &mut Context<Self, Self::Reply>
+    ) -> Self::Reply {
+        match msg {
+            StreamMessage::Started(marker) => {
+                tracing::info!("Stream {} started at {:?}", 
+                    marker.stream_id, marker.timestamp);
+            }
+            StreamMessage::Next(Ok(item)) => {
+                self.processed_count += 1;
+                tracing::info!("Processed item {}: {}", self.processed_count, item);
+            }
+            StreamMessage::Next(Err(e)) => {
+                tracing::error!("Stream error: {}", e);
+            }
+            StreamMessage::Ended(marker) => {
+                tracing::info!("Stream {} ended, processed {} items", 
+                    marker.stream_id, self.processed_count);
+            }
         }
     }
 }
 
-// Integration with external streams
-async fn integrate_with_kafka() {
-    let processor = spawn(StreamProcessor::new(|msg: String| {
-        format!("Processed: {}", msg.to_uppercase())
-    }));
-    
-    // Connect Kafka consumer stream to actor
-    let kafka_stream = create_kafka_consumer().await;
-    processor.attach_stream(kafka_stream).await;
+// Real-world example based on IRC client (using string markers for simplicity)
+impl Message<StreamMessage<Result<irc::proto::Message, irc::error::Error>, &'static str, &'static str>>
+    for IrcActor
+{
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        msg: StreamMessage<Result<irc::proto::Message, irc::error::Error>, &str, &str>,
+        ctx: &mut Context<Self, Self::Reply>
+    ) -> Self::Reply {
+        match msg {
+            StreamMessage::Started(marker) => {
+                tracing::info!("IRC stream started: {}", marker);
+            }
+            StreamMessage::Next(Ok(irc_message)) => {
+                // Process IRC message
+                self.handle_irc_message(irc_message).await;
+            }
+            StreamMessage::Next(Err(e)) => {
+                tracing::error!("IRC stream error: {}", e);
+            }
+            StreamMessage::Ended(marker) => {
+                tracing::info!("IRC stream ended: {}", marker);
+            }
+        }
+    }
 }
+
+// Example with different marker types
+#[derive(Debug)]
+enum ConnectionState { Starting, Ending }
+
+// You can use enums, numbers, or any type as markers
+ctx.actor_ref().attach_stream(stream, ConnectionState::Starting, ConnectionState::Ending);
+ctx.actor_ref().attach_stream(stream, 42u32, 100u32);
+ctx.actor_ref().attach_stream(stream, true, false);
 ```
+
+### Key Points for Stream Integration:
+
+1. **Use `attach_stream`** via `ctx.actor_ref().attach_stream(stream, start_marker, end_marker)`
+2. **Import StreamMessage** from `kameo::message::StreamMessage`
+3. **Markers are flexible** - can be any type (`&str`, custom structs, enums, primitives, etc.)
+4. **Handle all StreamMessage variants**:
+   - `Started(start_marker)` - Stream began with your start marker
+   - `Next(item)` - New item from stream (can be Result for error handling)  
+   - `Ended(end_marker)` - Stream completed with your end marker
+5. **Error handling** - Stream items can be `Result` types for graceful error handling
 
 ## Best Practices
 
