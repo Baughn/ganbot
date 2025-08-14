@@ -2,12 +2,14 @@ use anyhow::{Context, Result, bail};
 use irc::client::prelude::{Client, Command, Config};
 use kameo::message::StreamMessage;
 use kameo::prelude::*;
+use kameo_actors::broker::{Broker, Publish};
 use std::collections::HashMap;
 use tokio::spawn;
 use tokio::sync::OnceCell;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, instrument, trace};
 
+use crate::actions::{self, Action};
 use crate::config::global::IrcConfig;
 
 pub struct IrcActor {
@@ -17,6 +19,7 @@ pub struct IrcActor {
     /// Buffer for joining split messages
     /// Keyed by (user, channel)
     message_buffer: HashMap<(String, Option<String>), BufferedMessage>,
+    broker: actions::Broker,
 }
 
 #[derive(Debug, Clone)]
@@ -36,21 +39,22 @@ struct Connect;
 struct ProcessBufferedMessages;
 
 impl Actor for IrcActor {
-    type Args = IrcConfig;
+    type Args = (IrcConfig, actions::Broker);
     type Error = anyhow::Error;
 
-    #[instrument(skip_all, fields(server = %args.server))]
+    #[instrument(skip_all, fields(server = %args.0.server))]
     async fn on_start(
         args: Self::Args,
         actor_ref: ActorRef<Self>,
     ) -> std::result::Result<Self, Self::Error> {
-        tracing::info!("Starting IRC actor for server: {}", args.server);
+        tracing::info!("Starting IRC actor for server: {}", args.0.server);
         actor_ref.tell(Connect).try_send().unwrap();
         Ok(IrcActor {
-            name: args.server.clone(),
-            config: args,
+            name: args.0.server.clone(),
+            config: args.0,
             client: OnceCell::new(),
             message_buffer: HashMap::new(),
+            broker: args.1,
         })
     }
 }
@@ -65,13 +69,17 @@ impl IrcActor {
             match command {
                 "ping" => {
                     // Example command: respond to ping
-                    if let Some(channel) = &privmsg.channel {
-                        self.client
-                            .get()
-                            .unwrap()
-                            .send_privmsg(channel, "pong")
-                            .expect("Failed to send pong message");
-                    }
+                    self.broker
+                        .tell(Publish {
+                            topic: format!(
+                                "command/{}/{}/ping",
+                                privmsg.user,
+                                privmsg.channel.unwrap_or("".to_string())
+                            ),
+                            message: Action::Ping,
+                        })
+                        .await
+                        .unwrap();
                 }
                 _ => {
                     error!("Unknown command: {}", command);

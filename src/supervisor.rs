@@ -12,10 +12,16 @@ use futures::future::join_all;
 use kameo::error::Infallible;
 use kameo::prelude::*;
 use kameo::{Actor, actor::ActorRef};
+use kameo_actors::broker::Broker;
+use kameo_actors::message_bus::{MessageBus, Register};
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
-use crate::config::{Config, global::{IrcConfig, OpenrouterConfig}};
+use crate::actions;
+use crate::config::{
+    Config,
+    global::{IrcConfig, OpenrouterConfig},
+};
 use crate::network::irc::IrcActor;
 use crate::network::openrouter::OpenRouterActor;
 
@@ -26,6 +32,8 @@ pub struct Supervisor {
     config: Config,
     /// Actors implied by said configuration.
     actors: HashMap<ConfigHash, Supervised>,
+    /// Message broker for actions.
+    broker: actions::Broker,
 }
 
 /// Tracks restart attempts for a specific actor
@@ -66,8 +74,12 @@ impl Actor for Supervisor {
         actor_ref.register("supervisor").unwrap();
         // Queue the config application.
         actor_ref.tell(ApplyConfig).try_send().unwrap();
+        // Initialize the broker.
+        let broker = Broker::new(kameo_actors::DeliveryStrategy::Guaranteed);
+        let broker = Broker::spawn_link(&actor_ref, broker).await;
 
         Ok(Supervisor {
+            broker,
             config: args,
             actors: HashMap::new(),
         })
@@ -103,7 +115,7 @@ impl Actor for Supervisor {
                     }
                 }
 
-                actor.actor.restart(&self_reference).await;
+                actor.actor.restart(&self.broker, &self_reference).await;
             }
         }
 
@@ -149,7 +161,7 @@ impl Message<ApplyConfig> for Supervisor {
             .iter()
             .map(|irc_config| (hash(irc_config)))
             .collect();
-        
+
         // Add OpenRouter to expected actors if token is configured
         if !self.config.openrouter.token.is_empty() {
             expected_actors.insert(hash(&self.config.openrouter));
@@ -164,12 +176,14 @@ impl Message<ApplyConfig> for Supervisor {
         // Anything that isn't running, but should be, we start.
         let self_ref = ctx.actor_ref();
         let now = Instant::now();
-        
+
         // Start OpenRouter actor if configured and not running
         if !self.config.openrouter.token.is_empty() {
             let h = hash(&self.config.openrouter);
             if !running.contains(&h) {
-                let openrouter_actor = OpenRouterActor::spawn_link(&self_ref, self.config.openrouter.clone()).await;
+                let openrouter_actor =
+                    OpenRouterActor::spawn_link(&self_ref, self.config.openrouter.clone()).await;
+
                 self.actors.insert(
                     h,
                     Supervised {
@@ -179,18 +193,22 @@ impl Message<ApplyConfig> for Supervisor {
                             first_failure: now,
                             sleep: Duration::from_secs(0),
                         },
-                        actor: SomeActor::OpenRouter((self.config.openrouter.clone(), openrouter_actor)),
+                        actor: SomeActor::OpenRouter((
+                            self.config.openrouter.clone(),
+                            openrouter_actor,
+                        )),
                     },
                 );
             }
         }
-        
+
         for irc_config in &self.config.irc {
             let h = hash(irc_config);
             if running.contains(&h) {
                 continue;
             }
-            let irc_actor = IrcActor::spawn_link(&self_ref, irc_config.clone()).await;
+            let irc_actor =
+                IrcActor::spawn_link(&self_ref, (irc_config.clone(), self.broker.clone())).await;
             self.actors.insert(
                 h,
                 Supervised {
@@ -228,12 +246,13 @@ impl SomeActor {
         }
     }
 
-    async fn restart(&mut self, link: &ActorRef<Supervisor>) {
+    async fn restart(&mut self, broker: &actions::Broker, link: &ActorRef<Supervisor>) {
         match self {
             Self::Irc((config, reference)) => {
                 // Should already be dead, but nevertheless.
                 reference.kill();
-                let new_reference = IrcActor::spawn_link(link, config.clone()).await;
+                let new_reference =
+                    IrcActor::spawn_link(link, (config.clone(), broker.clone())).await;
                 *self = Self::Irc((config.clone(), new_reference))
             }
             Self::OpenRouter((config, reference)) => {

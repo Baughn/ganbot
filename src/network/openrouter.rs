@@ -45,7 +45,7 @@ impl Message<chat::Oneshot> for OpenRouterActor {
         // Spawn a new conversation actor to handle this specific request
         let actor_ref = ConversationActor::spawn_link(&ctx.actor_ref(), self.config.clone()).await;
 
-        ctx.blocking_forward(&actor_ref, msg)
+        ctx.forward(&actor_ref, msg).await
     }
 }
 
