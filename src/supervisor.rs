@@ -15,8 +15,9 @@ use kameo::{Actor, actor::ActorRef};
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
-use crate::config::{Config, global::IrcConfig};
+use crate::config::{Config, global::{IrcConfig, OpenrouterConfig}};
 use crate::network::irc::IrcActor;
+use crate::network::openrouter::OpenRouterActor;
 
 type ConfigHash = u64;
 
@@ -41,9 +42,9 @@ struct RestartInfo {
 }
 
 /// The necessary information to restart an actor.
-#[derive(Hash)]
 enum SomeActor {
     Irc((IrcConfig, ActorRef<IrcActor>)),
+    OpenRouter((OpenrouterConfig, ActorRef<OpenRouterActor>)),
 }
 
 struct Supervised {
@@ -142,12 +143,17 @@ impl Message<ApplyConfig> for Supervisor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         // Anything that's running but shouldn't be, we stop.
-        let expected_actors: HashSet<ConfigHash> = self
+        let mut expected_actors: HashSet<ConfigHash> = self
             .config
             .irc
             .iter()
             .map(|irc_config| (hash(irc_config)))
             .collect();
+        
+        // Add OpenRouter to expected actors if token is configured
+        if !self.config.openrouter.token.is_empty() {
+            expected_actors.insert(hash(&self.config.openrouter));
+        }
         let running = self.actors.keys().cloned().collect::<HashSet<ConfigHash>>();
         let killer = running.difference(&expected_actors).map(async |v| {
             let victim = &self.actors[v];
@@ -158,6 +164,27 @@ impl Message<ApplyConfig> for Supervisor {
         // Anything that isn't running, but should be, we start.
         let self_ref = ctx.actor_ref();
         let now = Instant::now();
+        
+        // Start OpenRouter actor if configured and not running
+        if !self.config.openrouter.token.is_empty() {
+            let h = hash(&self.config.openrouter);
+            if !running.contains(&h) {
+                let openrouter_actor = OpenRouterActor::spawn_link(&self_ref, self.config.openrouter.clone()).await;
+                self.actors.insert(
+                    h,
+                    Supervised {
+                        restart_info: RestartInfo {
+                            failure_count: 0,
+                            last_failure: now,
+                            first_failure: now,
+                            sleep: Duration::from_secs(0),
+                        },
+                        actor: SomeActor::OpenRouter((self.config.openrouter.clone(), openrouter_actor)),
+                    },
+                );
+            }
+        }
+        
         for irc_config in &self.config.irc {
             let h = hash(irc_config);
             if running.contains(&h) {
@@ -187,12 +214,17 @@ impl SomeActor {
                 let _ = reference.stop_gracefully().await;
                 reference.wait_for_shutdown().await;
             }
+            Self::OpenRouter((_, reference)) => {
+                let _ = reference.stop_gracefully().await;
+                reference.wait_for_shutdown().await;
+            }
         }
     }
 
     fn is_alive(&self) -> bool {
         match self {
             Self::Irc((_, reference)) => reference.is_alive(),
+            Self::OpenRouter((_, reference)) => reference.is_alive(),
         }
     }
 
@@ -203,6 +235,11 @@ impl SomeActor {
                 reference.kill();
                 let new_reference = IrcActor::spawn_link(link, config.clone()).await;
                 *self = Self::Irc((config.clone(), new_reference))
+            }
+            Self::OpenRouter((config, reference)) => {
+                reference.kill();
+                let new_reference = OpenRouterActor::spawn_link(link, config.clone()).await;
+                *self = Self::OpenRouter((config.clone(), new_reference))
             }
         }
     }

@@ -1,7 +1,7 @@
 /// Global configuration from config.toml & environment variables
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct Config {
     // Backend configurations
     pub invokeai: InvokeaiConfig,
@@ -10,15 +10,19 @@ pub struct Config {
     pub irc: Vec<IrcConfig>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct InvokeaiConfig {
     pub url: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct OpenrouterConfig {
     pub token: String,
     // Per-purpose model choices will be listed here.
+    #[serde(default = "default_chat_model")]
+    pub chat_model: String,
+    #[serde(default = "default_image_model")]
+    pub image_model: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
@@ -42,6 +46,14 @@ fn default_bang() -> String {
     "!".to_string()
 }
 
+fn default_chat_model() -> String {
+    "anthropic/claude-3-5-sonnet".to_string()
+}
+
+fn default_image_model() -> String {
+    "openai/gpt-4o".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -62,6 +74,8 @@ impl Default for OpenrouterConfig {
     fn default() -> Self {
         Self {
             token: String::new(),
+            chat_model: default_chat_model(),
+            image_model: default_image_model(),
         }
     }
 }
