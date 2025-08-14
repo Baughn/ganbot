@@ -2,6 +2,7 @@
 name = "ganbot3"
 version = "0.1.0"
 edition = "2024"
+default-run = "ganbot3"
 
 [[bin]]
 name = "comfyui_example"
@@ -25,6 +26,7 @@ kameo = "0.17.2"
 kameo_actors = "0.2.0"
 kameo_macros = "0.17.0"
 notify = "7.0"
+openrouter_api = { version = "0.1.6", features = ["tracing"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
