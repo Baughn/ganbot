@@ -5,7 +5,7 @@ use kameo::actor::ActorRef;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
 use openrouter_api::OpenRouterClient;
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 
 use crate::config::global::OpenrouterConfig;
 use crate::messages::chat;
@@ -142,6 +142,7 @@ impl Message<chat::Oneshot> for ConversationActor {
 
         match chat_api.chat_completion(request).await {
             Ok(response) => {
+                info!("Chat response: {response:?}");
                 // Extract the response text from the first choice
                 if let Some(choice) = response.choices.first() {
                     Ok(chat::OneshotResponse {
