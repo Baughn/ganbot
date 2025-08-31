@@ -13,7 +13,6 @@ use kameo::error::Infallible;
 use kameo::prelude::*;
 use kameo::{Actor, actor::ActorRef};
 use kameo_actors::broker::Broker;
-use kameo_actors::message_bus::{MessageBus, Register};
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
@@ -49,7 +48,8 @@ struct RestartInfo {
     pub sleep: Duration,
 }
 
-/// The necessary information to restart an actor.
+/// The necessary information to restart a supervisor-managed actor.
+/// These are precisely the actors that need to be restarted on a config change.
 enum SomeActor {
     Irc((IrcConfig, ActorRef<IrcActor>)),
     OpenRouter((OpenrouterConfig, ActorRef<OpenRouterActor>)),

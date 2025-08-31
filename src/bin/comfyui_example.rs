@@ -2,7 +2,9 @@
 #[path = "../network/comfyui/mod.rs"]
 mod comfyui;
 
-use comfyui::{ComfyUIClient, Graph, KSamplerParams, create_client};
+use comfyui::api::{Graph, KSamplerParams};
+use comfyui::net::ComfyUIClient;
+use comfyui::net::create_client;
 use std::time::Duration;
 
 #[tokio::main]

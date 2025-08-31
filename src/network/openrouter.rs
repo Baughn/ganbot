@@ -6,7 +6,7 @@ use kameo::prelude::*;
 use tracing::instrument;
 
 use crate::config::global::OpenrouterConfig;
-use crate::messages::chat::{self, Purpose};
+use crate::messages::chat::{self};
 
 /// Singleton actor that manages OpenRouter API access
 pub struct OpenRouterActor {

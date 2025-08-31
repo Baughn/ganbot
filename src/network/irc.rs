@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use irc::client::prelude::{Client, Command, Config};
 use kameo::message::StreamMessage;
 use kameo::prelude::*;
-use kameo_actors::broker::{Broker, Publish};
+use kameo_actors::broker::Publish;
 use std::collections::HashMap;
 use tokio::spawn;
 use tokio::sync::OnceCell;
