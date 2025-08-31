@@ -1,7 +1,5 @@
 pub mod global;
-
 use config::{Config as ConfigBuilder, ConfigError, Environment, File};
-
 pub use global::Config;
 
 pub fn load() -> Result<Config, ConfigError> {

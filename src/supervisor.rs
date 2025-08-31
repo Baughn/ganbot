@@ -12,7 +12,7 @@ use futures::future::join_all;
 use kameo::error::Infallible;
 use kameo::prelude::*;
 use kameo::{Actor, actor::ActorRef};
-use kameo_actors::broker::Broker;
+use kameo_actors::message_bus::MessageBus;
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
@@ -31,8 +31,8 @@ pub struct Supervisor {
     config: Config,
     /// Actors implied by said configuration.
     actors: HashMap<ConfigHash, Supervised>,
-    /// Message broker for actions.
-    broker: actions::Broker,
+    /// Message bus.
+    bus: actions::Bus,
 }
 
 /// Tracks restart attempts for a specific actor
@@ -74,12 +74,11 @@ impl Actor for Supervisor {
         actor_ref.register("supervisor").unwrap();
         // Queue the config application.
         actor_ref.tell(ApplyConfig).try_send().unwrap();
-        // Initialize the broker.
-        let broker = Broker::new(kameo_actors::DeliveryStrategy::Guaranteed);
-        let broker = Broker::spawn_link(&actor_ref, broker).await;
+        // Initialize the bus.
+        let bus = MessageBus::spawn_link(&actor_ref, MessageBus::default()).await;
 
         Ok(Supervisor {
-            broker,
+            bus,
             config: args,
             actors: HashMap::new(),
         })
@@ -115,7 +114,7 @@ impl Actor for Supervisor {
                     }
                 }
 
-                actor.actor.restart(&self.broker, &self_reference).await;
+                actor.actor.restart(&self.bus, &self_reference).await;
             }
         }
 
@@ -208,7 +207,7 @@ impl Message<ApplyConfig> for Supervisor {
                 continue;
             }
             let irc_actor =
-                IrcActor::spawn_link(&self_ref, (irc_config.clone(), self.broker.clone())).await;
+                IrcActor::spawn_link(&self_ref, (irc_config.clone(), self.bus.clone())).await;
             self.actors.insert(
                 h,
                 Supervised {
@@ -246,13 +245,12 @@ impl SomeActor {
         }
     }
 
-    async fn restart(&mut self, broker: &actions::Broker, link: &ActorRef<Supervisor>) {
+    async fn restart(&mut self, bus: &ActorRef<MessageBus>, link: &ActorRef<Supervisor>) {
         match self {
             Self::Irc((config, reference)) => {
                 // Should already be dead, but nevertheless.
                 reference.kill();
-                let new_reference =
-                    IrcActor::spawn_link(link, (config.clone(), broker.clone())).await;
+                let new_reference = IrcActor::spawn_link(link, (config.clone(), bus.clone())).await;
                 *self = Self::Irc((config.clone(), new_reference))
             }
             Self::OpenRouter((config, reference)) => {

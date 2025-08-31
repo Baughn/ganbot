@@ -72,6 +72,7 @@ src/
 │   ├── irc.rs       # IRC client actor using the `irc` crate
 │   ├── discord.rs   # Discord client actor
 │   └── openapi.rs   # OpenAPI client
+├── persistence/     # Persistent actors, e.g. the per-user actor.
 ├── messages/        # Message types for actor communication
 ├── games/           # Game logic modules
 ├── image/           # Image generation/editing (Kontext integration)

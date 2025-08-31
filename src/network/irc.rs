@@ -19,7 +19,7 @@ pub struct IrcActor {
     /// Buffer for joining split messages
     /// Keyed by (user, channel)
     message_buffer: HashMap<(String, Option<String>), BufferedMessage>,
-    broker: actions::Broker,
+    bus: actions::Bus,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +39,7 @@ struct Connect;
 struct ProcessBufferedMessages;
 
 impl Actor for IrcActor {
-    type Args = (IrcConfig, actions::Broker);
+    type Args = (IrcConfig, actions::Bus);
     type Error = anyhow::Error;
 
     #[instrument(skip_all, fields(server = %args.0.server))]
@@ -54,7 +54,7 @@ impl Actor for IrcActor {
             config: args.0,
             client: OnceCell::new(),
             message_buffer: HashMap::new(),
-            broker: args.1,
+            bus: args.1,
         })
     }
 }
@@ -64,22 +64,15 @@ impl IrcActor {
         // First off, is this a command?
         if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
             // Handle command logic here
-            info!("Processing command: {}", privmsg.message);
+            info!(
+                "Processing command (user {}): {}",
+                privmsg.user, privmsg.message
+            );
             let (command, args) = command.split_once(' ').unwrap_or((command, ""));
             match command {
                 "ping" => {
                     // Example command: respond to ping
-                    self.broker
-                        .tell(Publish {
-                            topic: format!(
-                                "command/{}/{}/ping",
-                                privmsg.user,
-                                privmsg.channel.unwrap_or("".to_string())
-                            ),
-                            message: Action::Ping,
-                        })
-                        .await
-                        .unwrap();
+                    unimplemented!();
                 }
                 _ => {
                     error!("Unknown command: {}", command);

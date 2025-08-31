@@ -1,6 +1,6 @@
 use kameo::actor::ActorRef;
 
-pub type Broker = ActorRef<kameo_actors::broker::Broker<Action>>;
+pub type Bus = ActorRef<kameo_actors::message_bus::MessageBus>;
 
 /// Core list of actions that can be broker'd.
 #[derive(Debug, Clone)]
