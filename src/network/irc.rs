@@ -89,14 +89,18 @@ impl IrcActor {
                     // Example command: respond to ping
                     let openrouter = crate::network::openrouter::OpenRouter::get()
                         .context("while getting OpenRouter actor")?;
+                    
+                    let prompt = if args.trim().is_empty() {
+                        "Ping! Respond to this test command with a clever, hard-boiled noir detective one-liner.".to_string()
+                    } else {
+                        format!("Ping! The user said: {}. Respond with a clever, hard-boiled noir detective one-liner, while keeping in mind it's a test.", args.trim())
+                    };
+                    
                     let response = openrouter
                         .ask(chat::Oneshot {
                             purpose: chat::Purpose::Chat,
                             origin: format!("{}@{}", privmsg.user, self.name),
-                            text: vec![chat::Part::Cacheable(
-                                "Ping! Respond to this test command with a clever one-liner."
-                                    .to_string(),
-                            )],
+                            text: vec![chat::Part::Cacheable(prompt)],
                         })
                         .await
                         .context("while sending Oneshot to OpenRouter")?;
