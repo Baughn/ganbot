@@ -12,20 +12,16 @@ token = "your-openrouter-token-here"
 chat_model = "anthropic/claude-sonnet-4"
 image_model = "openai/gpt-4o"
 
-# IRC server configurations
-# You can have multiple IRC servers
 [[irc]]
 server = "irc.rizon.net"
 tls = true
 port = 6697
 channels = ["#nanobot"]
 nick = "GANBot-dev"
-# nickserv_password = "your-nickserv-password"  # Optional
 
-# Example of additional IRC server
-# [[irc]]
-# server = "irc.oftc.net"
-# tls = true
-# port = 6697
-# channels = ["#another-channel"]
-# nick = "ganbot3-oftc"
+[[irc]]
+server = "irc.libera.chat"
+tls = true
+port = 6697
+channels = ["#questionablebotting"]
+nick = "ganbot3-dev"

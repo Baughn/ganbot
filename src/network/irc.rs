@@ -29,6 +29,12 @@ struct PrivMsg {
     message: String,
 }
 
+impl PrivMsg {
+    fn get_reply_target(&self) -> &str {
+        self.channel.as_deref().unwrap_or(&self.user)
+    }
+}
+
 struct BufferedMessage {
     content: String,
     last_updated: Instant,
@@ -99,7 +105,7 @@ impl IrcActor {
                         .get()
                         .context("IRC client not connected")?
                         .send_privmsg(
-                            privmsg.channel.as_deref().unwrap_or(&privmsg.user), // Reply in channel or via PM
+                            privmsg.get_reply_target(),
                             reply,
                         )
                         .context("while sending PRIVMSG")?;
@@ -290,7 +296,7 @@ impl Message<ProcessBufferedMessages> for IrcActor {
 
                     // And attempt to notify the user.
                     if let Some(client) = self.client.get() {
-                        let reply_target = privmsg.channel.as_deref().unwrap_or(&privmsg.user); // Reply in channel or via PM
+                        let reply_target = privmsg.get_reply_target();
                         let _ = client
                             .send_privmsg(reply_target, format!("{}: {e:#}", privmsg.user))
                             .context("while sending error PRIVMSG");
