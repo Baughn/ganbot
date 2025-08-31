@@ -6,6 +6,7 @@ pub struct Config {
     // Backend configurations
     pub invokeai: InvokeaiConfig,
     pub openrouter: OpenrouterConfig,
+    pub redis_url: String,
     // Client configurations
     pub irc: Vec<IrcConfig>,
 }
@@ -60,6 +61,7 @@ impl Default for Config {
             invokeai: InvokeaiConfig::default(),
             openrouter: OpenrouterConfig::default(),
             irc: vec![],
+            redis_url: String::new(),
         }
     }
 }

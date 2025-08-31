@@ -12,17 +12,16 @@ use futures::future::join_all;
 use kameo::error::Infallible;
 use kameo::prelude::*;
 use kameo::{Actor, actor::ActorRef};
-use kameo_actors::message_bus::MessageBus;
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
-use crate::actions;
 use crate::config::{
     Config,
     global::{IrcConfig, OpenrouterConfig},
 };
 use crate::network::irc::IrcActor;
-use crate::network::openrouter::OpenRouterActor;
+use crate::network::openrouter::OpenRouter;
+use crate::persistence::user::UserManager;
 
 type ConfigHash = u64;
 
@@ -31,8 +30,10 @@ pub struct Supervisor {
     config: Config,
     /// Actors implied by said configuration.
     actors: HashMap<ConfigHash, Supervised>,
-    /// Message bus.
-    bus: actions::Bus,
+    /// Redis connection.
+    _redis_connection: redis::aio::MultiplexedConnection,
+    /// User manager.
+    _user_manager: ActorRef<UserManager>,
 }
 
 /// Tracks restart attempts for a specific actor
@@ -52,7 +53,7 @@ struct RestartInfo {
 /// These are precisely the actors that need to be restarted on a config change.
 enum SomeActor {
     Irc((IrcConfig, ActorRef<IrcActor>)),
-    OpenRouter((OpenrouterConfig, ActorRef<OpenRouterActor>)),
+    OpenRouter((OpenrouterConfig, ActorRef<OpenRouter>)),
 }
 
 struct Supervised {
@@ -74,13 +75,21 @@ impl Actor for Supervisor {
         actor_ref.register("supervisor").unwrap();
         // Queue the config application.
         actor_ref.tell(ApplyConfig).try_send().unwrap();
-        // Initialize the bus.
-        let bus = MessageBus::spawn_link(&actor_ref, MessageBus::default()).await;
+        // Connect to Redis
+        let client =
+            redis::Client::open(args.redis_url.as_str()).expect("Failed to create Redis client");
+        let redis_connection = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("Failed to connect to Redis");
+        // Initialize the user manager.
+        let user_manager = UserManager::spawn_link(&actor_ref, redis_connection.clone()).await;
 
         Ok(Supervisor {
-            bus,
             config: args,
             actors: HashMap::new(),
+            _redis_connection: redis_connection,
+            _user_manager: user_manager,
         })
     }
 
@@ -114,7 +123,7 @@ impl Actor for Supervisor {
                     }
                 }
 
-                actor.actor.restart(&self.bus, &self_reference).await;
+                actor.actor.restart(&self_reference).await;
             }
         }
 
@@ -181,7 +190,7 @@ impl Message<ApplyConfig> for Supervisor {
             let h = hash(&self.config.openrouter);
             if !running.contains(&h) {
                 let openrouter_actor =
-                    OpenRouterActor::spawn_link(&self_ref, self.config.openrouter.clone()).await;
+                    OpenRouter::spawn_link(&self_ref, self.config.openrouter.clone()).await;
 
                 self.actors.insert(
                     h,
@@ -206,8 +215,7 @@ impl Message<ApplyConfig> for Supervisor {
             if running.contains(&h) {
                 continue;
             }
-            let irc_actor =
-                IrcActor::spawn_link(&self_ref, (irc_config.clone(), self.bus.clone())).await;
+            let irc_actor = IrcActor::spawn_link(&self_ref, irc_config.clone()).await;
             self.actors.insert(
                 h,
                 Supervised {
@@ -245,17 +253,17 @@ impl SomeActor {
         }
     }
 
-    async fn restart(&mut self, bus: &ActorRef<MessageBus>, link: &ActorRef<Supervisor>) {
+    async fn restart(&mut self, link: &ActorRef<Supervisor>) {
         match self {
             Self::Irc((config, reference)) => {
                 // Should already be dead, but nevertheless.
                 reference.kill();
-                let new_reference = IrcActor::spawn_link(link, (config.clone(), bus.clone())).await;
+                let new_reference = IrcActor::spawn_link(link, config.clone()).await;
                 *self = Self::Irc((config.clone(), new_reference))
             }
             Self::OpenRouter((config, reference)) => {
                 reference.kill();
-                let new_reference = OpenRouterActor::spawn_link(link, config.clone()).await;
+                let new_reference = OpenRouter::spawn_link(link, config.clone()).await;
                 *self = Self::OpenRouter((config.clone(), new_reference))
             }
         }

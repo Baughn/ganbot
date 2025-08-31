@@ -1,8 +1,8 @@
 [package]
-name = "ganbot3"
+name = "ganbot"
 version = "0.1.0"
 edition = "2024"
-default-run = "ganbot3"
+default-run = "ganbot"
 
 [[bin]]
 name = "comfyui_example"
@@ -13,7 +13,7 @@ path = "src/bin/comfyui_example.rs"
 unused_variables = "allow"
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = { version = "1.0.98" }
 async-trait = "0.1"
 bytes = "1.8"
 config = "0.14"
@@ -23,13 +23,18 @@ image = "0.25.6"
 indexmap = "2.6"
 irc = "1.1.0"
 kameo = "0.17.2"
-kameo_actors = "0.2.0"
 kameo_macros = "0.17.0"
 notify = "7.0"
 openrouter_api = { version = "0.1.6", features = ["tracing"] }
+redis = { version = "0.32.5", features = [
+    "connection-manager",
+    "json",
+    "tokio-comp",
+] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serenity = "0.12.4"
 thiserror = "2.0.12"
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = "0.24"

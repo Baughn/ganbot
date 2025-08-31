@@ -3,17 +3,18 @@
 use anyhow::{Context as _, Result, bail};
 use kameo::actor::ActorRef;
 use kameo::prelude::*;
+use kameo::registry::ACTOR_REGISTRY;
 use tracing::instrument;
 
 use crate::config::global::OpenrouterConfig;
 use crate::messages::chat;
 
 /// Singleton actor that manages OpenRouter API access
-pub struct OpenRouterActor {
+pub struct OpenRouter {
     config: OpenrouterConfig,
 }
 
-impl Actor for OpenRouterActor {
+impl Actor for OpenRouter {
     type Args = OpenrouterConfig;
     type Error = anyhow::Error;
 
@@ -27,11 +28,24 @@ impl Actor for OpenRouterActor {
             .register("openrouter")
             .context("while registering OpenRouter actor")?;
 
-        Ok(OpenRouterActor { config })
+        Ok(OpenRouter { config })
     }
 }
 
-impl Message<chat::Oneshot> for OpenRouterActor {
+impl OpenRouter {
+    /// Get a reference to the global OpenRouter actor.
+    pub fn get() -> Result<ActorRef<Self>> {
+        let actor_ref = ACTOR_REGISTRY
+            .lock()
+            .unwrap()
+            .get::<OpenRouter, str>("openrouter")
+            .context("while getting OpenRouter actor from registry")?
+            .context("OpenRouter actor not found in registry")?;
+        Ok(actor_ref)
+    }
+}
+
+impl Message<chat::Oneshot> for OpenRouter {
     type Reply = ForwardedReply<chat::Oneshot, Result<chat::OneshotResponse>>;
 
     #[instrument(skip_all)]

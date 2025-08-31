@@ -1,3 +1,6 @@
+// This is an API wrapper; not all code is expected to be used.
+#![allow(dead_code)]
+
 use super::api::Graph;
 use bytes::Bytes;
 use futures::StreamExt;
@@ -18,31 +21,31 @@ use uuid::Uuid;
 pub enum ComfyUIError {
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
-    
+
     #[error("WebSocket connection failed: {0}")]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
-    
+
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
-    
+
     #[error("Image processing error: {0}")]
     Image(#[from] image::ImageError),
-    
+
     #[error("Workflow validation error: {0}")]
     WorkflowValidation(String),
-    
+
     #[error("Execution timeout after {timeout}s")]
     ExecutionTimeout { timeout: u64 },
-    
+
     #[error("Connection failed: {0}")]
     Connection(String),
-    
+
     #[error("Server error: {status} - {message}")]
     Server { status: u16, message: String },
-    
+
     #[error("No images found in execution results")]
     NoImagesFound,
-    
+
     #[error("Invalid workflow: {0}")]
     InvalidWorkflow(String),
 }
@@ -53,13 +56,13 @@ pub enum ComfyUIError {
 enum WsMessageType {
     #[serde(rename = "status")]
     Status { data: StatusData },
-    
+
     #[serde(rename = "executing")]
     Executing { data: ExecutingData },
-    
+
     #[serde(rename = "progress")]
     Progress { data: ProgressData },
-    
+
     #[serde(other)]
     Other,
 }
@@ -162,32 +165,32 @@ impl ComfyUIConfigBuilder {
             config: ComfyUIConfig::default(),
         }
     }
-    
+
     pub fn server_address(mut self, address: impl Into<String>) -> Self {
         self.config.server_address = address.into();
         self
     }
-    
+
     pub fn connection_timeout(mut self, timeout: Duration) -> Self {
         self.config.connection_timeout = timeout;
         self
     }
-    
+
     pub fn execution_timeout(mut self, timeout: Duration) -> Self {
         self.config.execution_timeout = timeout;
         self
     }
-    
+
     pub fn retry_attempts(mut self, attempts: u32) -> Self {
         self.config.retry_attempts = attempts;
         self
     }
-    
+
     pub fn retry_delay(mut self, delay: Duration) -> Self {
         self.config.retry_delay = delay;
         self
     }
-    
+
     pub fn build(self) -> ComfyUIConfig {
         self.config
     }
@@ -214,31 +217,34 @@ impl ComfyUIClient {
     pub fn new() -> Self {
         Self::with_config(ComfyUIConfig::default())
     }
-    
+
     /// Create a new ComfyUI client with custom configuration
     pub fn with_config(config: ComfyUIConfig) -> Self {
         let http_client = Client::builder()
             .timeout(config.connection_timeout)
             .build()
             .expect("Failed to create HTTP client");
-            
+
         Self {
             config,
             client_id: Uuid::new_v4().to_string(),
             http_client,
         }
     }
-    
+
     /// Get the HTTP base URL for the ComfyUI server
     fn base_url(&self) -> String {
         format!("http://{}/api", self.config.server_address)
     }
-    
+
     /// Get the WebSocket URL for the ComfyUI server
     fn ws_url(&self) -> String {
-        format!("ws://{}/ws?clientId={}", self.config.server_address, self.client_id)
+        format!(
+            "ws://{}/ws?clientId={}",
+            self.config.server_address, self.client_id
+        )
     }
-    
+
     /// Submit a workflow to the ComfyUI queue
     async fn queue_prompt(&self, workflow: Value) -> Result<PromptResponse, ComfyUIError> {
         let prompt_id = Uuid::new_v4().to_string();
@@ -247,89 +253,111 @@ impl ComfyUIClient {
             client_id: self.client_id.clone(),
             prompt_id: prompt_id.clone(),
         };
-        
+
         debug!("Submitting workflow with prompt_id: {}", prompt_id);
-        
-        let response = self.http_client
+
+        let response = self
+            .http_client
             .post(&format!("{}/prompt", self.base_url()))
             .json(&request)
             .send()
             .await?;
-            
+
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let message = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(ComfyUIError::Server { status, message });
         }
-        
+
         let mut result: PromptResponse = response.json().await?;
         result.prompt_id = prompt_id; // Ensure we have the correct prompt_id
-        
+
         if !result.node_errors.is_empty() {
             let errors = serde_json::to_string_pretty(&result.node_errors)?;
             return Err(ComfyUIError::WorkflowValidation(errors));
         }
-        
+
         Ok(result)
     }
-    
+
     /// Get execution history for a specific prompt
     async fn get_history(&self, prompt_id: &str) -> Result<HistoryResponse, ComfyUIError> {
         debug!("Fetching history for prompt_id: {}", prompt_id);
-        
-        let response = self.http_client
+
+        let response = self
+            .http_client
             .get(&format!("{}/history/{}", self.base_url(), prompt_id))
             .send()
             .await?;
-            
+
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let message = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(ComfyUIError::Server { status, message });
         }
-        
+
         let history_map: HashMap<String, HistoryResponse> = response.json().await?;
-        
-        history_map.into_iter()
+
+        history_map
+            .into_iter()
             .next()
             .map(|(_, history)| history)
             .ok_or_else(|| ComfyUIError::InvalidWorkflow("No history found for prompt".to_string()))
     }
-    
+
     /// Download an image from ComfyUI
-    async fn get_image(&self, filename: &str, subfolder: &str, image_type: &str) -> Result<Bytes, ComfyUIError> {
-        debug!("Downloading image: {} from {}/{}", filename, image_type, subfolder);
-        
-        let mut url = format!("{}/view?filename={}&type={}", self.base_url(), filename, image_type);
+    async fn get_image(
+        &self,
+        filename: &str,
+        subfolder: &str,
+        image_type: &str,
+    ) -> Result<Bytes, ComfyUIError> {
+        debug!(
+            "Downloading image: {} from {}/{}",
+            filename, image_type, subfolder
+        );
+
+        let mut url = format!(
+            "{}/view?filename={}&type={}",
+            self.base_url(),
+            filename,
+            image_type
+        );
         if !subfolder.is_empty() {
             url.push_str(&format!("&subfolder={}", subfolder));
         }
-        
-        let response = self.http_client
-            .get(&url)
-            .send()
-            .await?;
-            
+
+        let response = self.http_client.get(&url).send().await?;
+
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let message = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(ComfyUIError::Server { status, message });
         }
-        
+
         Ok(response.bytes().await?)
     }
-    
+
     /// Monitor workflow execution via WebSocket
     async fn monitor_execution(
-        &self, 
+        &self,
         prompt_id: &str,
-        progress_callback: Option<&ProgressCallback>
+        progress_callback: Option<&ProgressCallback>,
     ) -> Result<(), ComfyUIError> {
         debug!("Connecting to WebSocket for monitoring: {}", self.ws_url());
-        
+
         let (ws_stream, _) = connect_async(&self.ws_url()).await?;
         let (_, mut ws_receiver) = ws_stream.split();
-        
+
         let execution_future = async {
             while let Some(message) = ws_receiver.next().await {
                 match message? {
@@ -339,7 +367,10 @@ impl ComfyUIClient {
                                 WsMessageType::Executing { data } => {
                                     if data.prompt_id == prompt_id {
                                         if data.node.is_none() {
-                                            info!("Workflow execution completed for prompt_id: {}", prompt_id);
+                                            info!(
+                                                "Workflow execution completed for prompt_id: {}",
+                                                prompt_id
+                                            );
                                             if let Some(callback) = progress_callback {
                                                 callback(1.0, Some("completed"));
                                             }
@@ -352,14 +383,21 @@ impl ComfyUIClient {
                                 WsMessageType::Progress { data } => {
                                     if data.prompt_id == prompt_id {
                                         let progress = data.value as f32 / data.max as f32;
-                                        debug!("Progress: {:.1}% (node: {})", progress * 100.0, data.node);
+                                        debug!(
+                                            "Progress: {:.1}% (node: {})",
+                                            progress * 100.0,
+                                            data.node
+                                        );
                                         if let Some(callback) = progress_callback {
                                             callback(progress, Some(&data.node));
                                         }
                                     }
                                 }
                                 WsMessageType::Status { data } => {
-                                    debug!("Queue remaining: {}", data.status.exec_info.queue_remaining);
+                                    debug!(
+                                        "Queue remaining: {}",
+                                        data.status.exec_info.queue_remaining
+                                    );
                                 }
                                 WsMessageType::Other => {
                                     // Ignore unknown message types
@@ -378,10 +416,12 @@ impl ComfyUIClient {
                     _ => {}
                 }
             }
-            
-            Err(ComfyUIError::Connection("WebSocket connection lost before completion".to_string()))
+
+            Err(ComfyUIError::Connection(
+                "WebSocket connection lost before completion".to_string(),
+            ))
         };
-        
+
         // Add timeout to execution monitoring
         match timeout(self.config.execution_timeout, execution_future).await {
             Ok(result) => result,
@@ -390,7 +430,7 @@ impl ComfyUIClient {
             }),
         }
     }
-    
+
     /// Execute a workflow and return generated images
     pub async fn execute_workflow(
         &self,
@@ -398,50 +438,59 @@ impl ComfyUIClient {
         progress_callback: Option<ProgressCallback>,
     ) -> Result<Vec<RgbImage>, ComfyUIError> {
         info!("Starting workflow execution");
-        
+
         // Submit workflow to queue
         let prompt_response = self.queue_prompt(workflow).await?;
         let prompt_id = &prompt_response.prompt_id;
-        
-        info!("Workflow queued with prompt_id: {} (queue position: {})", prompt_id, prompt_response.number);
-        
+
+        info!(
+            "Workflow queued with prompt_id: {} (queue position: {})",
+            prompt_id, prompt_response.number
+        );
+
         // Monitor execution
-        self.monitor_execution(prompt_id, progress_callback.as_ref()).await?;
-        
+        self.monitor_execution(prompt_id, progress_callback.as_ref())
+            .await?;
+
         // Get execution results
         let history = self.get_history(prompt_id).await?;
-        
+
         // Download generated images
         let mut images = Vec::new();
-        
+
         for (node_id, output) in &history.outputs {
             if let Some(image_list) = &output.images {
                 for image_info in image_list {
-                    debug!("Downloading image from node {}: {}", node_id, image_info.filename);
-                    
-                    let image_data = self.get_image(
-                        &image_info.filename,
-                        &image_info.subfolder,
-                        &image_info.image_type,
-                    ).await?;
-                    
+                    debug!(
+                        "Downloading image from node {}: {}",
+                        node_id, image_info.filename
+                    );
+
+                    let image_data = self
+                        .get_image(
+                            &image_info.filename,
+                            &image_info.subfolder,
+                            &image_info.image_type,
+                        )
+                        .await?;
+
                     // Convert bytes to RgbImage
                     let img = image::load_from_memory(&image_data)?;
                     let rgb_img = img.to_rgb8();
-                    
+
                     images.push(rgb_img);
                 }
             }
         }
-        
+
         if images.is_empty() {
             return Err(ComfyUIError::NoImagesFound);
         }
-        
+
         info!("Successfully generated {} image(s)", images.len());
         Ok(images)
     }
-    
+
     /// Execute a workflow from a Graph builder
     pub async fn execute_graph(
         &self,
@@ -451,7 +500,7 @@ impl ComfyUIClient {
         let workflow = graph.build();
         self.execute_workflow(workflow, progress_callback).await
     }
-    
+
     /// Simple text-to-image generation using default settings
     pub async fn text_to_image(
         &self,
@@ -462,33 +511,33 @@ impl ComfyUIClient {
         height: u32,
     ) -> Result<RgbImage, ComfyUIError> {
         use super::api::{Graph, KSamplerParams};
-        
+
         let mut graph = Graph::new();
-        
+
         // Load model
         let (model, clip, vae) = graph.checkpoint_loader(model_name);
-        
+
         // Encode prompts
         let positive = graph.clip_text_encode(&clip, prompt);
         let negative = graph.clip_text_encode(&clip, negative_prompt.unwrap_or(""));
-        
+
         // Create latent image
         let latent = graph.empty_latent_image(width, height, 1);
-        
+
         // Sample
         let params = KSamplerParams::default();
         let samples = graph.ksampler(&model, &positive, &negative, &latent, params);
-        
+
         // Decode and save
         let images = graph.vae_decode(&vae, &samples);
         graph.save_image(&images, "ganbot3");
-        
+
         let mut results = self.execute_graph(graph, None).await?;
-        
+
         if results.is_empty() {
             return Err(ComfyUIError::NoImagesFound);
         }
-        
+
         Ok(results.remove(0))
     }
 }
@@ -508,7 +557,7 @@ pub fn create_client() -> ComfyUIConfigBuilder {
 mod tests {
     use super::*;
     use serde_json::json;
-    
+
     #[test]
     fn test_config_builder() {
         let config = ComfyUIConfigBuilder::new()
@@ -516,19 +565,19 @@ mod tests {
             .execution_timeout(Duration::from_secs(600))
             .retry_attempts(5)
             .build();
-            
+
         assert_eq!(config.server_address, "192.168.1.100:8188");
         assert_eq!(config.execution_timeout, Duration::from_secs(600));
         assert_eq!(config.retry_attempts, 5);
     }
-    
+
     #[test]
     fn test_client_creation() {
         let client = ComfyUIClient::new();
         assert!(!client.client_id.is_empty());
         assert_eq!(client.config.server_address, "localhost:8188");
     }
-    
+
     #[test]
     fn test_url_generation() {
         let client = ComfyUIClient::new();
@@ -536,13 +585,13 @@ mod tests {
         assert!(client.ws_url().starts_with("ws://"));
         assert!(client.ws_url().contains("clientId="));
     }
-    
+
     // Integration tests would go here but require a running ComfyUI instance
     #[tokio::test]
     #[ignore] // Only run with actual ComfyUI server
     async fn test_workflow_execution() {
         let client = ComfyUIClient::new();
-        
+
         // Simple workflow for testing
         let workflow = json!({
             "1": {
@@ -552,7 +601,7 @@ mod tests {
                 }
             }
         });
-        
+
         // This would require an actual ComfyUI server to test
         // let result = client.execute_workflow(workflow, None).await;
         // assert!(result.is_ok());

@@ -1,8 +1,11 @@
 /target
-/config-local.toml
 
 # Nix build result
 /result
 
 # direnv cache
 /.direnv
+
+# Secrets
+/config-local.toml
+/.envrc.local

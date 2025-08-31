@@ -2,15 +2,15 @@ use anyhow::{Context, Result, bail};
 use irc::client::prelude::{Client, Command, Config};
 use kameo::message::StreamMessage;
 use kameo::prelude::*;
-use kameo_actors::broker::Publish;
 use std::collections::HashMap;
 use tokio::spawn;
 use tokio::sync::OnceCell;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, instrument, trace};
 
-use crate::actions::{self, Action};
 use crate::config::global::IrcConfig;
+use crate::messages::chat;
+use crate::persistence::user::{self, UserManager};
 
 pub struct IrcActor {
     name: String,
@@ -19,7 +19,7 @@ pub struct IrcActor {
     /// Buffer for joining split messages
     /// Keyed by (user, channel)
     message_buffer: HashMap<(String, Option<String>), BufferedMessage>,
-    bus: actions::Bus,
+    user_manager: ActorRef<UserManager>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,28 +39,28 @@ struct Connect;
 struct ProcessBufferedMessages;
 
 impl Actor for IrcActor {
-    type Args = (IrcConfig, actions::Bus);
+    type Args = IrcConfig;
     type Error = anyhow::Error;
 
-    #[instrument(skip_all, fields(server = %args.0.server))]
+    #[instrument(skip_all, fields(server = %args.server))]
     async fn on_start(
         args: Self::Args,
         actor_ref: ActorRef<Self>,
     ) -> std::result::Result<Self, Self::Error> {
-        tracing::info!("Starting IRC actor for server: {}", args.0.server);
+        tracing::info!("Starting IRC actor for server: {}", args.server);
         actor_ref.tell(Connect).try_send().unwrap();
         Ok(IrcActor {
-            name: args.0.server.clone(),
-            config: args.0,
+            name: args.server.clone(),
+            config: args,
             client: OnceCell::new(),
             message_buffer: HashMap::new(),
-            bus: args.1,
+            user_manager: UserManager::get().context("while getting UserManager")?,
         })
     }
 }
 
 impl IrcActor {
-    async fn process_privmsg(&mut self, privmsg: PrivMsg) {
+    async fn process_privmsg(&mut self, privmsg: PrivMsg) -> Result<()> {
         // First off, is this a command?
         if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
             // Handle command logic here
@@ -69,16 +69,48 @@ impl IrcActor {
                 privmsg.user, privmsg.message
             );
             let (command, args) = command.split_once(' ').unwrap_or((command, ""));
+            let user = self
+                .user_manager
+                .ask(user::GetUser(
+                    user::UserId::IRC(privmsg.user.clone()),
+                    privmsg.user.clone(),
+                ))
+                .await
+                .context("while fetching user")?;
+
             match command {
                 "ping" => {
                     // Example command: respond to ping
-                    unimplemented!();
+                    let openrouter = crate::network::openrouter::OpenRouter::get()
+                        .context("while getting OpenRouter actor")?;
+                    let response = openrouter
+                        .ask(chat::Oneshot {
+                            purpose: chat::Purpose::Chat,
+                            origin: format!("{}@{}", privmsg.user, self.name),
+                            text: vec![chat::Part::Cacheable(
+                                "Ping! Respond to this test command with a clever one-liner."
+                                    .to_string(),
+                            )],
+                        })
+                        .await
+                        .context("while sending Oneshot to OpenRouter")?;
+                    let reply = format!("{}: {}", privmsg.user, response.text);
+                    self.client
+                        .get()
+                        .context("IRC client not connected")?
+                        .send_privmsg(
+                            privmsg.channel.as_deref().unwrap_or(&privmsg.user), // Reply in channel or via PM
+                            reply,
+                        )
+                        .context("while sending PRIVMSG")?;
                 }
                 _ => {
                     error!("Unknown command: {}", command);
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -158,11 +190,11 @@ impl
         match msg {
             StreamMessage::Next(Ok(message)) => {
                 if let Err(e) = handle_irc_message(message, self, ctx).await {
-                    error!("Error processing IRC message: {}", e);
+                    error!("Error processing IRC message: {e:#}");
                 }
             }
             StreamMessage::Next(Err(e)) => {
-                error!("Error in IRC stream: {}", e);
+                error!("Error in IRC stream: {e:#}");
             }
             _ => {}
         }
@@ -252,7 +284,10 @@ impl Message<ProcessBufferedMessages> for IrcActor {
                     message: buffered.content,
                 };
                 trace!("Flushing buffered message: {:?}", privmsg);
-                self.process_privmsg(privmsg).await;
+                if let Err(e) = self.process_privmsg(privmsg).await {
+                    // Log full error chain with Debug format for complete details
+                    error!("Error processing buffered message: {:#}", e);
+                }
             }
         }
     }

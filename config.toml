@@ -9,7 +9,7 @@ url = "http://localhost:9090"
 
 [openrouter]
 token = "your-openrouter-token-here"
-chat_model = "anthropic/claude-3-5-sonnet"
+chat_model = "anthropic/claude-4-sonnet"
 image_model = "openai/gpt-4o"
 
 # IRC server configurations

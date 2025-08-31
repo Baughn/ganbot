@@ -4,7 +4,6 @@ use kameo::Actor as _;
 use tracing::{debug, info, trace};
 use tracing_subscriber::EnvFilter;
 
-use crate::persistence::user;
 use crate::supervisor::Supervisor;
 
 mod actions;

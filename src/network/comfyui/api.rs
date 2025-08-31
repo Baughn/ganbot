@@ -1,3 +1,6 @@
+// This is an API wrapper; not all code is expected to be used.
+#![allow(dead_code)]
+
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
