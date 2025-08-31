@@ -4,7 +4,8 @@ use anyhow::{Context as _, Result, bail};
 use kameo::actor::ActorRef;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
-use tracing::instrument;
+use openrouter_api::OpenRouterClient;
+use tracing::{error, instrument};
 
 use crate::config::global::OpenrouterConfig;
 use crate::messages::chat;
@@ -91,9 +92,8 @@ impl Message<chat::Oneshot> for ConversationActor {
     ) -> Self::Reply {
         tracing::info!("Handling oneshot request with purpose: {:?}", msg.purpose);
 
-        // Here you would implement the logic to interact with OpenRouter API
-        // For now, we just echo back the text
-        let response_text = msg
+        // Combine all text parts into a single message
+        let message_content = msg
             .text
             .iter()
             .map(|part| match part {
@@ -102,8 +102,82 @@ impl Message<chat::Oneshot> for ConversationActor {
             .collect::<Vec<_>>()
             .join(" ");
 
-        Ok(chat::OneshotResponse {
-            text: response_text,
-        })
+        // Select the appropriate model based on the purpose
+        let model = match msg.purpose {
+            chat::Purpose::Chat => self.config.chat_model.clone(),
+            chat::Purpose::Image => self.config.image_model.clone(),
+        };
+
+        tracing::debug!("Using model: {} for request from {}", model, msg.origin);
+
+        // Initialize the OpenRouter client for this request
+        let client = OpenRouterClient::production(
+            self.config.token.clone(),
+            "Ganbot3".to_string(),
+            "https://github.com/svein/ganbot3-rs".to_string(),
+        )
+        .context("while creating OpenRouter client")?;
+
+        // Create the chat completion request using the openrouter_api crate
+        let request = openrouter_api::ChatCompletionRequest {
+            model,
+            messages: vec![openrouter_api::Message {
+                role: "user".to_string(),
+                content: message_content,
+                name: None,
+                tool_calls: None,
+            }],
+            stream: Some(false),
+            response_format: None,
+            tools: None,
+            provider: None,
+            models: None,
+            transforms: None,
+        };
+
+        // Send the request to OpenRouter API
+        let chat_api = client
+            .chat()
+            .map_err(|e| anyhow::anyhow!("Failed to get chat API: {}", e))?;
+
+        match chat_api.chat_completion(request).await {
+            Ok(response) => {
+                // Extract the response text from the first choice
+                if let Some(choice) = response.choices.first() {
+                    Ok(chat::OneshotResponse {
+                        text: choice.message.content.clone(),
+                    })
+                } else {
+                    tracing::error!("No choices in OpenRouter response");
+                    Err(anyhow::anyhow!("No response choices from OpenRouter"))
+                }
+            }
+            Err(e) => {
+                error!("OpenRouter API error response: {:?}", e);
+                // This should be JSON. Attempt the extract $.error.message.
+                match e {
+                    openrouter_api::Error::ApiError {
+                        code,
+                        message,
+                        metadata,
+                    } => {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message) {
+                            if let Some(msg) = json
+                                .get("error")
+                                .and_then(|err| err.get("message"))
+                                .and_then(|m| m.as_str())
+                            {
+                                bail!("OpenRouter API error: {}", msg);
+                            }
+                        }
+                    }
+                    other => {
+                        bail!("OpenRouter API error: {:?}", other);
+                    }
+                }
+                // Fallback to logging a generic error.
+                bail!("OpenRouter API request failed");
+            }
+        }
     }
 }

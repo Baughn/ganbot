@@ -48,7 +48,7 @@ impl Actor for IrcActor {
         actor_ref: ActorRef<Self>,
     ) -> std::result::Result<Self, Self::Error> {
         tracing::info!("Starting IRC actor for server: {}", args.server);
-        actor_ref.tell(Connect).try_send().unwrap();
+        actor_ref.tell(Connect).send().await?;
         Ok(IrcActor {
             name: args.server.clone(),
             config: args,
@@ -123,7 +123,7 @@ impl Message<Connect> for IrcActor {
         msg: Connect,
         ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        tracing::info!("Connecting to IRC server: {}", self.config.server);
+        info!("Connecting to IRC server: {}", self.config.server);
         if self.client.get().is_some() {
             bail!("Already connected to IRC server: {}", self.config.server);
         }
@@ -284,9 +284,17 @@ impl Message<ProcessBufferedMessages> for IrcActor {
                     message: buffered.content,
                 };
                 trace!("Flushing buffered message: {:?}", privmsg);
-                if let Err(e) = self.process_privmsg(privmsg).await {
+                if let Err(e) = self.process_privmsg(privmsg.clone()).await {
                     // Log full error chain with Debug format for complete details
                     error!("Error processing buffered message: {:#}", e);
+
+                    // And attempt to notify the user.
+                    if let Some(client) = self.client.get() {
+                        let reply_target = privmsg.channel.as_deref().unwrap_or(&privmsg.user); // Reply in channel or via PM
+                        let _ = client
+                            .send_privmsg(reply_target, format!("{}: {e:#}", privmsg.user))
+                            .context("while sending error PRIVMSG");
+                    }
                 }
             }
         }
