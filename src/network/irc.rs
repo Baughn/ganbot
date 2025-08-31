@@ -20,6 +20,8 @@ pub struct IrcActor {
     /// Keyed by (user, channel)
     message_buffer: HashMap<(String, Option<String>), BufferedMessage>,
     user_manager: ActorRef<UserManager>,
+    /// Rate limiter for outgoing messages (250ms between messages, burst of 4)
+    token_bucket: TokenBucket,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +46,48 @@ struct Connect;
 
 struct ProcessBufferedMessages;
 
+struct TokenBucket {
+    tokens: f64,
+    last_refill: Instant,
+    refill_rate: f64,  // tokens per second
+    max_tokens: f64,
+}
+
+impl TokenBucket {
+    fn new(max_tokens: f64, refill_rate: f64) -> Self {
+        Self {
+            tokens: max_tokens, // Start with full bucket
+            last_refill: Instant::now(),
+            refill_rate,
+            max_tokens,
+        }
+    }
+    
+    async fn consume_token(&mut self) {
+        loop {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_refill);
+            
+            // Refill tokens based on elapsed time
+            let tokens_to_add = elapsed.as_secs_f64() * self.refill_rate;
+            self.tokens = (self.tokens + tokens_to_add).min(self.max_tokens);
+            self.last_refill = now;
+            
+            // If we have a token, consume it and return
+            if self.tokens >= 1.0 {
+                self.tokens -= 1.0;
+                return;
+            }
+            
+            // Calculate how long to wait for the next token
+            let tokens_needed = 1.0 - self.tokens;
+            let wait_time = Duration::from_secs_f64(tokens_needed / self.refill_rate);
+            
+            tokio::time::sleep(wait_time).await;
+        }
+    }
+}
+
 impl Actor for IrcActor {
     type Args = IrcConfig;
     type Error = anyhow::Error;
@@ -61,11 +105,136 @@ impl Actor for IrcActor {
             client: OnceCell::new(),
             message_buffer: HashMap::new(),
             user_manager: UserManager::get().context("while getting UserManager")?,
+            token_bucket: TokenBucket::new(4.0, 4.0), // 4 tokens max, 4 tokens/sec (250ms per token)
         })
     }
 }
 
 impl IrcActor {
+    /// Formats a message for IRC PRIVMSG, handling newlines and length limits
+    /// Returns a vector of messages that can be sent individually
+    fn format_privmsg(target: &str, message: &str) -> Vec<String> {
+        const MAX_IRC_MESSAGE_LEN: usize = 512;
+        
+        // Calculate overhead: ":nick!user@host PRIVMSG target :\r\n"
+        // We use a conservative estimate of 100 chars for the prefix
+        let prefix_overhead = 100;
+        let privmsg_overhead = format!(" PRIVMSG {} :", target).len();
+        let total_overhead = prefix_overhead + privmsg_overhead + 2; // +2 for \r\n
+        let max_content_len = MAX_IRC_MESSAGE_LEN.saturating_sub(total_overhead);
+        
+        let mut result = Vec::new();
+        
+        // Split on newlines first
+        for line in message.lines() {
+            if line.is_empty() {
+                // Send empty lines as a single space to preserve line breaks
+                result.push(" ".to_string());
+                continue;
+            }
+            
+            // Handle long lines by breaking on word boundaries
+            if line.len() <= max_content_len {
+                result.push(line.to_string());
+            } else {
+                // Break long lines on word boundaries
+                let words: Vec<&str> = line.split_whitespace().collect();
+                let mut current_line = String::new();
+                
+                for word in words {
+                    // If a single word is longer than max length, we need to hard break it
+                    if word.len() > max_content_len {
+                        // Finish current line if it has content
+                        if !current_line.is_empty() {
+                            result.push(current_line.trim().to_string());
+                            current_line.clear();
+                        }
+                        
+                        // Split the long word, respecting Unicode boundaries
+                        let mut remaining = word;
+                        while remaining.len() > max_content_len {
+                            // Find a safe cut point that respects character boundaries
+                            let mut cut_point = max_content_len;
+                            while cut_point > 0 && !remaining.is_char_boundary(cut_point) {
+                                cut_point -= 1;
+                            }
+                            // If we couldn't find a boundary, take at least one character
+                            if cut_point == 0 {
+                                if let Some((i, _)) = remaining.char_indices().nth(1) {
+                                    cut_point = i;
+                                } else {
+                                    // Single character remaining
+                                    cut_point = remaining.len();
+                                }
+                            }
+                            result.push(remaining[..cut_point].to_string());
+                            remaining = &remaining[cut_point..];
+                        }
+                        if !remaining.is_empty() {
+                            current_line = remaining.to_string();
+                        }
+                        continue;
+                    }
+                    
+                    // Check if adding this word would exceed the limit
+                    let test_line = if current_line.is_empty() {
+                        word.to_string()
+                    } else {
+                        format!("{} {}", current_line, word)
+                    };
+                    
+                    if test_line.len() <= max_content_len {
+                        current_line = test_line;
+                    } else {
+                        // Current line is full, start a new one
+                        if !current_line.is_empty() {
+                            result.push(current_line);
+                        }
+                        current_line = word.to_string();
+                    }
+                }
+                
+                // Don't forget the last line
+                if !current_line.is_empty() {
+                    result.push(current_line);
+                }
+            }
+        }
+        
+        // If the original message was empty or only whitespace, send at least one message
+        if result.is_empty() {
+            result.push(" ".to_string());
+        }
+        
+        result
+    }
+    
+    /// Sends a PRIVMSG, handling newlines and IRC message length limits
+    /// Rate limited to 250ms between messages with a burst capacity of 4
+    async fn send_privmsg(&mut self, target: &str, message: &str) -> Result<()> {
+        let client = self.client
+            .get()
+            .context("IRC client not connected")?;
+        
+        let formatted_messages = Self::format_privmsg(target, message);
+        
+        for msg in formatted_messages {
+            // Skip empty lines (represented as single space)
+            if msg.trim().is_empty() {
+                continue;
+            }
+            
+            // Consume a token before sending each message
+            self.token_bucket.consume_token().await;
+            
+            client
+                .send_privmsg(target, msg)
+                .context("while sending PRIVMSG")?;
+        }
+        
+        Ok(())
+    }
+
     async fn process_privmsg(&mut self, privmsg: PrivMsg) -> Result<()> {
         // First off, is this a command?
         if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
@@ -105,14 +274,7 @@ impl IrcActor {
                         .await
                         .context("while sending Oneshot to OpenRouter")?;
                     let reply = format!("{}: {}", privmsg.user, response.text);
-                    self.client
-                        .get()
-                        .context("IRC client not connected")?
-                        .send_privmsg(
-                            privmsg.get_reply_target(),
-                            reply,
-                        )
-                        .context("while sending PRIVMSG")?;
+                    self.send_privmsg(privmsg.get_reply_target(), &reply).await?;
                 }
                 _ => {
                     error!("Unknown command: {}", command);
@@ -299,14 +461,167 @@ impl Message<ProcessBufferedMessages> for IrcActor {
                     error!("Error processing buffered message: {:#}", e);
 
                     // And attempt to notify the user.
-                    if let Some(client) = self.client.get() {
-                        let reply_target = privmsg.get_reply_target();
-                        let _ = client
-                            .send_privmsg(reply_target, format!("{}: {e:#}", privmsg.user))
-                            .context("while sending error PRIVMSG");
-                    }
+                    let reply_target = privmsg.get_reply_target();
+                    let error_message = format!("{}: {e:#}", privmsg.user);
+                    let _ = self.send_privmsg(reply_target, &error_message).await;
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_privmsg_simple_message() {
+        let result = IrcActor::format_privmsg("#test", "Hello world");
+        assert_eq!(result, vec!["Hello world"]);
+    }
+
+    #[test]
+    fn test_format_privmsg_empty_message() {
+        let result = IrcActor::format_privmsg("#test", "");
+        assert_eq!(result, vec![" "]);
+    }
+
+    #[test]
+    fn test_format_privmsg_whitespace_only() {
+        let result = IrcActor::format_privmsg("#test", "   ");
+        assert_eq!(result, vec!["   "]);
+    }
+
+    #[test]
+    fn test_format_privmsg_newlines() {
+        let result = IrcActor::format_privmsg("#test", "Line 1\nLine 2\nLine 3");
+        assert_eq!(result, vec!["Line 1", "Line 2", "Line 3"]);
+    }
+
+    #[test]
+    fn test_format_privmsg_empty_lines() {
+        let result = IrcActor::format_privmsg("#test", "Line 1\n\nLine 3");
+        assert_eq!(result, vec!["Line 1", " ", "Line 3"]);
+    }
+
+    #[test]
+    fn test_format_privmsg_multiple_empty_lines() {
+        let result = IrcActor::format_privmsg("#test", "Line 1\n\n\nLine 4");
+        assert_eq!(result, vec!["Line 1", " ", " ", "Line 4"]);
+    }
+
+    #[test]
+    fn test_format_privmsg_long_line_word_breaking() {
+        // Create a long message that needs breaking
+        let long_message = "word1 word2 word3 ".repeat(30); // Much longer than IRC limit
+        let result = IrcActor::format_privmsg("#test", &long_message);
+        
+        // Should be broken into multiple messages
+        assert!(result.len() > 1);
+        
+        // Each message should be within reasonable length
+        for msg in &result {
+            assert!(msg.len() <= 400); // Conservative estimate of max content length
+        }
+        
+        // All messages should contain actual words (not just spaces)
+        for msg in &result {
+            assert!(msg.trim().len() > 0);
+        }
+    }
+
+    #[test]
+    fn test_format_privmsg_very_long_single_word() {
+        // A single word longer than the IRC limit
+        let long_word = "a".repeat(500);
+        let result = IrcActor::format_privmsg("#test", &long_word);
+        
+        // Should be broken into multiple messages
+        assert!(result.len() > 1);
+        
+        // When concatenated, should recreate the original word
+        let reconstructed = result.join("");
+        assert_eq!(reconstructed, long_word);
+    }
+
+    #[test]
+    fn test_format_privmsg_mixed_newlines_and_long_lines() {
+        let mixed_content = format!(
+            "Short line\n{}\nAnother short line\n{}",
+            "long ".repeat(50),
+            "also_long ".repeat(40)
+        );
+        
+        let result = IrcActor::format_privmsg("#test", &mixed_content);
+        
+        // Should have multiple messages
+        assert!(result.len() > 3);
+        
+        // First message should be the short line
+        assert_eq!(result[0], "Short line");
+        
+        // Should contain "Another short line" somewhere
+        assert!(result.iter().any(|msg| msg == "Another short line"));
+    }
+
+    #[test]
+    fn test_format_privmsg_preserves_leading_trailing_spaces() {
+        let result = IrcActor::format_privmsg("#test", "  spaced content  ");
+        assert_eq!(result, vec!["  spaced content  "]);
+    }
+
+    #[test]
+    fn test_format_privmsg_different_target_lengths() {
+        // Test with different target lengths to ensure overhead calculation works
+        let message = "test message";
+        
+        let short_target_result = IrcActor::format_privmsg("#t", message);
+        let long_target_result = IrcActor::format_privmsg("#very-long-channel-name", message);
+        
+        // Both should work and produce the same result for a short message
+        assert_eq!(short_target_result, vec![message]);
+        assert_eq!(long_target_result, vec![message]);
+    }
+
+    #[test]
+    fn test_format_privmsg_boundary_case() {
+        // Create a message that's exactly at the boundary
+        const MAX_IRC_MESSAGE_LEN: usize = 512;
+        let target = "#test";
+        let prefix_overhead = 100;
+        let privmsg_overhead = format!(" PRIVMSG {} :", target).len();
+        let total_overhead = prefix_overhead + privmsg_overhead + 2;
+        let max_content_len = MAX_IRC_MESSAGE_LEN - total_overhead;
+        
+        let boundary_message = "a".repeat(max_content_len);
+        let result = IrcActor::format_privmsg(target, &boundary_message);
+        
+        // Should fit in exactly one message
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], boundary_message);
+        
+        // One character more should split into two
+        let over_boundary_message = "a".repeat(max_content_len + 1);
+        let over_result = IrcActor::format_privmsg(target, &over_boundary_message);
+        assert!(over_result.len() > 1);
+    }
+
+    #[test]
+    fn test_format_privmsg_unicode_handling() {
+        // Test with Unicode characters that may take multiple bytes
+        let unicode_message = "Hello 世界 🌍 café";
+        let result = IrcActor::format_privmsg("#test", unicode_message);
+        assert_eq!(result, vec![unicode_message]);
+        
+        // Test with long Unicode message
+        let long_unicode = "🌍".repeat(200);
+        let unicode_result = IrcActor::format_privmsg("#test", &long_unicode);
+        
+        // Should be broken appropriately
+        assert!(unicode_result.len() >= 1);
+        
+        // When joined, should preserve the original
+        let reconstructed = unicode_result.join("");
+        assert_eq!(reconstructed, long_unicode);
     }
 }
