@@ -10,7 +10,7 @@ url = "http://localhost:9090"
 [openrouter]
 token = "your-openrouter-token-here"
 chat_model = "google/gemini-2.5-pro"
-image_model = "openai/gpt-5"
+image_model = "google/gemini-2.5-flash-image-preview"
 
 [[irc]]
 server = "irc.rizon.net"

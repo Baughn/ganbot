@@ -11,6 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use futures::future::join_all;
 use kameo::error::Infallible;
 use kameo::prelude::*;
+use kameo::registry::ACTOR_REGISTRY;
 use kameo::{Actor, actor::ActorRef};
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
@@ -31,7 +32,7 @@ pub struct Supervisor {
     /// Actors implied by said configuration.
     actors: HashMap<ConfigHash, Supervised>,
     /// Redis connection.
-    _redis_connection: redis::aio::MultiplexedConnection,
+    redis_connection: redis::aio::MultiplexedConnection,
     /// User manager.
     _user_manager: ActorRef<UserManager>,
 }
@@ -63,6 +64,9 @@ struct Supervised {
 
 struct ReloadConfig;
 struct ApplyConfig;
+struct GetRedis;
+#[derive(Reply)]
+struct GetRedisReply(redis::aio::MultiplexedConnection);
 
 impl Actor for Supervisor {
     type Args = Config;
@@ -88,7 +92,7 @@ impl Actor for Supervisor {
         Ok(Supervisor {
             config: args,
             actors: HashMap::new(),
-            _redis_connection: redis_connection,
+            redis_connection,
             _user_manager: user_manager,
         })
     }
@@ -215,7 +219,12 @@ impl Message<ApplyConfig> for Supervisor {
             if running.contains(&h) {
                 continue;
             }
-            let irc_actor = IrcActor::spawn_link(&self_ref, irc_config.clone()).await;
+            let irc_actor = IrcActor::spawn_link_with_mailbox(
+                &self_ref,
+                irc_config.clone(),
+                mailbox::unbounded(),
+            )
+            .await;
             self.actors.insert(
                 h,
                 Supervised {
@@ -229,6 +238,35 @@ impl Message<ApplyConfig> for Supervisor {
                 },
             );
         }
+    }
+}
+
+impl Message<GetRedis> for Supervisor {
+    type Reply = GetRedisReply;
+
+    async fn handle(
+        &mut self,
+        _msg: GetRedis,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        GetRedisReply(self.redis_connection.clone())
+    }
+}
+
+impl Supervisor {
+    /// Get a copy of the Redis connection.
+    pub async fn redis() -> redis::aio::MultiplexedConnection {
+        let actor_ref = ACTOR_REGISTRY
+            .lock()
+            .unwrap()
+            .get::<Supervisor, str>("supervisor")
+            .expect("while getting Supervisor actor from registry")
+            .expect("Supervisor actor not found in registry");
+        actor_ref
+            .ask(GetRedis)
+            .await
+            .expect("while getting Redis connection")
+            .0
     }
 }
 
@@ -258,7 +296,9 @@ impl SomeActor {
             Self::Irc((config, reference)) => {
                 // Should already be dead, but nevertheless.
                 reference.kill();
-                let new_reference = IrcActor::spawn_link(link, config.clone()).await;
+                let new_reference =
+                    IrcActor::spawn_link_with_mailbox(link, config.clone(), mailbox::unbounded())
+                        .await;
                 *self = Self::Irc((config.clone(), new_reference))
             }
             Self::OpenRouter((config, reference)) => {

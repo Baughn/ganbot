@@ -10,7 +10,7 @@ use tracing::{error, info, instrument, trace};
 
 use crate::config::global::IrcConfig;
 use crate::messages::chat;
-use crate::persistence::user::{self, UserManager};
+use crate::persistence::user::{self, UserActor, UserManager};
 
 pub struct IrcActor {
     name: String,
@@ -42,14 +42,33 @@ struct BufferedMessage {
     last_updated: Instant,
 }
 
+// Internal commands.
 struct Connect;
-
 struct ProcessBufferedMessages;
+#[derive(Clone)]
+struct ProcessCommand {
+    irc_actor: ActorRef<IrcActor>,
+    user: ActorRef<UserActor>,
+    privmsg: PrivMsg,
+}
+struct SendReply {
+    /// Implies the target to send the reply to. (User or channel)
+    privmsg: PrivMsg,
+    /// The actual message to send.
+    message: String,
+}
 
+// Internal actors for handling command processing and replies.
+#[derive(Actor)]
+struct ReplyActor;
+#[derive(Actor)]
+struct CommandActor;
+
+/// Simple token bucket rate limiter
 struct TokenBucket {
     tokens: f64,
     last_refill: Instant,
-    refill_rate: f64,  // tokens per second
+    refill_rate: f64, // tokens per second
     max_tokens: f64,
 }
 
@@ -62,27 +81,27 @@ impl TokenBucket {
             max_tokens,
         }
     }
-    
+
     async fn consume_token(&mut self) {
         loop {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_refill);
-            
+
             // Refill tokens based on elapsed time
             let tokens_to_add = elapsed.as_secs_f64() * self.refill_rate;
             self.tokens = (self.tokens + tokens_to_add).min(self.max_tokens);
             self.last_refill = now;
-            
+
             // If we have a token, consume it and return
             if self.tokens >= 1.0 {
                 self.tokens -= 1.0;
                 return;
             }
-            
+
             // Calculate how long to wait for the next token
             let tokens_needed = 1.0 - self.tokens;
             let wait_time = Duration::from_secs_f64(tokens_needed / self.refill_rate);
-            
+
             tokio::time::sleep(wait_time).await;
         }
     }
@@ -115,16 +134,16 @@ impl IrcActor {
     /// Returns a vector of messages that can be sent individually
     fn format_privmsg(target: &str, message: &str) -> Vec<String> {
         const MAX_IRC_MESSAGE_LEN: usize = 512;
-        
+
         // Calculate overhead: ":nick!user@host PRIVMSG target :\r\n"
         // We use a conservative estimate of 100 chars for the prefix
         let prefix_overhead = 100;
         let privmsg_overhead = format!(" PRIVMSG {} :", target).len();
         let total_overhead = prefix_overhead + privmsg_overhead + 2; // +2 for \r\n
         let max_content_len = MAX_IRC_MESSAGE_LEN.saturating_sub(total_overhead);
-        
+
         let mut result = Vec::new();
-        
+
         // Split on newlines first
         for line in message.lines() {
             if line.is_empty() {
@@ -132,7 +151,7 @@ impl IrcActor {
                 result.push(" ".to_string());
                 continue;
             }
-            
+
             // Handle long lines by breaking on word boundaries
             if line.len() <= max_content_len {
                 result.push(line.to_string());
@@ -140,7 +159,7 @@ impl IrcActor {
                 // Break long lines on word boundaries
                 let words: Vec<&str> = line.split_whitespace().collect();
                 let mut current_line = String::new();
-                
+
                 for word in words {
                     // If a single word is longer than max length, we need to hard break it
                     if word.len() > max_content_len {
@@ -149,7 +168,7 @@ impl IrcActor {
                             result.push(current_line.trim().to_string());
                             current_line.clear();
                         }
-                        
+
                         // Split the long word, respecting Unicode boundaries
                         let mut remaining = word;
                         while remaining.len() > max_content_len {
@@ -175,14 +194,14 @@ impl IrcActor {
                         }
                         continue;
                     }
-                    
+
                     // Check if adding this word would exceed the limit
                     let test_line = if current_line.is_empty() {
                         word.to_string()
                     } else {
                         format!("{} {}", current_line, word)
                     };
-                    
+
                     if test_line.len() <= max_content_len {
                         current_line = test_line;
                     } else {
@@ -193,49 +212,51 @@ impl IrcActor {
                         current_line = word.to_string();
                     }
                 }
-                
+
                 // Don't forget the last line
                 if !current_line.is_empty() {
                     result.push(current_line);
                 }
             }
         }
-        
+
         // If the original message was empty or only whitespace, send at least one message
         if result.is_empty() {
             result.push(" ".to_string());
         }
-        
+
         result
     }
-    
+
     /// Sends a PRIVMSG, handling newlines and IRC message length limits
     /// Rate limited to 250ms between messages with a burst capacity of 4
     async fn send_privmsg(&mut self, target: &str, message: &str) -> Result<()> {
-        let client = self.client
-            .get()
-            .context("IRC client not connected")?;
-        
+        let client = self.client.get().context("IRC client not connected")?;
+
         let formatted_messages = Self::format_privmsg(target, message);
-        
+
         for msg in formatted_messages {
             // Skip empty lines (represented as single space)
             if msg.trim().is_empty() {
                 continue;
             }
-            
+
             // Consume a token before sending each message
             self.token_bucket.consume_token().await;
-            
+
             client
                 .send_privmsg(target, msg)
                 .context("while sending PRIVMSG")?;
         }
-        
+
         Ok(())
     }
 
-    async fn process_privmsg(&mut self, privmsg: PrivMsg) -> Result<()> {
+    async fn process_privmsg(
+        &mut self,
+        privmsg: PrivMsg,
+        actor_ref: ActorRef<IrcActor>,
+    ) -> Result<()> {
         // First off, is this a command?
         if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
             // Handle command logic here
@@ -253,36 +274,85 @@ impl IrcActor {
                 .await
                 .context("while fetching user")?;
 
-            match command {
-                "ping" => {
-                    // Example command: respond to ping
-                    let openrouter = crate::network::openrouter::OpenRouter::get()
-                        .context("while getting OpenRouter actor")?;
-                    
-                    let prompt = if args.trim().is_empty() {
-                        "Ping! Respond to this test command with a clever, hard-boiled noir detective one-liner.".to_string()
-                    } else {
-                        format!("Ping! The user said: {}. Respond with a clever, hard-boiled noir detective one-liner, while keeping in mind it's a test.", args.trim())
-                    };
-                    
-                    let response = openrouter
-                        .ask(chat::Oneshot {
-                            purpose: chat::Purpose::Chat,
-                            origin: format!("{}@{}", privmsg.user, self.name),
-                            text: vec![chat::Part::Cacheable(prompt)],
-                        })
-                        .await
-                        .context("while sending Oneshot to OpenRouter")?;
-                    let reply = format!("{}: {}", privmsg.user, response.text);
-                    self.send_privmsg(privmsg.get_reply_target(), &reply).await?;
-                }
-                _ => {
-                    error!("Unknown command: {}", command);
-                }
-            }
+            // We've got a command, guys! Delegate to the ReplyActor to avoid blocking the IRC actor.
+            ReplyActor::spawn_link(&actor_ref, ReplyActor)
+                .await
+                .tell(ProcessCommand {
+                    irc_actor: actor_ref,
+                    user,
+                    privmsg,
+                })
+                .send()
+                .await
+                .context("while sending ProcessCommand")?;
         }
 
         Ok(())
+    }
+}
+
+impl Message<SendReply> for IrcActor {
+    type Reply = ();
+
+    #[instrument(skip_all, fields(server = %self.name))]
+    async fn handle(
+        &mut self,
+        msg: SendReply,
+        _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let target = msg.privmsg.get_reply_target();
+        if let Err(e) = self.send_privmsg(target, &msg.message).await {
+            error!("Error sending reply to {}: {:#}", target, e);
+        }
+    }
+}
+
+impl Message<ProcessCommand> for ReplyActor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        msg: ProcessCommand,
+        ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        info!(
+            "Processing command from user {}: {}",
+            msg.privmsg.user, msg.privmsg.message
+        );
+        // Delegate... again... to CommandActor to do the actual command processing.
+        // Really just so we can forward the reply easily.
+        let reply = CommandActor::spawn_link(&ctx.actor_ref(), CommandActor)
+            .await
+            .ask(msg.clone())
+            .await;
+
+        let reply = match reply {
+            Ok(r) => r,
+            Err(e) => format!("Error processing command: {e:#}"),
+        };
+
+        // Send the reply back to the user
+        let _ = msg
+            .irc_actor
+            .tell(SendReply {
+                privmsg: msg.privmsg,
+                message: reply,
+            })
+            .send()
+            .await;
+    }
+}
+
+impl Message<ProcessCommand> for CommandActor {
+    type Reply = String;
+
+    async fn handle(
+        &mut self,
+        msg: ProcessCommand,
+        ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        // Here we would parse and execute the command.
+        msg.privmsg.message
     }
 }
 
@@ -456,7 +526,7 @@ impl Message<ProcessBufferedMessages> for IrcActor {
                     message: buffered.content,
                 };
                 trace!("Flushing buffered message: {:?}", privmsg);
-                if let Err(e) = self.process_privmsg(privmsg.clone()).await {
+                if let Err(e) = self.process_privmsg(privmsg.clone(), ctx.actor_ref()).await {
                     // Log full error chain with Debug format for complete details
                     error!("Error processing buffered message: {:#}", e);
 
@@ -515,15 +585,15 @@ mod tests {
         // Create a long message that needs breaking
         let long_message = "word1 word2 word3 ".repeat(30); // Much longer than IRC limit
         let result = IrcActor::format_privmsg("#test", &long_message);
-        
+
         // Should be broken into multiple messages
         assert!(result.len() > 1);
-        
+
         // Each message should be within reasonable length
         for msg in &result {
             assert!(msg.len() <= 400); // Conservative estimate of max content length
         }
-        
+
         // All messages should contain actual words (not just spaces)
         for msg in &result {
             assert!(msg.trim().len() > 0);
@@ -535,10 +605,10 @@ mod tests {
         // A single word longer than the IRC limit
         let long_word = "a".repeat(500);
         let result = IrcActor::format_privmsg("#test", &long_word);
-        
+
         // Should be broken into multiple messages
         assert!(result.len() > 1);
-        
+
         // When concatenated, should recreate the original word
         let reconstructed = result.join("");
         assert_eq!(reconstructed, long_word);
@@ -551,15 +621,15 @@ mod tests {
             "long ".repeat(50),
             "also_long ".repeat(40)
         );
-        
+
         let result = IrcActor::format_privmsg("#test", &mixed_content);
-        
+
         // Should have multiple messages
         assert!(result.len() > 3);
-        
+
         // First message should be the short line
         assert_eq!(result[0], "Short line");
-        
+
         // Should contain "Another short line" somewhere
         assert!(result.iter().any(|msg| msg == "Another short line"));
     }
@@ -574,10 +644,10 @@ mod tests {
     fn test_format_privmsg_different_target_lengths() {
         // Test with different target lengths to ensure overhead calculation works
         let message = "test message";
-        
+
         let short_target_result = IrcActor::format_privmsg("#t", message);
         let long_target_result = IrcActor::format_privmsg("#very-long-channel-name", message);
-        
+
         // Both should work and produce the same result for a short message
         assert_eq!(short_target_result, vec![message]);
         assert_eq!(long_target_result, vec![message]);
@@ -592,14 +662,14 @@ mod tests {
         let privmsg_overhead = format!(" PRIVMSG {} :", target).len();
         let total_overhead = prefix_overhead + privmsg_overhead + 2;
         let max_content_len = MAX_IRC_MESSAGE_LEN - total_overhead;
-        
+
         let boundary_message = "a".repeat(max_content_len);
         let result = IrcActor::format_privmsg(target, &boundary_message);
-        
+
         // Should fit in exactly one message
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], boundary_message);
-        
+
         // One character more should split into two
         let over_boundary_message = "a".repeat(max_content_len + 1);
         let over_result = IrcActor::format_privmsg(target, &over_boundary_message);
@@ -612,14 +682,14 @@ mod tests {
         let unicode_message = "Hello 世界 🌍 café";
         let result = IrcActor::format_privmsg("#test", unicode_message);
         assert_eq!(result, vec![unicode_message]);
-        
+
         // Test with long Unicode message
         let long_unicode = "🌍".repeat(200);
         let unicode_result = IrcActor::format_privmsg("#test", &long_unicode);
-        
+
         // Should be broken appropriately
         assert!(unicode_result.len() >= 1);
-        
+
         // When joined, should preserve the original
         let reconstructed = unicode_result.join("");
         assert_eq!(reconstructed, long_unicode);
