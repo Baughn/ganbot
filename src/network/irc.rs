@@ -8,6 +8,7 @@ use tokio::sync::OnceCell;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, instrument, trace};
 
+use crate::actions;
 use crate::config::global::IrcConfig;
 use crate::messages::chat;
 use crate::persistence::user::{self, UserActor, UserManager};
@@ -327,7 +328,8 @@ impl Message<ProcessCommand> for ReplyActor {
             .await;
 
         let reply = match reply {
-            Ok(r) => r,
+            Ok(Some(r)) => r,
+            Ok(None) => return,
             Err(e) => format!("Error processing command: {e:#}"),
         };
 
@@ -344,15 +346,50 @@ impl Message<ProcessCommand> for ReplyActor {
 }
 
 impl Message<ProcessCommand> for CommandActor {
-    type Reply = String;
+    type Reply = Option<String>;
 
     async fn handle(
         &mut self,
         msg: ProcessCommand,
         ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        // Here we would parse and execute the command.
-        msg.privmsg.message
+        let command = msg
+            .privmsg
+            .message
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or(&msg.privmsg.message);
+        let args = msg
+            .privmsg
+            .message
+            .strip_prefix(command)
+            .unwrap_or("")
+            .trim();
+        return match command {
+            "ping" => Some("Pong!".to_string()),
+            "combine" => {
+                // Spawn Combine actor to handle this command
+                let combine_actor = actions::combine::CombineActor::spawn_link(
+                    &ctx.actor_ref(),
+                    actions::combine::CombineActor,
+                )
+                .await;
+                let combine_result = combine_actor.ask(args.to_string()).await;
+                match combine_result {
+                    Ok(result) => {
+                        // Format the result nicely
+                        let response = format!("Result: {}\n{}", result.result, result.reasoning);
+                        // Note: We can't send images over IRC, so we skip that part.
+                        Some(response)
+                    }
+                    Err(e) => Some(format!("Error: {e:#}")),
+                }
+            }
+            x => {
+                info!("Unknown command: {}", x);
+                None
+            }
+        };
     }
 }
 
