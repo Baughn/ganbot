@@ -1,21 +1,32 @@
-use anyhow::{Error, bail};
+use anyhow::{Context as _, Error, Result, bail};
 use image::RgbImage;
-use kameo::{Actor, actor::ActorRef, prelude::Message};
+use kameo::{Actor, prelude::Message};
+use redis::AsyncTypedCommands;
+use serde::{Deserialize, Serialize};
 
-use crate::supervisor::Supervisor;
+use crate::{messages::chat::Oneshot, network::openrouter::OpenRouter, supervisor::Supervisor};
 
 /// Combination game actor.
 /// This represents a single instance of the !combine command,
 /// which takes 2 to 3 words and combines them into a new word.
 #[derive(Actor)]
-pub struct CombineActor;
+pub(crate) struct CombineActor {
+    redis: redis::aio::MultiplexedConnection,
+}
 
 pub struct Combine(pub String);
-
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CombineResult {
     pub result: String,
     pub reasoning: String,
-    pub image: RgbImage,
+    pub image_url: String,
+}
+
+#[derive(Deserialize)]
+struct CombineChatResponse {
+    result: String,
+    reasoning: String,
+    image_prompt: String,
 }
 
 const CONSTANT_PROMPT: &str = include_str!("../../prompts/combine_prompt.tmpl");
@@ -52,9 +63,75 @@ impl Message<String> for CombineActor {
         _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let words = split_words(&msg)?;
-        let redis = Supervisor::redis().await;
         // Check cache first.
-        unimplemented!()
+        if let Some(cached) = self.get_from_cache(&words.0, &words.1).await? {
+            return Ok(cached);
+        }
+        let result = self.combine(&words.0, &words.1).await?;
+        self.set_cache(&words.0, &words.1, &result).await?;
+        Ok(result)
+    }
+}
+
+impl CombineActor {
+    pub async fn new() -> Self {
+        let redis = Supervisor::redis().await;
+        Self { redis }
+    }
+
+    async fn combine(&self, word1: &str, word2: &str) -> Result<CombineResult> {
+        let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
+        let response = router.ask(Oneshot {
+            purpose: crate::messages::chat::Purpose::Chat,
+            origin: "Combination game".to_string(),
+            text: vec![
+                crate::messages::chat::Part::Cacheable(CONSTANT_PROMPT.to_string()),
+                crate::messages::chat::Part::Uncacheable(format!(
+                    "Now, combine these words: {} + {}",
+                    word1, word2
+                )),
+            ],
+        });
+        let response = response.await.context("while asking OpenRouter")?;
+        let response_text = response.text.trim();
+        let parsed: CombineChatResponse = serde_json::from_str(response_text).context(format!(
+            "Failed to parse response as JSON: {}\nResponse was:\n{}",
+            serde_json::to_string_pretty(&response_text).unwrap_or_default(),
+            response_text
+        ))?;
+
+        todo!()
+    }
+
+    fn cache_key(word1: &str, word2: &str) -> String {
+        format!("combine:{}:{}", word1.to_lowercase(), word2.to_lowercase())
+    }
+
+    async fn get_from_cache(
+        &mut self,
+        word1: &str,
+        word2: &str,
+    ) -> Result<Option<CombineResult>, Error> {
+        let key = Self::cache_key(word1, word2);
+        let cached = self.redis.get(&key).await?;
+        if let Some(cached_str) = cached {
+            let result: CombineResult = serde_json::from_str(&cached_str)?;
+            Ok(Some(result))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn set_cache(
+        &mut self,
+        word1: &str,
+        word2: &str,
+        result: &CombineResult,
+    ) -> Result<(), Error> {
+        let key = Self::cache_key(word1, word2);
+        let value = serde_json::to_string(result)?;
+        self.redis.set(&key, value).await?;
+        Ok(())
     }
 }
 

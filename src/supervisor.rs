@@ -18,7 +18,7 @@ use tracing::{error, info, instrument};
 
 use crate::config::{
     Config,
-    global::{IrcConfig, OpenrouterConfig},
+    global::{ImageHostConfig, IrcConfig, OpenrouterConfig},
 };
 use crate::network::irc::IrcActor;
 use crate::network::openrouter::OpenRouter;
@@ -67,6 +67,9 @@ struct ApplyConfig;
 struct GetRedis;
 #[derive(Reply)]
 struct GetRedisReply(redis::aio::MultiplexedConnection);
+struct GetImageHost;
+#[derive(Reply)]
+struct GetImageHostReply(ImageHostConfig);
 
 impl Actor for Supervisor {
     type Args = Config;
@@ -253,6 +256,18 @@ impl Message<GetRedis> for Supervisor {
     }
 }
 
+impl Message<GetImageHost> for Supervisor {
+    type Reply = GetImageHostReply;
+
+    async fn handle(
+        &mut self,
+        _msg: GetImageHost,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        GetImageHostReply(self.config.image_host.clone())
+    }
+}
+
 impl Supervisor {
     /// Get a copy of the Redis connection.
     pub async fn redis() -> redis::aio::MultiplexedConnection {
@@ -266,6 +281,21 @@ impl Supervisor {
             .ask(GetRedis)
             .await
             .expect("while getting Redis connection")
+            .0
+    }
+
+    /// Get the image host configuration.
+    pub async fn image_host() -> ImageHostConfig {
+        let actor_ref = ACTOR_REGISTRY
+            .lock()
+            .unwrap()
+            .get::<Supervisor, str>("supervisor")
+            .expect("while getting Supervisor actor from registry")
+            .expect("Supervisor actor not found in registry");
+        actor_ref
+            .ask(GetImageHost)
+            .await
+            .expect("while getting image host configuration")
             .0
     }
 }

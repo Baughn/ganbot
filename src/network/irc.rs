@@ -10,8 +10,8 @@ use tracing::{error, info, instrument, trace};
 
 use crate::actions;
 use crate::config::global::IrcConfig;
-use crate::messages::chat;
 use crate::persistence::user::{self, UserActor, UserManager};
+use crate::supervisor::Supervisor;
 
 pub struct IrcActor {
     name: String,
@@ -318,7 +318,7 @@ impl Message<ProcessCommand> for ReplyActor {
             "Processing command from user {}: {}",
             msg.privmsg.user, msg.privmsg.message
         );
-        
+
         // Process the command directly
         let command = msg
             .privmsg
@@ -332,22 +332,24 @@ impl Message<ProcessCommand> for ReplyActor {
             .strip_prefix(command)
             .unwrap_or("")
             .trim();
-            
+
         let reply = match command {
             "ping" => Some("Pong!".to_string()),
             "combine" => {
                 // Spawn Combine actor to handle this command
                 let combine_actor = actions::combine::CombineActor::spawn_link(
                     &ctx.actor_ref(),
-                    actions::combine::CombineActor,
+                    actions::combine::CombineActor::new().await,
                 )
                 .await;
                 let combine_result = combine_actor.ask(args.to_string()).await;
                 match combine_result {
                     Ok(result) => {
-                        // Format the result nicely
-                        let response = format!("Result: {}\n{}", result.result, result.reasoning);
-                        // Note: We can't send images over IRC, so we skip that part.
+                        // Format the result nicely with image URL
+                        let response = format!(
+                            "Result: {}\n{}\n{}",
+                            result.result, result.image_url, result.reasoning,
+                        );
                         Some(response)
                     }
                     Err(e) => Some(format!("Error: {e:#}")),
@@ -372,7 +374,6 @@ impl Message<ProcessCommand> for ReplyActor {
         }
     }
 }
-
 
 impl Message<Connect> for IrcActor {
     type Reply = Result<()>;

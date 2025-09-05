@@ -7,6 +7,7 @@ pub struct Config {
     pub invokeai: InvokeaiConfig,
     pub openrouter: OpenrouterConfig,
     pub redis_url: String,
+    pub image_host: ImageHostConfig,
     // Client configurations
     pub irc: Vec<IrcConfig>,
 }
@@ -14,6 +15,13 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct InvokeaiConfig {
     pub url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct ImageHostConfig {
+    pub ssh_hostname: String,
+    pub ssh_directory: String,
+    pub base_url: String,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
@@ -62,6 +70,7 @@ impl Default for Config {
             openrouter: OpenrouterConfig::default(),
             irc: vec![],
             redis_url: String::new(),
+            image_host: ImageHostConfig::default(),
         }
     }
 }
@@ -69,6 +78,16 @@ impl Default for Config {
 impl Default for InvokeaiConfig {
     fn default() -> Self {
         Self { url: String::new() }
+    }
+}
+
+impl Default for ImageHostConfig {
+    fn default() -> Self {
+        Self {
+            ssh_hostname: String::new(),
+            ssh_directory: String::new(),
+            base_url: String::new(),
+        }
     }
 }
 
