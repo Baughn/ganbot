@@ -59,11 +59,9 @@ struct SendReply {
     message: String,
 }
 
-// Internal actors for handling command processing and replies.
+// Internal actor for handling command processing and replies.
 #[derive(Actor)]
 struct ReplyActor;
-#[derive(Actor)]
-struct CommandActor;
 
 /// Simple token bucket rate limiter
 struct TokenBucket {
@@ -320,39 +318,8 @@ impl Message<ProcessCommand> for ReplyActor {
             "Processing command from user {}: {}",
             msg.privmsg.user, msg.privmsg.message
         );
-        // Delegate... again... to CommandActor to do the actual command processing.
-        // Really just so we can forward the reply easily.
-        let reply = CommandActor::spawn_link(&ctx.actor_ref(), CommandActor)
-            .await
-            .ask(msg.clone())
-            .await;
-
-        let reply = match reply {
-            Ok(Some(r)) => r,
-            Ok(None) => return,
-            Err(e) => format!("Error processing command: {e:#}"),
-        };
-
-        // Send the reply back to the user
-        let _ = msg
-            .irc_actor
-            .tell(SendReply {
-                privmsg: msg.privmsg,
-                message: reply,
-            })
-            .send()
-            .await;
-    }
-}
-
-impl Message<ProcessCommand> for CommandActor {
-    type Reply = Option<String>;
-
-    async fn handle(
-        &mut self,
-        msg: ProcessCommand,
-        ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+        
+        // Process the command directly
         let command = msg
             .privmsg
             .message
@@ -365,7 +332,8 @@ impl Message<ProcessCommand> for CommandActor {
             .strip_prefix(command)
             .unwrap_or("")
             .trim();
-        return match command {
+            
+        let reply = match command {
             "ping" => Some("Pong!".to_string()),
             "combine" => {
                 // Spawn Combine actor to handle this command
@@ -390,8 +358,21 @@ impl Message<ProcessCommand> for CommandActor {
                 None
             }
         };
+
+        // Send the reply back to the user if we have one
+        if let Some(reply_message) = reply {
+            let _ = msg
+                .irc_actor
+                .tell(SendReply {
+                    privmsg: msg.privmsg,
+                    message: reply_message,
+                })
+                .send()
+                .await;
+        }
     }
 }
+
 
 impl Message<Connect> for IrcActor {
     type Reply = Result<()>;
