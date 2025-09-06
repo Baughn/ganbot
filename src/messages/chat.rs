@@ -1,3 +1,5 @@
+use openrouter_api::models::structured::JsonSchemaDefinition;
+
 /// Message types for chatbot interactions.
 
 #[derive(Debug, Clone)]
@@ -29,4 +31,18 @@ pub struct Oneshot {
 pub struct OneshotResponse {
     /// The response text from the chatbot API.
     pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Structured<T> {
+    /// Used to select the model for the request.
+    pub purpose: Purpose,
+    /// The origin of the message, i.e. "user@channel@server". For logging and debugging.
+    pub origin: String,
+    /// The text that should be sent to the chatbot API.
+    pub text: Vec<Part>,
+    /// JSON schema for structured response.
+    pub schema: JsonSchemaDefinition,
+    /// Phantom type for the expected response type.
+    pub marker: std::marker::PhantomData<T>,
 }

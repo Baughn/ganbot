@@ -1,12 +1,14 @@
 use anyhow::{Context as _, Error, Result, bail};
 use image::RgbImage;
-use kameo::{Actor, prelude::Message};
+use kameo::{Actor, Reply, prelude::Message};
+use openrouter_api::models::structured::JsonSchemaDefinition;
 use rand::seq::{IndexedRandom as _, SliceRandom};
 use redis::AsyncTypedCommands;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tracing::{debug, info};
 
-use crate::{messages::chat::Oneshot, network::openrouter::OpenRouter, supervisor::Supervisor};
+use crate::{messages::chat::Structured, network::openrouter::OpenRouter, supervisor::Supervisor};
 
 /// Combination game actor.
 /// This represents a single instance of the !combine command,
@@ -24,7 +26,7 @@ pub struct CombineResult {
     pub image_url: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Reply)]
 struct CombineChatResponse {
     result: String,
     reasoning: String,
@@ -100,7 +102,7 @@ impl CombineActor {
         let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
         let focus = self.get_random_focus();
         info!("Using focus: {}", focus);
-        let response = router.ask(Oneshot {
+        let response = router.ask::<Structured<CombineChatResponse>>(Structured {
             purpose: crate::messages::chat::Purpose::Chat,
             origin: "combination game".to_string(),
             text: vec![
@@ -111,20 +113,38 @@ impl CombineActor {
                     word1, word2
                 )),
             ],
+            schema: JsonSchemaDefinition {
+                schema_type: "object".to_string(),
+                properties: json!({
+                    "result": {
+                        "type": "string",
+                        "description": "The new word or short concept. Must not contain spaces."
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "An evocative explanation, one paragraph in length."
+                    },
+                    "image_prompt": {
+                        "type": "string",
+                        "description": "A clever image-generation prompt for a brushwork style illustration of the result, untitled."
+                    }
+                }).as_object().unwrap().clone(),
+                required: vec![
+                    "result".to_string(),
+                    "reasoning".to_string(),
+                    "image_prompt".to_string(),
+                ].into(),
+                additional_properties: None,
+            },
+            marker: std::marker::PhantomData,
         });
-        let response = response.await.context("while asking OpenRouter")?;
-        let response_text = response.text.trim();
-        let parsed: CombineChatResponse = serde_json::from_str(response_text).context(format!(
-            "Failed to parse response as JSON: {}\nResponse was:\n{}",
-            serde_json::to_string_pretty(&response_text).unwrap_or_default(),
-            response_text
-        ))?;
+        let response: CombineChatResponse = response.await.context("while asking OpenRouter")?;
 
         // temp
         Ok(CombineResult {
-            result: parsed.result,
-            reasoning: parsed.reasoning,
-            image_url: format!("Image prompt: {}", parsed.image_prompt),
+            result: response.result,
+            reasoning: response.reasoning,
+            image_url: format!("Image prompt: {}", response.image_prompt),
         })
     }
 
