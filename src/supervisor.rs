@@ -32,7 +32,7 @@ pub struct Supervisor {
     /// Actors implied by said configuration.
     actors: HashMap<ConfigHash, Supervised>,
     /// Redis connection.
-    redis_connection: redis::aio::MultiplexedConnection,
+    redis_connection: redis::aio::ConnectionManager,
     /// User manager.
     _user_manager: ActorRef<UserManager>,
 }
@@ -66,7 +66,7 @@ struct ReloadConfig;
 struct ApplyConfig;
 struct GetRedis;
 #[derive(Reply)]
-struct GetRedisReply(redis::aio::MultiplexedConnection);
+struct GetRedisReply(redis::aio::ConnectionManager);
 struct GetImageHost;
 #[derive(Reply)]
 struct GetImageHostReply(ImageHostConfig);
@@ -86,7 +86,7 @@ impl Actor for Supervisor {
         let client =
             redis::Client::open(args.redis_url.as_str()).expect("Failed to create Redis client");
         let redis_connection = client
-            .get_multiplexed_async_connection()
+            .get_connection_manager()
             .await
             .expect("Failed to connect to Redis");
         // Initialize the user manager.
@@ -270,7 +270,7 @@ impl Message<GetImageHost> for Supervisor {
 
 impl Supervisor {
     /// Get a copy of the Redis connection.
-    pub async fn redis() -> redis::aio::MultiplexedConnection {
+    pub async fn redis() -> redis::aio::ConnectionManager {
         let actor_ref = ACTOR_REGISTRY
             .lock()
             .unwrap()

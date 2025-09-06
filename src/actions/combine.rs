@@ -18,7 +18,7 @@ use crate::{
 /// which takes 2 to 3 words and combines them into a new word.
 #[derive(Actor)]
 pub(crate) struct CombineActor {
-    redis: redis::aio::MultiplexedConnection,
+    redis: redis::aio::ConnectionManager,
 }
 
 pub struct Combine(pub String);

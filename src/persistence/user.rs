@@ -8,14 +8,17 @@ use kameo::{
     prelude::{Context, Message},
     registry::ACTOR_REGISTRY,
 };
-use redis::{AsyncTypedCommands, aio::MultiplexedConnection};
+use redis::{
+    AsyncTypedCommands,
+    aio::{ConnectionManager, MultiplexedConnection},
+};
 use serde::{Deserialize, Serialize};
 use serenity::{all::UserId as DiscordUserId, json};
 use tracing::info;
 
 /// User manager actor, responsible for loading and starting User actors.
 pub struct UserManager {
-    connection: MultiplexedConnection,
+    connection: ConnectionManager,
     loaded_users: HashMap<UserId, ActorRef<UserActor>>,
 }
 
@@ -26,7 +29,7 @@ pub(crate) struct GetUser(pub UserId, pub UserName);
 /// User actor, representing a user in the system.
 pub struct UserActor {
     user: User,
-    redis: MultiplexedConnection,
+    redis: ConnectionManager,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -59,7 +62,7 @@ impl UserManager {
 }
 
 impl Actor for UserManager {
-    type Args = MultiplexedConnection;
+    type Args = ConnectionManager;
     type Error = Infallible;
 
     async fn on_start(
