@@ -10,7 +10,7 @@ use kameo::{
 };
 use redis::{
     AsyncTypedCommands,
-    aio::{ConnectionManager, MultiplexedConnection},
+    aio::ConnectionManager,
 };
 use serde::{Deserialize, Serialize};
 use serenity::{all::UserId as DiscordUserId, json};

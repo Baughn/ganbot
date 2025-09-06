@@ -11,7 +11,6 @@ use tracing::{error, info, instrument, trace};
 use crate::actions;
 use crate::config::global::IrcConfig;
 use crate::persistence::user::{self, UserActor, UserManager};
-use crate::supervisor::Supervisor;
 
 pub struct IrcActor {
     name: String,

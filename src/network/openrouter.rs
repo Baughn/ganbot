@@ -1,4 +1,3 @@
-use std::f64::consts::E;
 
 /// OpenRouter API module.
 /// This mostly wraps the openrouter_api crate with some convenience methods, such as a conversation actor.

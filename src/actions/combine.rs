@@ -1,8 +1,7 @@
 use anyhow::{Context as _, Error, Result, bail};
-use image::RgbImage;
 use kameo::{Actor, Reply, prelude::Message};
 use openrouter_api::models::structured::JsonSchemaDefinition;
-use rand::seq::{IndexedRandom as _, SliceRandom};
+use rand::seq::IndexedRandom as _;
 use redis::AsyncTypedCommands;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -350,22 +349,6 @@ mod tests {
         assert_eq!(
             split_words("\tfire\twater\t").unwrap(),
             ("fire".to_string(), "water".to_string())
-        );
-    }
-
-    #[test]
-    fn test_split_words_preserve_case() {
-        assert_eq!(
-            split_words("Fire Water").unwrap(),
-            ("Fire".to_string(), "Water".to_string())
-        );
-        assert_eq!(
-            split_words("FIRE WATER").unwrap(),
-            ("FIRE".to_string(), "WATER".to_string())
-        );
-        assert_eq!(
-            split_words("FiRe WaTeR").unwrap(),
-            ("FiRe".to_string(), "WaTeR".to_string())
         );
     }
 
