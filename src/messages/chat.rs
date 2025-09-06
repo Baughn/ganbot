@@ -46,3 +46,11 @@ pub struct Structured<T> {
     /// Phantom type for the expected response type.
     pub marker: std::marker::PhantomData<T>,
 }
+
+#[derive(Debug, Clone)]
+pub struct NanoBanana {
+    /// The origin of the message, i.e. "user@channel@server". For logging and debugging.
+    pub origin: String,
+    /// The image prompt.
+    pub prompt: String,
+}

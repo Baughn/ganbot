@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info};
 
-use crate::{messages::chat::Structured, network::openrouter::OpenRouter, supervisor::Supervisor};
+use crate::{
+    messages::chat::Structured, network::openrouter::OpenRouter, persistence::images::upload_image,
+    supervisor::Supervisor,
+};
 
 /// Combination game actor.
 /// This represents a single instance of the !combine command,
@@ -140,11 +143,22 @@ impl CombineActor {
         });
         let response: CombineChatResponse = response.await.context("while asking OpenRouter")?;
 
-        // temp
+        // Generate image.
+        let image_response = router
+            .ask(crate::messages::chat::NanoBanana {
+                origin: "combination game".to_string(),
+                prompt: response.image_prompt,
+            })
+            .await
+            .context("while asking OpenRouter for image")?;
+
+        // And get the image URL.
         Ok(CombineResult {
             result: response.result,
             reasoning: response.reasoning,
-            image_url: format!("Image prompt: {}", response.image_prompt),
+            image_url: upload_image(image_response)
+                .await
+                .context("while uploading image")?,
         })
     }
 

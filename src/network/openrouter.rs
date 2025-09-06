@@ -1,18 +1,20 @@
+use std::f64::consts::E;
+
 /// OpenRouter API module.
 /// This mostly wraps the openrouter_api crate with some convenience methods, such as a conversation actor.
 use anyhow::{Context as _, Result, bail};
+use image::RgbImage;
 use kameo::actor::ActorRef;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
 use openrouter_api::OpenRouterClient;
 use openrouter_api::models::structured::JsonSchemaConfig;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use tracing::{error, info, instrument};
 
 use crate::config::global::OpenrouterConfig;
-use crate::messages::chat;
+use crate::messages::chat::{self, NanoBanana};
 
 /// Singleton actor that manages OpenRouter API access
 pub struct OpenRouter {
@@ -81,6 +83,24 @@ where
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         tracing::info!("Received structured request from {}", msg.origin);
+
+        // Spawn a new conversation actor to handle this specific request
+        let actor_ref = ConversationActor::spawn_link(&ctx.actor_ref(), self.config.clone()).await;
+
+        ctx.forward(&actor_ref, msg).await
+    }
+}
+
+impl Message<NanoBanana> for OpenRouter {
+    type Reply = ForwardedReply<NanoBanana, Result<RgbImage>>;
+
+    #[instrument(skip_all)]
+    async fn handle(
+        &mut self,
+        msg: NanoBanana,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        info!("Received NanoBanana request from {}", msg.origin);
 
         // Spawn a new conversation actor to handle this specific request
         let actor_ref = ConversationActor::spawn_link(&ctx.actor_ref(), self.config.clone()).await;
@@ -310,5 +330,130 @@ impl Message<chat::Oneshot> for ConversationActor {
                 bail!("OpenRouter API request failed");
             }
         }
+    }
+}
+
+impl Message<NanoBanana> for ConversationActor {
+    type Reply = Result<RgbImage>;
+
+    #[instrument(skip_all)]
+    async fn handle(
+        &mut self,
+        msg: NanoBanana,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        info!("Handling NanoBanana image request");
+
+        // openrouter_api doesn't support these yet, so time to get our hands dirty.
+        let url = "https://openrouter.ai/api/v1/chat/completions";
+        let client = reqwest::Client::new();
+        let model = "google/gemini-2.5-flash-image-preview";
+        let payload = json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": msg.prompt,
+                }
+            ],
+            "modalities": ["image"],
+        });
+
+        for backoff in vec![0, 5, 30, 60] {
+            if backoff > 0 {
+                info!("Waiting {} seconds before retrying...", backoff);
+                tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+            }
+
+            let resp = client
+                .post(url)
+                .bearer_auth(&self.config.token)
+                .json(&payload)
+                .send()
+                .await;
+
+            match resp {
+                Err(e) => {
+                    error!("HTTP request error: {:?}", e);
+                    continue;
+                }
+                Ok(resp) => {
+                    if !resp.status().is_success() {
+                        error!("OpenRouter API returned error status: {}", resp.status());
+                        let body = resp.text().await.unwrap_or_default();
+                        error!("Response body: {}", body);
+                        continue;
+                    }
+
+                    let body = resp.text().await.unwrap_or_default();
+                    let json: serde_json::Value = match serde_json::from_str(&body) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            error!("Failed to parse JSON response: {:?}", e);
+                            continue;
+                        }
+                    };
+
+                    // Expecting something like:
+                    // {
+                    //   "choices": [
+                    //     {
+                    //       "message": {
+                    //         "role": "assistant",
+                    //         "content": "I've generated a beautiful sunset image for you.",
+                    //         "images": [
+                    //           {
+                    //             "type": "image_url",
+                    //             "image_url": {
+                    //               "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+                    //             }
+                    //           }
+                    //         ]
+                    //       }
+                    //     }
+                    //   ]
+                    // }
+                    if let Some(image_data) = json
+                        .get("choices")
+                        .and_then(|choices| choices.get(0))
+                        .and_then(|choice| choice.get("message"))
+                        .and_then(|message| message.get("images"))
+                        .and_then(|images| images.get(0))
+                        .and_then(|image| image.get("image_url"))
+                        .and_then(|img_url| img_url.get("url"))
+                        .and_then(|url| url.as_str())
+                    {
+                        // Expecting a data URL like "data:image/png;base64,...."
+                        if let Some(base64_data) = image_data.strip_prefix("data:image/png;base64,")
+                        {
+                            match base64::decode(base64_data) {
+                                Ok(image_bytes) => match image::load_from_memory(&image_bytes) {
+                                    Ok(img) => {
+                                        let rgb_image = img.to_rgb8();
+                                        info!("Successfully generated image via OpenRouter");
+                                        return Ok(rgb_image);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to decode image from bytes: {:?}", e);
+                                        continue;
+                                    }
+                                },
+                                Err(e) => {
+                                    error!("Failed to decode base64 image data: {:?}", e);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            error!("Image URL is not a valid data URL");
+                            continue;
+                        }
+                    } else {
+                        error!("No image data found in OpenRouter response");
+                        continue;
+                    }
+                }
+            }
+        }
+        bail!("Failed to get image from OpenRouter after retries");
     }
 }

@@ -352,8 +352,8 @@ impl Message<ProcessCommand> for ReplyActor {
                     Ok(result) => {
                         // Format the result nicely with image URL
                         let response = format!(
-                            "Result: {}\n{}\n{}",
-                            result.result, result.image_url, result.reasoning,
+                            "{}\n**{}**\n{}",
+                            result.image_url, result.result, result.reasoning,
                         );
                         Some(response)
                     }
