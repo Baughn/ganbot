@@ -4,25 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Ganbot3 is a multi-platform bot (Discord & IRC) built in Rust using the Kameo actor framework for fault-tolerant message passing and concurrent operations. The project emphasizes extensibility through a pubsub message bus with topics for long-term modularity.
+Ganbot3 is an IRC bot built in Rust using the Kameo actor framework for fault-tolerant message passing and concurrent operations. The bot integrates AI capabilities through OpenRouter API and image generation via ComfyUI, with Redis for persistence and state management.
 
 ## Architecture
 
 ### Actor-Based Design with Kameo
 
-The codebase follows an actor model pattern using Kameo (v0.17.2):
+The codebase follows an actor model pattern using Kameo:
 
-- Each major component (IRC client, Discord client, command handlers) should be implemented as a separate actor
+- Each major component (IRC client, AI services, command handlers) is implemented as a separate actor
 - Actors communicate via strongly-typed messages using Kameo's message passing
-- Use supervision strategies for fault recovery (actors should restart on failure)
-- The pubsub broker acts as the central message bus between platform-specific actors
+- The supervisor implements automatic restart with exponential backoff for fault recovery
+- Long-lived actors (IRC, OpenRouter, UserManager) are managed by the supervisor
+- Command actors are spawned on-demand for each invocation
 
 ### Key Architectural Principles
 
-- **Message Bus Pattern**: All cross-platform communication goes through the Kameo-based broker
-- **Platform Abstraction**: IRC and Discord implementations should be isolated in separate actors
-- **Command Modularity**: Commands and game logic should be platform-agnostic actors that subscribe to relevant topics
-- **Fault Tolerance**: Use Kameo's supervision trees to ensure bot resilience
+- **Direct Actor Communication**: Actors communicate through direct references rather than a message bus (current implementation)
+- **Platform Focus**: Currently IRC-only, with architecture supporting future platform additions
+- **Command Modularity**: Commands are implemented as separate action actors spawned per invocation
+- **Fault Tolerance**: Supervisor provides automatic restart with backoff, connection recovery, and graceful degradation
 
 ## Development Commands
 
@@ -64,42 +65,66 @@ cargo clippy -- -D warnings
 
 ## Module Organization
 
-When implementing features, follow this structure:
+The actual codebase structure:
 
 ```text
 src/
-├── network/.        # Network wrappers/clients of various kinds
-│   ├── irc.rs       # IRC client actor using the `irc` crate
-│   ├── discord.rs   # Discord client actor
-│   └── openapi.rs   # OpenAPI client
-├── persistence/     # Persistent actors, e.g. the per-user actor.
+├── main.rs          # Entry point and application initialization
+├── supervisor.rs    # Root supervision tree and actor lifecycle management
+├── network/         # Network clients and external service integrations
+│   ├── irc.rs       # IRC client actor with command handling
+│   ├── openrouter.rs # OpenRouter AI API integration
+│   └── comfyui/     # ComfyUI image generation integration
+│       ├── api.rs   # ComfyUI API types and models
+│       └── net.rs   # ComfyUI network client implementation
+├── actions/         # Command implementations (game logic, AI interactions)
+│   ├── ask.rs       # AI question/answer command
+│   ├── combine.rs   # Word combination game with image generation
+│   └── prompt.rs    # Direct AI prompting command
+├── persistence/     # Redis-backed persistence layer
+│   ├── user.rs      # User management and state tracking
+│   └── images.rs    # Image storage and URL management
 ├── messages/        # Message types for actor communication
-├── games/           # Game logic modules
-├── image/           # Image generation/editing (Kontext integration)
-└── config/          # Configuration structs and loading
+│   ├── chat.rs      # Chat message types and structured responses
+│   └── imagen.rs    # Image generation message types
+└── config/          # Configuration management
+    └── global.rs    # Global configuration structures
 ```
 
 ## Key Dependencies and Usage
 
+### Redis
+
+Redis is used for all persistence through a reconnecting `ConnectionManager`. Current key patterns:
+
+- `user:[userid]` -- JSON string containing User struct with configuration settings etc.
+- `combine:combination:[word1]:[word2]` -- Cached combination results for the combine game
+- `combine:basis:[word]` -- Base elements tracking for the combine game
+
+The supervisor maintains a persistent Redis connection that's shared across actors.
+
 ### Kameo Actor Framework
 
-- Use `kameo::Actor` trait for all actors
-- Implement `kameo::message::Message` for actor messages
+- Use `#[derive(Actor)]` macro for actor structs
+- Use `kameo::prelude::*` for common imports
+- Implement `kameo::message::Message` for actor messages, with `Reply` trait for typed responses
 - Use `kameo::actor::ActorRef` for actor references
-- Leverage `kameo::supervision` for fault tolerance
+- The supervisor implements custom supervision logic with exponential backoff
 
 ### IRC Integration
 
-- The `irc` crate (v1.1.0) provides async IRC connectivity
-- Configure via `irc::client::data::Config`
-- Use `irc::client::Client` for connection management
-- Handle IRC events through the actor's message handler
+- The `irc` crate provides async IRC connectivity
+- IRC actor handles connection, command parsing, and response routing
+- Commands are parsed with prefix detection (!, ., ~)
+- Supports both channel and private messages
+- Implements rate limiting and message batching for responses
 
 ### Error Handling
 
-- Use `thiserror` for all custom error types
-- Create domain-specific error enums in each module
-- Propagate errors through the actor system appropriately
+- Use `anyhow::Result` for general error handling
+- Context is added with `.context()` for error tracing
+- Actor failures trigger supervisor restart logic
+- Network errors implement retry with backoff
 
 ### Logging
 
@@ -112,37 +137,54 @@ src/
 ### Actor Implementation Pattern
 
 ```rust
-use kameo::actor::{Actor, ActorRef};
-use kameo::message::{Message, Context};
+use kameo::prelude::*;
+use kameo::{Actor, Reply};
 
+// Use the #[derive(Actor)] macro for automatic implementation
+#[derive(Actor)]
 pub struct MyActor {
     // actor state
 }
 
-#[derive(Message)]
-pub struct MyMessage {
+// Reply messages must derive Reply
+#[derive(Reply)]
+pub struct MyReply {
     // message fields
 }
 
 impl Actor for MyActor {
-    async fn on_start(&mut self, ctx: &mut Context<Self>) {
+    async fn on_start(&mut self, ctx: &mut Context<Self>) -> Result<(), BoxError> {
         // initialization
+        Ok(())
     }
 }
 
 impl Handler<MyMessage> for MyActor {
-    async fn handle(&mut self, msg: MyMessage, ctx: &mut Context<Self>) {
+    type Reply = MyReplyType;
+    
+    async fn handle(&mut self, msg: MyMessage, ctx: &mut Context<Self>) -> Self::Reply {
         // message handling
     }
 }
 ```
 
-### Pubsub Topics Convention
+### Current Architecture Notes
 
-- Platform events: `platform.{irc|discord}.{event_type}`
-- Commands: `command.{command_name}`
-- Games: `game.{game_name}.{event}`
-- System: `system.{health|metrics|config}`
+Currently:
+
+- IRC commands are handled directly in the IRC actor
+- Actions are spawned as temporary actors per command invocation
+- The supervisor manages long-lived actors (IRC, OpenRouter, UserManager)
+- Communication happens through direct actor references rather than a message bus
+
+### Supervision and Fault Tolerance
+
+The supervisor (`src/supervisor.rs`) implements:
+
+- Automatic restart with exponential backoff for failed actors
+- Configuration hot-reloading support
+- Graceful shutdown handling
+- Health monitoring and restart tracking
 
 ## Testing Strategy
 
@@ -155,38 +197,64 @@ When adding tests:
 
 ## Configuration
 
-Implement TOML-based configuration:
+Configuration uses a layered TOML approach:
 
-- `config/default.toml` for defaults
-- Environment variable overrides via `GANBOT_` prefix
-- Separate configs for IRC servers, Discord tokens, and feature flags
+- `config.toml` - Base configuration
+- `config-local.toml` - Local overrides (git-ignored)
+- Environment variables can override any setting
+- Configuration includes:
+  - IRC server settings (server, port, channels, nick)
+  - OpenRouter API configuration
+  - ComfyUI server endpoints
+  - Image hosting service URLs
+  - Redis connection parameters
 
 ## Common Tasks
 
 ### Adding a New Command
 
-1. Create a new actor in `src/actors/commands/`
-2. Define the command's message types in `src/messages/`
-3. Subscribe the actor to relevant pubsub topics
-4. Add command parsing logic to route messages
+1. Create a new actor in `src/actions/` (e.g., `mycommand.rs`)
+2. Define the command's message types in the same file or `src/messages/`
+3. Add the command handling logic in the IRC actor (`src/network/irc.rs`)
+4. If persistent state is needed, add Redis keys and update the persistence layer
+5. Register the actor in the supervisor if it needs lifecycle management
 
 ### Integrating a New Platform
 
-1. Create a platform actor in `src/actors/`
-2. Implement message translation to/from the common format
-3. Connect to the broker for message routing
-4. Add platform-specific configuration
+1. Create a platform actor in `src/network/` (e.g., `discord.rs`)
+2. Implement the actor with connection management and event handling
+3. Add platform-specific configuration in `src/config/global.rs`
+4. Register the platform in the supervisor (`src/supervisor.rs`)
+5. Handle platform-specific messages and convert to common chat format
 
 ### Adding Game Logic
 
-1. Create a game actor in `src/games/`
-2. Define game state and message types
-3. Subscribe to player input topics
-4. Publish game events back to the broker
+1. Create a game actor in `src/actions/` (following the pattern of `combine.rs`)
+2. Define game state and message types within the actor module
+3. Add Redis persistence for game state if needed
+4. Integrate with OpenRouter for AI-powered game logic if applicable
+5. Add image generation support via ComfyUI if the game needs visuals
 
 ## Performance Considerations
 
-- Use bounded channels for backpressure management
-- Implement rate limiting in platform actors
-- Consider actor pooling for CPU-intensive tasks (image processing)
-- Monitor actor mailbox sizes for bottleneck detection
+- Redis uses a reconnecting `ConnectionManager` for resilience
+- IRC implements message batching and rate limiting
+- Command actors are short-lived to avoid memory accumulation
+- Image generation is async with progress tracking
+- OpenRouter requests use structured output for efficiency
+
+## External Service Integrations
+
+### OpenRouter AI API
+
+- Handles all LLM interactions (questions, prompts, game logic)
+- Supports structured JSON output via JSON schema
+- Configurable model selection and parameters
+- Automatic retry on transient failures
+
+### ComfyUI Image Generation
+
+- WebSocket-based workflow execution
+- Progress tracking during generation
+- Automatic image upload to configured hosting service
+- Support for custom workflows and parameters
