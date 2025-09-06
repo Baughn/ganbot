@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serenity::{all::UserId as DiscordUserId, json};
 use tracing::info;
 
+use crate::util;
+
 /// User manager actor, responsible for loading and starting User actors.
 pub struct UserManager {
     connection: ConnectionManager,
@@ -88,7 +90,11 @@ impl Message<GetUser> for UserManager {
         // Not loaded. Let's check Redis.
         info!("Loading user from Redis: {:?}", msg.0);
         let key = msg.0.key();
-        let user = self.connection.get(key.clone()).await?;
+        let user = util::retry(|| async {
+            let mut conn = self.connection.clone();
+            conn.get(key.clone()).await.context("Redis get failed")
+        })
+        .await?;
 
         // Deserialize or create new.
         let user = if let Some(user) = user {
@@ -151,10 +157,14 @@ impl UserActor {
         info!("Persisting user to Redis");
         let key = self.user.id.key();
         let value = json::to_string(&self.user).context("while serializing user to JSON")?;
-        self.redis
-            .set(key, value)
-            .await
-            .context("while saving user to Redis")?;
+        util::retry(|| async {
+            let mut conn = self.redis.clone();
+            conn.set(key.clone(), value.clone())
+                .await
+                .context("Redis set failed")
+        })
+        .await
+        .context("while saving user to Redis")?;
         Ok(())
     }
 }

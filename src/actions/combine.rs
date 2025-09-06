@@ -9,7 +9,7 @@ use tracing::{debug, info};
 
 use crate::{
     messages::chat::Structured, network::openrouter::OpenRouter, persistence::images::upload_image,
-    supervisor::Supervisor,
+    supervisor::Supervisor, util,
 };
 
 /// Combination game actor.
@@ -207,7 +207,11 @@ impl CombineActor {
         word2: &str,
     ) -> Result<Option<CombineResult>, Error> {
         let key = Self::cache_key_combine(word1, word2);
-        let cached = self.redis.get(&key).await?;
+        let cached = util::retry(|| async {
+            let mut conn = self.redis.clone();
+            conn.get(key.clone()).await.context("Redis get failed")
+        })
+        .await?;
         if let Some(cached_str) = cached {
             let result: CombineResult = serde_json::from_str(&cached_str)?;
             Ok(Some(result))
@@ -219,7 +223,11 @@ impl CombineActor {
     /// Check if this word has been constructed before. (And if so, return the combination that created it)
     async fn check_basis(&mut self, word: &str) -> Result<Option<String>> {
         let key = Self::cache_key_basis(word);
-        let source = self.redis.get(&key).await?;
+        let source = util::retry(|| async {
+            let mut conn = self.redis.clone();
+            conn.get(key.clone()).await.context("Redis get failed")
+        })
+        .await?;
         Ok(source)
     }
 
@@ -231,13 +239,19 @@ impl CombineActor {
     ) -> Result<(), Error> {
         let key = Self::cache_key_combine(word1, word2);
         let value = serde_json::to_string(result)?;
-        self.redis.set(&key, value).await?;
-        self.redis
-            .set(
+        util::retry(|| async {
+            let mut conn = self.redis.clone();
+            conn.set(key.clone(), value.clone())
+                .await
+                .context("Redis set failed")?;
+            conn.set(
                 Self::cache_key_basis(&result.result),
                 Self::cache_key_combine(word1, word2),
             )
-            .await?;
+            .await
+            .context("Redis set failed")
+        })
+        .await?;
         Ok(())
     }
 }

@@ -12,6 +12,7 @@ mod messages;
 mod network;
 mod persistence;
 mod supervisor;
+mod util;
 
 #[tokio::main]
 async fn main() -> Result<()> {

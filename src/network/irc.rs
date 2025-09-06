@@ -372,7 +372,7 @@ impl Message<ProcessCommand> for ReplyActor {
                         // Return text and optional image URL
                         match result.image_url {
                             Some(image_url) => Some(format!("{} {}", result.text, image_url)),
-                            None => Some(result.text),
+                            None => Some(format!("{}\n(No image)", result.text)),
                         }
                     }
                     Err(e) => Some(format!("Error: {e:#}")),

@@ -38,7 +38,10 @@ impl Message<String> for PromptActor {
 
         // Make sure we're actually asking for an image.
         // NOTE: We should only do this for NanoBanana.
-        let prompt = format!("Generate an image: {}", prompt);
+        let prompt = format!(
+            "Generate an image: {}\nAlways generate an image. In addition to the image, comment on it in the style of a hard-boiled noir detective.",
+            prompt
+        );
 
         info!("Generating image for prompt: {}", prompt);
 
