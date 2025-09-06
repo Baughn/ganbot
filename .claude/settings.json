@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": "cargo test || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "cargo fmt || exit 2"
           }
         ]
       }

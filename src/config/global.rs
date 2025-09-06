@@ -1,7 +1,7 @@
 /// Global configuration from config.toml & environment variables
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct Config {
     // Backend configurations
     pub invokeai: InvokeaiConfig,
@@ -12,12 +12,12 @@ pub struct Config {
     pub irc: Vec<IrcConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct InvokeaiConfig {
     pub url: String,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct ImageHostConfig {
     pub ssh_hostname: String,
     pub ssh_directory: String,
@@ -61,34 +61,6 @@ fn default_chat_model() -> String {
 
 fn default_image_model() -> String {
     "openai/gpt-4o".to_string()
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            invokeai: InvokeaiConfig::default(),
-            openrouter: OpenrouterConfig::default(),
-            irc: vec![],
-            redis_url: String::new(),
-            image_host: ImageHostConfig::default(),
-        }
-    }
-}
-
-impl Default for InvokeaiConfig {
-    fn default() -> Self {
-        Self { url: String::new() }
-    }
-}
-
-impl Default for ImageHostConfig {
-    fn default() -> Self {
-        Self {
-            ssh_hostname: String::new(),
-            ssh_directory: String::new(),
-            base_url: String::new(),
-        }
-    }
 }
 
 impl Default for OpenrouterConfig {

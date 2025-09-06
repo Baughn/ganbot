@@ -1,4 +1,3 @@
-
 /// OpenRouter API module.
 /// This mostly wraps the openrouter_api crate with some convenience methods, such as a conversation actor.
 use anyhow::{Context as _, Result, bail};
@@ -198,9 +197,7 @@ where
             .await;
 
         match result {
-            Ok(response) => {
-                return Ok(response);
-            }
+            Ok(response) => Ok(response),
             Err(e) => {
                 error!("OpenRouter structured API error response: {:?}", e);
                 // This should be JSON. Attempt the extract $.error.message.
@@ -210,14 +207,13 @@ where
                         message,
                         metadata,
                     } => {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message) {
-                            if let Some(msg) = json
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message)
+                            && let Some(msg) = json
                                 .get("error")
                                 .and_then(|err| err.get("message"))
                                 .and_then(|m| m.as_str())
-                            {
-                                bail!("OpenRouter API error: {}", msg);
-                            }
+                        {
+                            bail!("OpenRouter API error: {}", msg);
                         }
                     }
                     other => {
@@ -311,14 +307,13 @@ impl Message<chat::Oneshot> for ConversationActor {
                         message,
                         metadata,
                     } => {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message) {
-                            if let Some(msg) = json
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message)
+                            && let Some(msg) = json
                                 .get("error")
                                 .and_then(|err| err.get("message"))
                                 .and_then(|m| m.as_str())
-                            {
-                                bail!("OpenRouter API error: {}", msg);
-                            }
+                        {
+                            bail!("OpenRouter API error: {}", msg);
                         }
                     }
                     other => {
@@ -358,7 +353,7 @@ impl Message<NanoBanana> for ConversationActor {
             "modalities": ["image"],
         });
 
-        for backoff in vec![0, 5, 30] {
+        for backoff in [0, 5, 30] {
             if backoff > 0 {
                 info!("Waiting {} seconds before retrying...", backoff);
                 tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
@@ -425,7 +420,8 @@ impl Message<NanoBanana> for ConversationActor {
                         // Expecting a data URL like "data:image/png;base64,...."
                         if let Some(base64_data) = image_data.strip_prefix("data:image/png;base64,")
                         {
-                            match base64::decode(base64_data) {
+                            use base64::Engine;
+                            match base64::engine::general_purpose::STANDARD.decode(base64_data) {
                                 Ok(image_bytes) => match image::load_from_memory(&image_bytes) {
                                     Ok(img) => {
                                         let rgb_image = img.to_rgb8();

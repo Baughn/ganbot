@@ -109,7 +109,7 @@ impl Actor for Supervisor {
     ) -> std::result::Result<ControlFlow<ActorStopReason>, Self::Error> {
         // Check for dead actors & restart them.
         let self_reference = actor_ref.upgrade().expect("Supervisor should not be dead");
-        for (_, actor) in &mut self.actors {
+        for actor in self.actors.values_mut() {
             if !actor.actor.is_alive() {
                 let timing = calculate_restart(&actor.restart_info);
                 match timing {
@@ -150,7 +150,7 @@ impl Message<ReloadConfig> for Supervisor {
         let new_config = crate::config::load().context("while reloading configuration")?;
         if new_config == self.config {
             info!("Configuration unchanged, no action taken");
-            return Ok(());
+            Ok(())
         } else {
             info!("Configuration changed, applying new settings");
             self.config = new_config;
@@ -170,12 +170,7 @@ impl Message<ApplyConfig> for Supervisor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         // Anything that's running but shouldn't be, we stop.
-        let mut expected_actors: HashSet<ConfigHash> = self
-            .config
-            .irc
-            .iter()
-            .map(|irc_config| (hash(irc_config)))
-            .collect();
+        let mut expected_actors: HashSet<ConfigHash> = self.config.irc.iter().map(hash).collect();
 
         // Add OpenRouter to expected actors if token is configured
         if !self.config.openrouter.token.is_empty() {

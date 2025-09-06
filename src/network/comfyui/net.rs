@@ -258,7 +258,7 @@ impl ComfyUIClient {
 
         let response = self
             .http_client
-            .post(&format!("{}/prompt", self.base_url()))
+            .post(format!("{}/prompt", self.base_url()))
             .json(&request)
             .send()
             .await?;
@@ -289,7 +289,7 @@ impl ComfyUIClient {
 
         let response = self
             .http_client
-            .get(&format!("{}/history/{}", self.base_url(), prompt_id))
+            .get(format!("{}/history/{}", self.base_url(), prompt_id))
             .send()
             .await?;
 

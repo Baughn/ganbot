@@ -268,7 +268,7 @@ impl IrcActor {
             let user = self
                 .user_manager
                 .ask(user::GetUser(
-                    user::UserId::IRC(privmsg.user.clone()),
+                    user::UserId::Irc(privmsg.user.clone()),
                     privmsg.user.clone(),
                 ))
                 .await
@@ -504,7 +504,7 @@ async fn handle_irc_message(
             if let Some(buffered) = actor.message_buffer.get_mut(&key) {
                 // Append to existing message and update timestamp
                 buffered.content.push(' ');
-                buffered.content.push_str(&text);
+                buffered.content.push_str(text);
                 buffered.last_updated = Instant::now();
                 trace!("Appending to buffered message from {:?}", key);
             } else {

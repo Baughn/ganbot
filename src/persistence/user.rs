@@ -8,10 +8,7 @@ use kameo::{
     prelude::{Context, Message},
     registry::ACTOR_REGISTRY,
 };
-use redis::{
-    AsyncTypedCommands,
-    aio::ConnectionManager,
-};
+use redis::{AsyncTypedCommands, aio::ConnectionManager};
 use serde::{Deserialize, Serialize};
 use serenity::{all::UserId as DiscordUserId, json};
 use tracing::info;
@@ -42,7 +39,7 @@ type UserName = String;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub(crate) enum UserId {
-    IRC(String),
+    Irc(String),
     Discord(DiscordUserId),
 }
 
@@ -165,7 +162,7 @@ impl UserActor {
 impl UserId {
     fn key(&self) -> String {
         match self {
-            UserId::IRC(nick) => format!("user:irc:{}", nick),
+            UserId::Irc(nick) => format!("user:irc:{}", nick),
             UserId::Discord(id) => format!("user:discord:{}", id),
         }
     }

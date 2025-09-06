@@ -76,13 +76,11 @@ impl Message<String> for CombineActor {
         info!("Combining words: {} + {}", words.0, words.1);
         // Confirm that both words have been unlocked.
         for word in [&words.0, &words.1] {
-            if !ELEMENTS.contains(&word.as_str()) {
-                if self.check_basis(word).await?.is_none() {
-                    bail!(
-                        "The word '{}' has not been unlocked yet. Please use the basic elements: air, earth, fire, water.",
-                        word
-                    );
-                }
+            if !ELEMENTS.contains(&word.as_str()) && self.check_basis(word).await?.is_none() {
+                bail!(
+                    "The word '{}' has not been unlocked yet. Please use the basic elements: air, earth, fire, water.",
+                    word
+                );
             }
         }
         // Check cache.
