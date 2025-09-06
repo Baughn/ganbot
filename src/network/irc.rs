@@ -123,7 +123,7 @@ impl Actor for IrcActor {
             client: OnceCell::new(),
             message_buffer: HashMap::new(),
             user_manager: UserManager::get().context("while getting UserManager")?,
-            token_bucket: TokenBucket::new(4.0, 4.0), // 4 tokens max, 4 tokens/sec (250ms per token)
+            token_bucket: TokenBucket::new(4.0, 2.0), // 4 tokens max, 2 tokens/sec
         })
     }
 }
@@ -257,13 +257,15 @@ impl IrcActor {
         actor_ref: ActorRef<IrcActor>,
     ) -> Result<()> {
         // First off, is this a command?
-        if let Some(command) = privmsg.message.strip_prefix(&self.config.command_prefix) {
+        if let Some(stripped_message) = privmsg.message.strip_prefix(&self.config.command_prefix) {
             // Handle command logic here
             info!(
                 "Processing command (user {}): {}",
                 privmsg.user, privmsg.message
             );
-            let (command, args) = command.split_once(' ').unwrap_or((command, ""));
+            let (command, args) = stripped_message
+                .split_once(' ')
+                .unwrap_or((stripped_message, ""));
             let user = self
                 .user_manager
                 .ask(user::GetUser(
@@ -279,7 +281,10 @@ impl IrcActor {
                 .tell(ProcessCommand {
                     irc_actor: actor_ref,
                     user,
-                    privmsg,
+                    privmsg: PrivMsg {
+                        message: stripped_message.to_string(),
+                        ..privmsg
+                    },
                 })
                 .send()
                 .await

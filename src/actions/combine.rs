@@ -1,8 +1,10 @@
 use anyhow::{Context as _, Error, Result, bail};
 use image::RgbImage;
 use kameo::{Actor, prelude::Message};
+use rand::seq::{IndexedRandom as _, SliceRandom};
 use redis::AsyncTypedCommands;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use crate::{messages::chat::Oneshot, network::openrouter::OpenRouter, supervisor::Supervisor};
 
@@ -30,6 +32,8 @@ struct CombineChatResponse {
 }
 
 const CONSTANT_PROMPT: &str = include_str!("../../prompts/combine_prompt.tmpl");
+
+const ELEMENTS: &[&str] = &["air", "earth", "fire", "water"];
 
 fn split_words(input: &str) -> Result<(String, String), Error> {
     let cleaned = input
@@ -62,8 +66,21 @@ impl Message<String> for CombineActor {
         msg: String,
         _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        debug!("CombineActor received message: {}", msg);
         let words = split_words(&msg)?;
-        // Check cache first.
+        info!("Combining words: {} + {}", words.0, words.1);
+        // Confirm that both words have been unlocked.
+        for word in [&words.0, &words.1] {
+            if !ELEMENTS.contains(&word.as_str()) {
+                if self.check_basis(word).await?.is_none() {
+                    bail!(
+                        "The word '{}' has not been unlocked yet. Please use the basic elements: air, earth, fire, water.",
+                        word
+                    );
+                }
+            }
+        }
+        // Check cache.
         if let Some(cached) = self.get_from_cache(&words.0, &words.1).await? {
             return Ok(cached);
         }
@@ -81,11 +98,14 @@ impl CombineActor {
 
     async fn combine(&self, word1: &str, word2: &str) -> Result<CombineResult> {
         let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
+        let focus = self.get_random_focus();
+        info!("Using focus: {}", focus);
         let response = router.ask(Oneshot {
             purpose: crate::messages::chat::Purpose::Chat,
-            origin: "Combination game".to_string(),
+            origin: "combination game".to_string(),
             text: vec![
                 crate::messages::chat::Part::Cacheable(CONSTANT_PROMPT.to_string()),
+                crate::messages::chat::Part::Uncacheable(focus),
                 crate::messages::chat::Part::Uncacheable(format!(
                     "Now, combine these words: {} + {}",
                     word1, word2
@@ -100,11 +120,44 @@ impl CombineActor {
             response_text
         ))?;
 
-        todo!()
+        // temp
+        Ok(CombineResult {
+            result: parsed.result,
+            reasoning: parsed.reasoning,
+            image_url: format!("Image prompt: {}", parsed.image_prompt),
+        })
     }
 
-    fn cache_key(word1: &str, word2: &str) -> String {
-        format!("combine:{}:{}", word1.to_lowercase(), word2.to_lowercase())
+    /// Randomly returns a theme, e.g. scientific, metaphorical, poetic, etc.
+    fn get_random_focus(&self) -> String {
+        let themes = [
+            "basic",
+            "metaphorical",
+            "basic",
+            "poetic",
+            "basic",
+            "ironic",
+            "basic",
+            "humorous",
+            "scientific",
+            "philosophical",
+        ];
+        themes
+            .choose(&mut rand::rng())
+            .map(|s| format!("Focus on a {} combination.", s))
+            .unwrap()
+    }
+
+    fn cache_key_combine(word1: &str, word2: &str) -> String {
+        format!(
+            "combine:combination:{}:{}",
+            word1.to_lowercase(),
+            word2.to_lowercase()
+        )
+    }
+
+    fn cache_key_basis(word: &str) -> String {
+        format!("combine:basis:{}", word.to_lowercase())
     }
 
     async fn get_from_cache(
@@ -112,7 +165,7 @@ impl CombineActor {
         word1: &str,
         word2: &str,
     ) -> Result<Option<CombineResult>, Error> {
-        let key = Self::cache_key(word1, word2);
+        let key = Self::cache_key_combine(word1, word2);
         let cached = self.redis.get(&key).await?;
         if let Some(cached_str) = cached {
             let result: CombineResult = serde_json::from_str(&cached_str)?;
@@ -122,15 +175,28 @@ impl CombineActor {
         }
     }
 
+    /// Check if this word has been constructed before. (And if so, return the combination that created it)
+    async fn check_basis(&mut self, word: &str) -> Result<Option<String>> {
+        let key = Self::cache_key_basis(word);
+        let source = self.redis.get(&key).await?;
+        Ok(source)
+    }
+
     async fn set_cache(
         &mut self,
         word1: &str,
         word2: &str,
         result: &CombineResult,
     ) -> Result<(), Error> {
-        let key = Self::cache_key(word1, word2);
+        let key = Self::cache_key_combine(word1, word2);
         let value = serde_json::to_string(result)?;
         self.redis.set(&key, value).await?;
+        self.redis
+            .set(
+                Self::cache_key_basis(&result.result),
+                Self::cache_key_combine(word1, word2),
+            )
+            .await?;
         Ok(())
     }
 }
