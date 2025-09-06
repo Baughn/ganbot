@@ -151,12 +151,16 @@ impl CombineActor {
             .context("while asking OpenRouter for image")?;
 
         // And get the image URL.
+        let image_url = if let Some(image) = image_response.image {
+            upload_image(image).await.context("while uploading image")?
+        } else {
+            return Err(anyhow::anyhow!("No image generated for combination"));
+        };
+
         Ok(CombineResult {
             result: response.result,
             reasoning: response.reasoning,
-            image_url: upload_image(image_response)
-                .await
-                .context("while uploading image")?,
+            image_url,
         })
     }
 

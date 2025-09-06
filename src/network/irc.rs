@@ -369,8 +369,11 @@ impl Message<ProcessCommand> for ReplyActor {
                 let prompt_result = prompt_actor.ask(args.to_string()).await;
                 match prompt_result {
                     Ok(result) => {
-                        // Return the image URL
-                        Some(result.image_url)
+                        // Return text and optional image URL
+                        match result.image_url {
+                            Some(image_url) => Some(format!("{} {}", result.text, image_url)),
+                            None => Some(result.text),
+                        }
                     }
                     Err(e) => Some(format!("Error: {e:#}")),
                 }

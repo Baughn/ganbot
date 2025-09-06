@@ -1,7 +1,6 @@
 /// OpenRouter API module.
 /// This mostly wraps the openrouter_api crate with some convenience methods, such as a conversation actor.
 use anyhow::{Context as _, Result, bail};
-use image::RgbImage;
 use kameo::actor::ActorRef;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
@@ -12,7 +11,7 @@ use serde_json::json;
 use tracing::{error, info, instrument};
 
 use crate::config::global::OpenrouterConfig;
-use crate::messages::chat::{self, NanoBanana};
+use crate::messages::chat::{self, NanoBanana, NanoBananaResponse};
 
 /// Singleton actor that manages OpenRouter API access
 pub struct OpenRouter {
@@ -90,7 +89,7 @@ where
 }
 
 impl Message<NanoBanana> for OpenRouter {
-    type Reply = ForwardedReply<NanoBanana, Result<RgbImage>>;
+    type Reply = ForwardedReply<NanoBanana, Result<NanoBananaResponse>>;
 
     #[instrument(skip_all)]
     async fn handle(
@@ -328,7 +327,7 @@ impl Message<chat::Oneshot> for ConversationActor {
 }
 
 impl Message<NanoBanana> for ConversationActor {
-    type Reply = Result<RgbImage>;
+    type Reply = Result<NanoBananaResponse>;
 
     #[instrument(skip_all)]
     async fn handle(
@@ -350,7 +349,7 @@ impl Message<NanoBanana> for ConversationActor {
                     "content": msg.prompt,
                 }
             ],
-            "modalities": ["image"],
+            "modalities": ["text", "image"],
         });
 
         for backoff in [0, 5, 30] {
@@ -407,7 +406,19 @@ impl Message<NanoBanana> for ConversationActor {
                     //     }
                     //   ]
                     // }
-                    if let Some(image_data) = json
+
+                    // Extract text content
+                    let text_content = json
+                        .get("choices")
+                        .and_then(|choices| choices.get(0))
+                        .and_then(|choice| choice.get("message"))
+                        .and_then(|message| message.get("content"))
+                        .and_then(|content| content.as_str())
+                        .unwrap_or("Generated an image for you.")
+                        .to_string();
+
+                    // Extract optional image
+                    let image = if let Some(image_data) = json
                         .get("choices")
                         .and_then(|choices| choices.get(0))
                         .and_then(|choice| choice.get("message"))
@@ -426,29 +437,33 @@ impl Message<NanoBanana> for ConversationActor {
                                     Ok(img) => {
                                         let rgb_image = img.to_rgb8();
                                         info!("Successfully generated image via OpenRouter");
-                                        return Ok(rgb_image);
+                                        Some(rgb_image)
                                     }
                                     Err(e) => {
                                         error!("Failed to decode image from bytes: {:?}", e);
-                                        continue;
+                                        None
                                     }
                                 },
                                 Err(e) => {
                                     error!("Failed to decode base64 image data: {:?}", e);
-                                    continue;
+                                    None
                                 }
                             }
                         } else {
                             error!("Image URL is not a valid data URL");
-                            continue;
+                            None
                         }
                     } else {
-                        error!("No image data found in OpenRouter response");
-                        continue;
-                    }
+                        None
+                    };
+
+                    return Ok(NanoBananaResponse {
+                        text: text_content,
+                        image,
+                    });
                 }
             }
         }
-        bail!("Failed to get image from OpenRouter after retries");
+        bail!("Failed to get response from OpenRouter after retries");
     }
 }

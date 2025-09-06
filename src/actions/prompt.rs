@@ -16,7 +16,8 @@ pub struct Prompt(pub String);
 
 #[derive(Debug)]
 pub struct PromptResult {
-    pub image_url: String,
+    pub text: String,
+    pub image_url: Option<String>,
 }
 
 impl Message<String> for PromptActor {
@@ -44,23 +45,31 @@ impl Message<String> for PromptActor {
         // Get the OpenRouter instance
         let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
 
-        // Generate the image using NanoBanana
-        let image_response = router
+        // Generate response using NanoBanana
+        let response = router
             .ask(NanoBanana {
                 origin: "prompt command".to_string(),
                 prompt: prompt.to_string(),
             })
             .await
-            .context("while generating image with NanoBanana")?;
+            .context("while generating response with NanoBanana")?;
 
-        // Upload the image and get the URL
-        let image_url = upload_image(image_response)
-            .await
-            .context("while uploading generated image")?;
+        // Upload the image if one was generated
+        let image_url = if let Some(image) = response.image {
+            let url = upload_image(image)
+                .await
+                .context("while uploading generated image")?;
+            info!("Successfully generated and uploaded image: {}", url);
+            Some(url)
+        } else {
+            info!("No image generated, text-only response");
+            None
+        };
 
-        info!("Successfully generated and uploaded image: {}", image_url);
-
-        Ok(PromptResult { image_url })
+        Ok(PromptResult {
+            text: response.text,
+            image_url,
+        })
     }
 }
 

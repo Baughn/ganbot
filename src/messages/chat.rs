@@ -54,3 +54,11 @@ pub struct NanoBanana {
     /// The image prompt.
     pub prompt: String,
 }
+
+#[derive(Debug, Clone)]
+pub struct NanoBananaResponse {
+    /// The text response from the AI.
+    pub text: String,
+    /// Optional image if one was generated.
+    pub image: Option<image::RgbImage>,
+}
