@@ -35,6 +35,10 @@ impl Message<String> for PromptActor {
             bail!("Please provide a prompt for image generation.");
         }
 
+        // Make sure we're actually asking for an image.
+        // NOTE: We should only do this for NanoBanana.
+        let prompt = format!("Generate an image: {}", prompt);
+
         info!("Generating image for prompt: {}", prompt);
 
         // Get the OpenRouter instance
