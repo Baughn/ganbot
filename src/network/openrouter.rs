@@ -359,7 +359,7 @@ impl Message<NanoBanana> for ConversationActor {
             "modalities": ["image"],
         });
 
-        for backoff in vec![0, 5, 30, 60] {
+        for backoff in vec![0, 5, 30] {
             if backoff > 0 {
                 info!("Waiting {} seconds before retrying...", backoff);
                 tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;

@@ -42,6 +42,7 @@ const ELEMENTS: &[&str] = &["air", "earth", "fire", "water"];
 
 fn split_words(input: &str) -> Result<(String, String), Error> {
     let cleaned = input
+        .to_ascii_lowercase()
         .chars()
         .map(|c| match c {
             ',' | '+' | '&' | '|' | '/' | ';' | ':' | '-' | '_' | '=' | '*' | '~' | '!' | '?'
@@ -165,9 +166,14 @@ impl CombineActor {
     /// Randomly returns a theme, e.g. scientific, metaphorical, poetic, etc.
     fn get_random_focus(&self) -> String {
         let themes = [
-            "basic",
+            "obvious",
+            "obvious",
+            "obvious",
+            "obvious",
+            "obvious",
+            "obvious",
             "metaphorical",
-            "basic",
+            "obvious",
             "poetic",
             "basic",
             "ironic",

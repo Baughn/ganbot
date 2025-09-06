@@ -360,6 +360,22 @@ impl Message<ProcessCommand> for ReplyActor {
                     Err(e) => Some(format!("Error: {e:#}")),
                 }
             }
+            "prompt" => {
+                // Spawn Prompt actor to handle image generation
+                let prompt_actor = actions::prompt::PromptActor::spawn_link(
+                    &ctx.actor_ref(),
+                    actions::prompt::PromptActor::new().await,
+                )
+                .await;
+                let prompt_result = prompt_actor.ask(args.to_string()).await;
+                match prompt_result {
+                    Ok(result) => {
+                        // Return the image URL
+                        Some(result.image_url)
+                    }
+                    Err(e) => Some(format!("Error: {e:#}")),
+                }
+            }
             x => {
                 info!("Unknown command: {}", x);
                 None
