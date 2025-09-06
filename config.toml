@@ -12,16 +12,21 @@ token = "your-openrouter-token-here"
 chat_model = "google/gemini-2.5-pro"
 image_model = "google/gemini-2.5-flash-image-preview"
 
+[image_host]
+ssh_hostname = "direct.brage.info"
+ssh_directory = "/home/svein/web/GAN/"
+base_url = "https://brage.info/GAN/"
+
 [[irc]]
 server = "irc.rizon.net"
 tls = true
 port = 6697
 channels = ["#nanobot"]
-nick = "GANBot-dev"
+nick = "GANBot"
 
 [[irc]]
 server = "irc.libera.chat"
 tls = true
 port = 6697
 channels = ["#questionablebotting"]
-nick = "ganbot3-dev"
+nick = "GANBot"
