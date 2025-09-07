@@ -44,8 +44,7 @@ fn split_words(input: &str) -> Result<(String, String), Error> {
         .to_ascii_lowercase()
         .chars()
         .map(|c| match c {
-            ',' | '+' | '&' | '|' | '/' | ';' | ':' | '-' | '_' | '=' | '*' | '~' | '!' | '?'
-            | '.' => ' ',
+            ',' | '+' | '&' | '|' | '/' | ';' | ':' | '=' | '*' | '~' | '!' | '?' | '.' => ' ',
             c => c,
         })
         .collect::<String>();
@@ -292,14 +291,6 @@ mod tests {
         );
         assert_eq!(
             split_words("fire/water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire-water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire_water").unwrap(),
             ("fire".to_string(), "water".to_string())
         );
         assert_eq!(
