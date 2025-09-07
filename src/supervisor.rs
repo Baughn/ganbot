@@ -73,9 +73,9 @@ struct GetRedisReply(redis::aio::ConnectionManager);
 struct GetImageHost;
 #[derive(Reply)]
 struct GetImageHostReply(ImageHostConfig);
-struct GetModelsConfig;
+pub struct GetModelsConfig;
 #[derive(Reply)]
-struct GetModelsConfigReply(ModelsConfig);
+pub struct GetModelsConfigReply(pub ModelsConfig);
 
 impl Actor for Supervisor {
     type Args = Config;

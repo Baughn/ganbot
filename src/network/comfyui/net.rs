@@ -530,7 +530,7 @@ impl ComfyUIClient {
 
         // Decode and save
         let images = graph.vae_decode(&vae, &samples);
-        graph.save_image(&images, "ganbot3");
+        graph.save_images(&images, "ganbot3");
 
         let mut results = self.execute_graph(graph, None).await?;
 

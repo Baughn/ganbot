@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         seed: 42,
         steps: 20,
         cfg: 7.5,
-        sampler_name: "euler".to_string(),
+        sampler: "euler".to_string(),
         scheduler: "normal".to_string(),
         denoise: 1.0,
     };
@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Added VAE decode node");
 
     // Save image
-    graph.save_image(&images, "ganbot3_example");
+    graph.save_images(&images, "ganbot3_example");
     println!("✓ Added save image node");
 
     println!("✓ Workflow built successfully with {} nodes", 7);

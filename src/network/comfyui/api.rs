@@ -60,10 +60,10 @@ pub type ImageOutput = NodeOutput<Image>;
 pub struct KSamplerParams {
     pub seed: u64,
     pub steps: u32,
-    pub cfg: f64,
-    pub sampler_name: String,
+    pub cfg: f32,
+    pub sampler: String,
     pub scheduler: String,
-    pub denoise: f64,
+    pub denoise: f32,
 }
 
 impl Default for KSamplerParams {
@@ -78,7 +78,7 @@ impl Default for KSamplerParams {
             seed,
             steps: 20,
             cfg: 7.0,
-            sampler_name: "euler".to_string(),
+            sampler: "euler".to_string(),
             scheduler: "normal".to_string(),
             denoise: 1.0,
         }
@@ -276,18 +276,15 @@ impl Graph {
         );
         inputs.insert(
             "cfg".to_string(),
-            serde_json::Number::from_f64(params.cfg)
+            serde_json::Number::from_f64(params.cfg as f64)
                 .map(Value::Number)
                 .unwrap_or(Value::Null),
         );
-        inputs.insert(
-            "sampler_name".to_string(),
-            Value::String(params.sampler_name),
-        );
+        inputs.insert("sampler_name".to_string(), Value::String(params.sampler));
         inputs.insert("scheduler".to_string(), Value::String(params.scheduler));
         inputs.insert(
             "denoise".to_string(),
-            serde_json::Number::from_f64(params.denoise)
+            serde_json::Number::from_f64(params.denoise as f64)
                 .map(Value::Number)
                 .unwrap_or(Value::Null),
         );
@@ -312,7 +309,7 @@ impl Graph {
         NodeOutput::new(node_id, 0)
     }
 
-    pub fn save_image(&mut self, images: &ImageOutput, filename_prefix: &str) -> ImageOutput {
+    pub fn save_images(&mut self, images: &ImageOutput, filename_prefix: &str) -> ImageOutput {
         let mut inputs = Map::new();
         inputs.insert(
             "filename_prefix".to_string(),
@@ -394,13 +391,13 @@ mod tests {
             seed: 310307348447692,
             steps: 20,
             cfg: 5.5,
-            sampler_name: "er_sde".to_string(),
+            sampler: "er_sde".to_string(),
             scheduler: "beta".to_string(),
             denoise: 1.0,
         };
         let samples = g.ksampler(&model, &positive, &negative, &latent, params);
         let images = g.vae_decode(&vae, &samples);
-        let _output = g.save_image(&images, "ComfyUI");
+        let _output = g.save_images(&images, "ComfyUI");
 
         let json = g.build();
         println!("{}", serde_json::to_string_pretty(&json).unwrap());
@@ -433,13 +430,13 @@ mod tests {
             seed: 153903009837362,
             steps: 20,
             cfg: 2.5,
-            sampler_name: "er_sde".to_string(),
+            sampler: "er_sde".to_string(),
             scheduler: "sgm_uniform".to_string(),
             denoise: 1.0,
         };
         let samples = g.ksampler(&model_with_sampling, &positive, &negative, &latent, params);
         let images = g.vae_decode(&vae, &samples);
-        let _output = g.save_image(&images, "ComfyUI");
+        let _output = g.save_images(&images, "ComfyUI");
 
         let json = g.build();
         let json_obj = json.as_object().unwrap();
@@ -466,13 +463,13 @@ mod tests {
             seed: 1011350887342639,
             steps: 28,
             cfg: 1.0,
-            sampler_name: "er_sde".to_string(),
+            sampler: "er_sde".to_string(),
             scheduler: "beta".to_string(),
             denoise: 1.0,
         };
         let samples = g.ksampler(&model, &positive, &negative, &latent, params);
         let images = g.vae_decode(&vae, &samples);
-        let _output = g.save_image(&images, "flux_krea/flux_krea");
+        let _output = g.save_images(&images, "flux_krea/flux_krea");
 
         let json = g.build();
         let json_obj = json.as_object().unwrap();
