@@ -1,0 +1,19 @@
+default = "fanart"
+
+[aliases]
+"fanart" = "walnut"
+
+[templates.illustrious]
+name = "illustrious"
+description = "Template for Illustrious-based models"
+
+[templates.illustrious.backend]
+StableDiffusion = { cfg = 7.0, sampler = "euler", scheduler = "normal", steps = 30, resolution = [1024, 1024] }
+
+[models.walnut]
+name = "walnut"
+inherit = "illustrious"
+description = "PlantMilkTeaWalnut. A fanart model; use tags!"
+
+[models.walnut.backend]
+StableDiffusion = { checkpoint = "xl-ill/plantMilkModelSuite_walnut.safetensors" }

@@ -19,6 +19,7 @@ use tracing::{error, info, instrument};
 use crate::config::{
     Config,
     global::{ImageHostConfig, IrcConfig, OpenrouterConfig},
+    models::{ModelsConfig, load_models_config},
 };
 use crate::network::irc::IrcActor;
 use crate::network::openrouter::OpenRouter;
@@ -29,6 +30,8 @@ type ConfigHash = u64;
 pub struct Supervisor {
     /// Currently active configuration.
     config: Config,
+    /// Models configuration.
+    models_config: ModelsConfig,
     /// Actors implied by said configuration.
     actors: HashMap<ConfigHash, Supervised>,
     /// Redis connection.
@@ -70,6 +73,9 @@ struct GetRedisReply(redis::aio::ConnectionManager);
 struct GetImageHost;
 #[derive(Reply)]
 struct GetImageHostReply(ImageHostConfig);
+struct GetModelsConfig;
+#[derive(Reply)]
+struct GetModelsConfigReply(ModelsConfig);
 
 impl Actor for Supervisor {
     type Args = Config;
@@ -92,8 +98,12 @@ impl Actor for Supervisor {
         // Initialize the user manager.
         let user_manager = UserManager::spawn_link(&actor_ref, redis_connection.clone()).await;
 
+        // Load models configuration
+        let models_config = load_models_config().expect("Failed to load models configuration");
+
         Ok(Supervisor {
             config: args,
+            models_config,
             actors: HashMap::new(),
             redis_connection,
             _user_manager: user_manager,
@@ -148,16 +158,32 @@ impl Message<ReloadConfig> for Supervisor {
     ) -> Self::Reply {
         // Reload the configuration.
         let new_config = crate::config::load().context("while reloading configuration")?;
-        if new_config == self.config {
-            info!("Configuration unchanged, no action taken");
-            Ok(())
-        } else {
+        let config_changed = new_config != self.config;
+
+        if config_changed {
             info!("Configuration changed, applying new settings");
             self.config = new_config;
             // Apply the new configuration.
             ctx.actor_ref().tell(ApplyConfig).try_send()?;
-            Ok(())
+        } else {
+            info!("Configuration unchanged, no action taken");
         }
+
+        // Always attempt to reload models config regardless of main config changes
+        match load_models_config() {
+            Ok(new_models_config) => {
+                info!("Successfully reloaded models configuration");
+                self.models_config = new_models_config;
+            }
+            Err(e) => {
+                error!(
+                    "Failed to reload models configuration, keeping old config: {}",
+                    e
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -263,6 +289,18 @@ impl Message<GetImageHost> for Supervisor {
     }
 }
 
+impl Message<GetModelsConfig> for Supervisor {
+    type Reply = GetModelsConfigReply;
+
+    async fn handle(
+        &mut self,
+        _msg: GetModelsConfig,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        GetModelsConfigReply(self.models_config.clone())
+    }
+}
+
 impl Supervisor {
     /// Get a copy of the Redis connection.
     pub async fn redis() -> redis::aio::ConnectionManager {
@@ -291,6 +329,21 @@ impl Supervisor {
             .ask(GetImageHost)
             .await
             .expect("while getting image host configuration")
+            .0
+    }
+
+    /// Get the models configuration.
+    pub async fn models_config() -> ModelsConfig {
+        let actor_ref = ACTOR_REGISTRY
+            .lock()
+            .unwrap()
+            .get::<Supervisor, str>("supervisor")
+            .expect("while getting Supervisor actor from registry")
+            .expect("Supervisor actor not found in registry");
+        actor_ref
+            .ask(GetModelsConfig)
+            .await
+            .expect("while getting models configuration")
             .0
     }
 }

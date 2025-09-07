@@ -1,4 +1,5 @@
 pub mod global;
+pub mod models;
 use config::{Config as ConfigBuilder, ConfigError, Environment, File};
 pub use global::Config;
 
