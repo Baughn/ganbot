@@ -1,27 +1,57 @@
 //! Configuration for image-generation models
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Public API structs - guaranteed to have all required fields populated
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
     pub default: String,
     pub aliases: HashMap<String, String>,
-    pub templates: HashMap<String, Model>,
     pub models: HashMap<String, Model>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
-    pub name: Option<String>,
-    pub inherit: Option<String>,
+    pub name: String,
     pub description: Option<String>,
     pub backend: Backend,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Backend {
+    NanoBanana,
+    StableDiffusion {
+        checkpoint: String,
+        vae: Option<String>,
+        cfg: f32,
+        sampler: String,
+        scheduler: String,
+        steps: u32,
+        resolution: (u32, u32),
+    },
+}
+
+/// Internal structs used during loading and inheritance - these can have None values
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LoadingModelsConfig {
+    pub default: String,
+    pub aliases: HashMap<String, String>,
+    pub templates: HashMap<String, LoadingModel>,
+    pub models: HashMap<String, LoadingModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LoadingModel {
+    pub name: Option<String>,
+    pub inherit: Option<String>,
+    pub description: Option<String>,
+    pub backend: LoadingBackend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum LoadingBackend {
     NanoBanana,
     StableDiffusion {
         checkpoint: Option<String>,
@@ -44,12 +74,12 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
 
-    let mut config: ModelsConfig =
+    let mut loading_config: LoadingModelsConfig =
         toml::from_str(&content).with_context(|| format!("Failed to parse {}", path))?;
 
     // Apply inheritance - models inherit from templates
-    let templates = config.templates.clone();
-    for (name, model) in config.models.iter_mut() {
+    let templates = loading_config.templates.clone();
+    for (name, model) in loading_config.models.iter_mut() {
         if let Some(inherit_from) = &model.inherit {
             let template = templates.get(inherit_from).with_context(|| {
                 format!(
@@ -69,7 +99,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
             // For backend, merge StableDiffusion fields
             match (&template.backend, &mut model.backend) {
                 (
-                    Backend::StableDiffusion {
+                    LoadingBackend::StableDiffusion {
                         checkpoint: t_checkpoint,
                         vae: t_vae,
                         cfg: t_cfg,
@@ -78,7 +108,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                         steps: t_steps,
                         resolution: t_resolution,
                     },
-                    Backend::StableDiffusion {
+                    LoadingBackend::StableDiffusion {
                         checkpoint: m_checkpoint,
                         vae: m_vae,
                         cfg: m_cfg,
@@ -110,79 +140,71 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                         *m_resolution = *t_resolution;
                     }
                 }
-                (Backend::NanoBanana, Backend::StableDiffusion { .. }) => {
+                (LoadingBackend::NanoBanana, LoadingBackend::StableDiffusion { .. }) => {
                     // Can't inherit from NanoBanana to StableDiffusion
                 }
-                (Backend::StableDiffusion { .. }, Backend::NanoBanana) => {
+                (LoadingBackend::StableDiffusion { .. }, LoadingBackend::NanoBanana) => {
                     // Can't inherit from StableDiffusion to NanoBanana
                 }
-                (Backend::NanoBanana, Backend::NanoBanana) => {
+                (LoadingBackend::NanoBanana, LoadingBackend::NanoBanana) => {
                     // Both are NanoBanana, nothing to inherit
                 }
             }
         }
     }
 
-    // Validate that all required fields are present (except inherit)
-    for (name, model) in &config.models {
-        if model.name.is_none() {
-            bail!("Model '{}' is missing required field 'name'", name);
-        }
+    // Convert from loading structs to public structs while validating
+    let mut models = HashMap::new();
 
-        match &model.backend {
-            Backend::StableDiffusion {
+    for (name, loading_model) in &loading_config.models {
+        let model_name = loading_model
+            .name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Model '{}' is missing required field 'name'", name))?;
+
+        let backend = match &loading_model.backend {
+            LoadingBackend::NanoBanana => Backend::NanoBanana,
+            LoadingBackend::StableDiffusion {
                 checkpoint,
-                vae: _,
+                vae,
                 cfg,
                 sampler,
                 scheduler,
                 steps,
                 resolution,
             } => {
-                if checkpoint.is_none() {
-                    bail!(
-                        "Model '{}' StableDiffusion backend is missing required field 'checkpoint'",
-                        name
-                    );
-                }
-                if cfg.is_none() {
-                    bail!(
-                        "Model '{}' StableDiffusion backend is missing required field 'cfg'",
-                        name
-                    );
-                }
-                if sampler.is_none() {
-                    bail!(
-                        "Model '{}' StableDiffusion backend is missing required field 'sampler'",
-                        name
-                    );
-                }
-                if scheduler.is_none() {
-                    bail!(
-                        "Model '{}' StableDiffusion backend is missing required field 'scheduler'",
-                        name
-                    );
-                }
-                if steps.is_none() {
-                    bail!(
-                        "Model '{}' StableDiffusion backend is missing required field 'steps'",
-                        name
-                    );
-                }
-                if resolution.is_none() {
-                    bail!(
-                        "Model '{}' StableDiffusion backend is missing required field 'resolution'",
-                        name
-                    );
+                Backend::StableDiffusion {
+                    checkpoint: checkpoint.as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'checkpoint'", name))?.clone(),
+                    vae: vae.clone(),
+                    cfg: cfg
+                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'cfg'", name))?,
+                    sampler: sampler.as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'sampler'", name))?.clone(),
+                    scheduler: scheduler.as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'scheduler'", name))?.clone(),
+                    steps: steps
+                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'steps'", name))?,
+                    resolution: resolution
+                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'resolution'", name))?,
                 }
             }
-            Backend::NanoBanana => {
-                // NanoBanana has no required fields
-            }
-        }
+        };
+
+        let model = Model {
+            name: model_name.clone(),
+            description: loading_model.description.clone(),
+            backend,
+        };
+
+        models.insert(name.clone(), model);
     }
 
-    Ok(config)
+    Ok(ModelsConfig {
+        default: loading_config.default,
+        aliases: loading_config.aliases,
+        models,
+    })
 }
 
 #[cfg(test)]
@@ -227,7 +249,7 @@ NanoBanana = {}
         assert!(config.models.contains_key("simple"));
 
         let model = &config.models["simple"];
-        assert_eq!(model.name, Some("simple".to_string()));
+        assert_eq!(model.name, "simple");
         assert_eq!(model.description, Some("A simple test model".to_string()));
         assert!(matches!(model.backend, Backend::NanoBanana));
     }
@@ -259,25 +281,26 @@ StableDiffusion = { checkpoint = "child.safetensors" }
             .expect("Failed to load config");
 
         let child_model = &config.models["child"];
-        assert_eq!(child_model.name, Some("child_model".to_string()));
+        assert_eq!(child_model.name, "child_model");
         assert_eq!(child_model.description, Some("Base template".to_string())); // Inherited
 
         if let Backend::StableDiffusion {
             checkpoint,
+            vae,
             cfg,
             sampler,
             scheduler,
             steps,
             resolution,
-            ..
         } = &child_model.backend
         {
-            assert_eq!(checkpoint, &Some("child.safetensors".to_string())); // Override
-            assert_eq!(cfg, &Some(7.5)); // Inherited
-            assert_eq!(sampler, &Some("euler".to_string())); // Inherited
-            assert_eq!(scheduler, &Some("normal".to_string())); // Inherited
-            assert_eq!(steps, &Some(25)); // Inherited
-            assert_eq!(resolution, &Some((512, 512))); // Inherited
+            assert_eq!(checkpoint, "child.safetensors"); // Override
+            assert_eq!(vae, &None); // Not specified, should be None
+            assert_eq!(cfg, &7.5); // Inherited
+            assert_eq!(sampler, "euler"); // Inherited
+            assert_eq!(scheduler, "normal"); // Inherited
+            assert_eq!(steps, &25); // Inherited
+            assert_eq!(resolution, &(512, 512)); // Inherited
         } else {
             panic!("Expected StableDiffusion backend");
         }
