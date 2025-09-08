@@ -48,6 +48,25 @@ pub(crate) enum UserId {
 /// Update the username of the user.
 struct UpdateUsername(pub UserName);
 
+/// Generated image metadata for storage in Redis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedImage {
+    pub url: String,
+    pub prompt: String,
+    pub timestamp: String, // ISO 8601 datetime string
+    pub model: Option<String>,
+    pub backend: String, // "StableDiffusion" or "NanoBanana"
+}
+
+/// Add a generated image to the user's history
+#[derive(Debug, Clone)]
+pub struct AddGeneratedImage {
+    pub url: String,
+    pub prompt: String,
+    pub model: Option<String>,
+    pub backend: String,
+}
+
 impl UserManager {
     pub fn get() -> Result<ActorRef<UserManager>> {
         let user_manager = ACTOR_REGISTRY
@@ -145,6 +164,42 @@ impl Message<UpdateUsername> for UserActor {
             self.user.username = msg.0;
             self.persist().await?;
         }
+        Ok(())
+    }
+}
+
+impl Message<AddGeneratedImage> for UserActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        msg: AddGeneratedImage,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let generated_image = GeneratedImage {
+            url: msg.url,
+            prompt: msg.prompt,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: msg.model,
+            backend: msg.backend,
+        };
+
+        let key = format!("user:images:{}", self.user.id.key());
+        let value = json::to_string(&generated_image)
+            .context("while serializing generated image to JSON")?;
+        let score = chrono::Utc::now().timestamp_millis() as f64;
+
+        info!("Adding generated image to user history: {}", key);
+
+        crate::util::retry(|| async {
+            let mut conn = self.redis.clone();
+            conn.zadd(key.clone(), value.clone(), score)
+                .await
+                .context("Redis ZADD failed")
+        })
+        .await
+        .context("while adding generated image to Redis")?;
+
         Ok(())
     }
 }

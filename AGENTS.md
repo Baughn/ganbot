@@ -103,6 +103,7 @@ src/
 Redis is used for all persistence through a reconnecting `ConnectionManager`. Current key patterns:
 
 - `user:[userid]` -- JSON string containing User struct with configuration settings etc.
+- `user:images:[userid]` -- Sorted set of generated images for each user. Score is Unix timestamp, value is JSON containing image metadata (url, prompt, timestamp, model, backend).
 - `combine:combinations` -- Hash containing cached combination results for the combine game. Fields are `[word1]:[word2]` with JSON values containing CombineResult.
 - `combine:basis` -- Hash tracking base elements for the combine game. Fields are `[word]` with values referencing the combination that created them.
 - `image:files` -- Sorted set of all JPEGs uploaded to the web server. The score is the Unix timestamp at which it was created.

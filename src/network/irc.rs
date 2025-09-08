@@ -447,7 +447,7 @@ impl Message<ProcessCommand> for ReplyActor {
                 // Spawn Prompt actor to handle image generation
                 let prompt_actor = actions::prompt::PromptActor::spawn_link(
                     &ctx.actor_ref(),
-                    actions::prompt::PromptActor::new().await,
+                    actions::prompt::PromptActor::new(msg.user.clone()).await,
                 )
                 .await;
                 let prompt_result = prompt_actor.ask(args.to_string()).await;

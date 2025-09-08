@@ -10,7 +10,10 @@ use crate::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
         openrouter::OpenRouter,
     },
-    persistence::images::{GalleryInput, upload_gallery, upload_image_with_workflow},
+    persistence::{
+        images::{GalleryInput, upload_gallery, upload_image_with_workflow},
+        user::{AddGeneratedImage, UserActor},
+    },
     supervisor::Supervisor,
 };
 
@@ -18,7 +21,9 @@ pub mod parse;
 
 /// Image generation actor for the !prompt command
 #[derive(Actor)]
-pub(crate) struct PromptActor;
+pub(crate) struct PromptActor {
+    user_actor: kameo::actor::ActorRef<UserActor>,
+}
 
 pub struct Prompt(pub String);
 
@@ -246,6 +251,18 @@ impl PromptActor {
             gallery.0
         );
 
+        // Record the generated image in user's history
+        let _ = self
+            .user_actor
+            .tell(AddGeneratedImage {
+                url: gallery.0.clone(),
+                prompt: prompt.raw_prompt.clone(),
+                model: Some(model_name.to_string()),
+                backend: "StableDiffusion".to_string(),
+            })
+            .send()
+            .await;
+
         Ok(PromptResult {
             text: "".to_string(),
             image_url: Some(gallery.0),
@@ -294,6 +311,20 @@ impl PromptActor {
             None
         };
 
+        // Record the generated image in user's history if one was generated
+        if let Some(ref url) = image_url {
+            let _ = self
+                .user_actor
+                .tell(AddGeneratedImage {
+                    url: url.clone(),
+                    prompt: generate_request.raw_prompt.clone(),
+                    model: Some("gemini-2.5-flash-image-preview".to_string()),
+                    backend: "NanoBanana".to_string(),
+                })
+                .send()
+                .await;
+        }
+
         Ok(PromptResult {
             text: response.text,
             image_url,
@@ -302,8 +333,8 @@ impl PromptActor {
 }
 
 impl PromptActor {
-    pub async fn new() -> Self {
-        Self
+    pub async fn new(user_actor: kameo::actor::ActorRef<UserActor>) -> Self {
+        Self { user_actor }
     }
 
     /// Resolve model name to Model, handling aliases and defaults
