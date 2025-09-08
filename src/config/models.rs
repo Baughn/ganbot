@@ -65,7 +65,7 @@ struct LoadingModel {
     pub name: Option<String>,
     pub inherit: Option<String>,
     pub description: Option<String>,
-    pub backend: LoadingBackend,
+    pub backend: Option<LoadingBackend>,
     pub prompt_defaults: Option<LoadingPromptDefaults>,
 }
 
@@ -104,137 +104,117 @@ pub fn load_models_config() -> Result<ModelsConfig> {
     load_models_config_from_path("models.toml")
 }
 
-/// Load model configuration from a specific path (used for testing)
-pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
-    info!("Loading models configuration from {}", path);
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
+/// Apply inheritance from parent to child LoadingModel
+fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<()> {
+    // Apply parent values to child where child has None
+    if child.name.is_none() {
+        child.name = parent.name.clone();
+    }
+    if child.description.is_none() {
+        child.description = parent.description.clone();
+    }
 
-    let mut loading_config: LoadingModelsConfig =
-        toml::from_str(&content).with_context(|| format!("Failed to parse {}", path))?;
-
-    // Apply inheritance - models inherit from templates
-    let templates = loading_config.templates.clone();
-    for (name, model) in loading_config.models.iter_mut() {
-        debug!("Processing model '{}'", name);
-        if let Some(inherit_from) = &model.inherit {
-            debug!("  Inheriting from '{}'", inherit_from);
-            let template = templates.get(inherit_from).with_context(|| {
-                format!(
-                    "Model '{}' inherits from unknown template '{}'",
-                    name, inherit_from
-                )
-            })?;
-            trace!("  Template: {:?}", template);
-
-            // Apply template values to model where model has None
-            if model.name.is_none() {
-                model.name = template.name.clone();
+    // Merge prompt_defaults
+    match (&parent.prompt_defaults, &mut child.prompt_defaults) {
+        (Some(parent_defaults), Some(child_defaults)) => {
+            // Child has prompt_defaults, merge with parent
+            if child_defaults.positive_prepend.is_none() {
+                child_defaults.positive_prepend = parent_defaults.positive_prepend.clone();
             }
-            if model.description.is_none() {
-                model.description = template.description.clone();
+            if child_defaults.negative_prepend.is_none() {
+                child_defaults.negative_prepend = parent_defaults.negative_prepend.clone();
             }
-
-            // Merge prompt_defaults
-            match (&template.prompt_defaults, &mut model.prompt_defaults) {
-                (Some(template_defaults), Some(model_defaults)) => {
-                    // Model has prompt_defaults, merge with template
-                    if model_defaults.positive_prepend.is_none() {
-                        model_defaults.positive_prepend =
-                            template_defaults.positive_prepend.clone();
-                    }
-                    if model_defaults.negative_prepend.is_none() {
-                        model_defaults.negative_prepend =
-                            template_defaults.negative_prepend.clone();
-                    }
-                    if model_defaults.positive_append.is_none() {
-                        model_defaults.positive_append = template_defaults.positive_append.clone();
-                    }
-                    if model_defaults.negative_append.is_none() {
-                        model_defaults.negative_append = template_defaults.negative_append.clone();
-                    }
-                }
-                (Some(template_defaults), None) => {
-                    // Model has no prompt_defaults, inherit from template
-                    model.prompt_defaults = Some(template_defaults.clone());
-                }
-                (None, _) => {
-                    // Template has no prompt_defaults, keep model's (if any)
-                }
+            if child_defaults.positive_append.is_none() {
+                child_defaults.positive_append = parent_defaults.positive_append.clone();
             }
+            if child_defaults.negative_append.is_none() {
+                child_defaults.negative_append = parent_defaults.negative_append.clone();
+            }
+        }
+        (Some(parent_defaults), None) => {
+            // Child has no prompt_defaults, inherit from parent
+            child.prompt_defaults = Some(parent_defaults.clone());
+        }
+        (None, _) => {
+            // Parent has no prompt_defaults, keep child's (if any)
+        }
+    }
 
-            // For backend, merge StableDiffusion fields
-            match (&template.backend, &mut model.backend) {
+    // For backend, merge fields
+    match (&parent.backend, &mut child.backend) {
+        (Some(parent_backend), Some(child_backend)) => {
+            // Both have backends, merge StableDiffusion fields
+            match (parent_backend, child_backend) {
                 (
                     LoadingBackend::StableDiffusion {
-                        checkpoint: t_checkpoint,
-                        vae: t_vae,
-                        cfg: t_cfg,
-                        sampler: t_sampler,
-                        scheduler: t_scheduler,
-                        steps: t_steps,
-                        resolution: t_resolution,
-                        use_torch_compile: t_use_torch_compile,
-                        two_stage: t_two_stage,
-                        upscale_factor: t_upscale_factor,
-                        stage2_denoise: t_stage2_denoise,
-                        stage2_sampler: t_stage2_sampler,
-                        stage2_scheduler: t_stage2_scheduler,
+                        checkpoint: p_checkpoint,
+                        vae: p_vae,
+                        cfg: p_cfg,
+                        sampler: p_sampler,
+                        scheduler: p_scheduler,
+                        steps: p_steps,
+                        resolution: p_resolution,
+                        use_torch_compile: p_use_torch_compile,
+                        two_stage: p_two_stage,
+                        upscale_factor: p_upscale_factor,
+                        stage2_denoise: p_stage2_denoise,
+                        stage2_sampler: p_stage2_sampler,
+                        stage2_scheduler: p_stage2_scheduler,
                     },
                     LoadingBackend::StableDiffusion {
-                        checkpoint: m_checkpoint,
-                        vae: m_vae,
-                        cfg: m_cfg,
-                        sampler: m_sampler,
-                        scheduler: m_scheduler,
-                        steps: m_steps,
-                        resolution: m_resolution,
-                        use_torch_compile: m_use_torch_compile,
-                        two_stage: m_two_stage,
-                        upscale_factor: m_upscale_factor,
-                        stage2_denoise: m_stage2_denoise,
-                        stage2_sampler: m_stage2_sampler,
-                        stage2_scheduler: m_stage2_scheduler,
+                        checkpoint: c_checkpoint,
+                        vae: c_vae,
+                        cfg: c_cfg,
+                        sampler: c_sampler,
+                        scheduler: c_scheduler,
+                        steps: c_steps,
+                        resolution: c_resolution,
+                        use_torch_compile: c_use_torch_compile,
+                        two_stage: c_two_stage,
+                        upscale_factor: c_upscale_factor,
+                        stage2_denoise: c_stage2_denoise,
+                        stage2_sampler: c_stage2_sampler,
+                        stage2_scheduler: c_stage2_scheduler,
                     },
                 ) => {
-                    if m_checkpoint.is_none() {
-                        *m_checkpoint = t_checkpoint.clone();
+                    if c_checkpoint.is_none() {
+                        *c_checkpoint = p_checkpoint.clone();
                     }
-                    if m_vae.is_none() {
-                        *m_vae = t_vae.clone();
+                    if c_vae.is_none() {
+                        *c_vae = p_vae.clone();
                     }
-                    if m_cfg.is_none() {
-                        *m_cfg = *t_cfg;
+                    if c_cfg.is_none() {
+                        *c_cfg = *p_cfg;
                     }
-                    if m_sampler.is_none() {
-                        *m_sampler = t_sampler.clone();
+                    if c_sampler.is_none() {
+                        *c_sampler = p_sampler.clone();
                     }
-                    if m_scheduler.is_none() {
-                        *m_scheduler = t_scheduler.clone();
+                    if c_scheduler.is_none() {
+                        *c_scheduler = p_scheduler.clone();
                     }
-                    if m_steps.is_none() {
-                        *m_steps = *t_steps;
+                    if c_steps.is_none() {
+                        *c_steps = *p_steps;
                     }
-                    if m_resolution.is_none() {
-                        *m_resolution = *t_resolution;
+                    if c_resolution.is_none() {
+                        *c_resolution = *p_resolution;
                     }
-                    if m_use_torch_compile.is_none() {
-                        *m_use_torch_compile = *t_use_torch_compile;
+                    if c_use_torch_compile.is_none() {
+                        *c_use_torch_compile = *p_use_torch_compile;
                     }
-                    if m_two_stage.is_none() {
-                        *m_two_stage = *t_two_stage;
+                    if c_two_stage.is_none() {
+                        *c_two_stage = *p_two_stage;
                     }
-                    if m_upscale_factor.is_none() {
-                        *m_upscale_factor = *t_upscale_factor;
+                    if c_upscale_factor.is_none() {
+                        *c_upscale_factor = *p_upscale_factor;
                     }
-                    if m_stage2_denoise.is_none() {
-                        *m_stage2_denoise = *t_stage2_denoise;
+                    if c_stage2_denoise.is_none() {
+                        *c_stage2_denoise = *p_stage2_denoise;
                     }
-                    if m_stage2_sampler.is_none() {
-                        *m_stage2_sampler = t_stage2_sampler.clone();
+                    if c_stage2_sampler.is_none() {
+                        *c_stage2_sampler = p_stage2_sampler.clone();
                     }
-                    if m_stage2_scheduler.is_none() {
-                        *m_stage2_scheduler = t_stage2_scheduler.clone();
+                    if c_stage2_scheduler.is_none() {
+                        *c_stage2_scheduler = p_stage2_scheduler.clone();
                     }
                 }
                 (LoadingBackend::NanoBanana, LoadingBackend::StableDiffusion { .. }) => {
@@ -248,6 +228,59 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                 }
             }
         }
+        (Some(parent_backend), None) => {
+            // Child has no backend, inherit parent's entirely
+            child.backend = Some(parent_backend.clone());
+        }
+        (None, _) => {
+            // Parent has no backend, keep child's (if any)
+        }
+    }
+
+    Ok(())
+}
+
+/// Load model configuration from a specific path (used for testing)
+pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
+    info!("Loading models configuration from {}", path);
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
+
+    let mut loading_config: LoadingModelsConfig =
+        toml::from_str(&content).with_context(|| format!("Failed to parse {}", path))?;
+
+    // First, apply template-to-template inheritance
+    let mut resolved_templates = loading_config.templates.clone();
+    for (name, template) in resolved_templates.iter_mut() {
+        if let Some(inherit_from) = &template.inherit {
+            debug!("Template '{}' inheriting from '{}'", name, inherit_from);
+            let parent_template = loading_config.templates.get(inherit_from).with_context(|| {
+                format!(
+                    "Template '{}' inherits from unknown template '{}'",
+                    name, inherit_from
+                )
+            })?;
+            
+            apply_inheritance(template, parent_template)?;
+        }
+    }
+
+    // Apply inheritance - models inherit from templates
+    let templates = resolved_templates;
+    for (name, model) in loading_config.models.iter_mut() {
+        debug!("Processing model '{}'", name);
+        if let Some(inherit_from) = &model.inherit {
+            debug!("  Inheriting from '{}'", inherit_from);
+            let template = templates.get(inherit_from).with_context(|| {
+                format!(
+                    "Model '{}' inherits from unknown template '{}'",
+                    name, inherit_from
+                )
+            })?;
+            trace!("  Template: {:?}", template);
+
+            apply_inheritance(model, template)?;
+        }
     }
 
     // Convert from loading structs to public structs while validating
@@ -260,43 +293,48 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
             .ok_or_else(|| anyhow::anyhow!("Model '{}' is missing required field 'name'", name))?;
 
         let backend = match &loading_model.backend {
-            LoadingBackend::NanoBanana => Backend::NanoBanana,
-            LoadingBackend::StableDiffusion {
-                checkpoint,
-                vae,
-                cfg,
-                sampler,
-                scheduler,
-                steps,
-                resolution,
-                use_torch_compile,
-                two_stage,
-                upscale_factor,
-                stage2_denoise,
-                stage2_sampler,
-                stage2_scheduler,
-            } => {
-                Backend::StableDiffusion {
-                    checkpoint: checkpoint.as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'checkpoint'", name))?.clone(),
-                    vae: vae.clone(),
-                    cfg: cfg
-                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'cfg'", name))?,
-                    sampler: sampler.as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'sampler'", name))?.clone(),
-                    scheduler: scheduler.as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'scheduler'", name))?.clone(),
-                    steps: steps
-                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'steps'", name))?,
-                    resolution: resolution
-                        .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'resolution'", name))?,
-                    use_torch_compile: use_torch_compile.clone(),
-                    two_stage: two_stage.clone(),
-                    upscale_factor: upscale_factor.clone(),
-                    stage2_denoise: stage2_denoise.clone(),
-                    stage2_sampler: stage2_sampler.clone(),
-                    stage2_scheduler: stage2_scheduler.clone(),
+            Some(backend) => match backend {
+                LoadingBackend::NanoBanana => Backend::NanoBanana,
+                LoadingBackend::StableDiffusion {
+                    checkpoint,
+                    vae,
+                    cfg,
+                    sampler,
+                    scheduler,
+                    steps,
+                    resolution,
+                    use_torch_compile,
+                    two_stage,
+                    upscale_factor,
+                    stage2_denoise,
+                    stage2_sampler,
+                    stage2_scheduler,
+                } => {
+                    Backend::StableDiffusion {
+                        checkpoint: checkpoint.as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'checkpoint'", name))?.clone(),
+                        vae: vae.clone(),
+                        cfg: cfg
+                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'cfg'", name))?,
+                        sampler: sampler.as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'sampler'", name))?.clone(),
+                        scheduler: scheduler.as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'scheduler'", name))?.clone(),
+                        steps: steps
+                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'steps'", name))?,
+                        resolution: resolution
+                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'resolution'", name))?,
+                        use_torch_compile: use_torch_compile.clone(),
+                        two_stage: two_stage.clone(),
+                        upscale_factor: upscale_factor.clone(),
+                        stage2_denoise: stage2_denoise.clone(),
+                        stage2_sampler: stage2_sampler.clone(),
+                        stage2_scheduler: stage2_scheduler.clone(),
+                    }
                 }
+            }
+            None => {
+                return Err(anyhow::anyhow!("Model '{}' has no backend after inheritance processing", name));
             }
         };
 

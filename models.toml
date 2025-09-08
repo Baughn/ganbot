@@ -31,7 +31,6 @@ inherit = "sdxl"
 description = "Illustrious-based settings"
 [templates.illustrious.prompt_defaults]
 negative_append = "bored, 3d, bad quality, worst quality, lowres, jpeg artifacts, bad anatomy, bad hands, multiple views, signature, watermark, censored, ugly, messy"
-[templates.illustrious.backend.StableDiffusion]
 
 [models.walnut]
 name = "walnut"

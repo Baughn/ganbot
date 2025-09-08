@@ -2,6 +2,7 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     // Backend configurations
     pub invokeai: InvokeaiConfig,
@@ -13,11 +14,13 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct InvokeaiConfig {
     pub url: String,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ImageHostConfig {
     pub ssh_hostname: String,
     pub ssh_directory: String,
@@ -25,6 +28,7 @@ pub struct ImageHostConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
 pub struct OpenrouterConfig {
     pub token: String,
     // Per-purpose model choices will be listed here.
@@ -35,6 +39,7 @@ pub struct OpenrouterConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
+#[serde(deny_unknown_fields)]
 pub struct IrcConfig {
     pub server: String,
     #[serde(default = "default_true")]
