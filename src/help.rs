@@ -65,6 +65,7 @@ fn models_config_to_help(config: ModelsConfig) -> ModelsHelp {
                     scheduler,
                     steps,
                     resolution,
+                    ..
                 } => BackendInfo::StableDiffusion {
                     checkpoint,
                     sampler,

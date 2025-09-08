@@ -40,6 +40,12 @@ pub enum Backend {
         scheduler: String,
         steps: u32,
         resolution: (u32, u32),
+        use_torch_compile: Option<bool>,
+        two_stage: Option<bool>,
+        upscale_factor: Option<f32>,
+        stage2_denoise: Option<f32>,
+        stage2_sampler: Option<String>,
+        stage2_scheduler: Option<String>,
     },
 }
 
@@ -84,6 +90,12 @@ enum LoadingBackend {
         scheduler: Option<String>,
         steps: Option<u32>,
         resolution: Option<(u32, u32)>,
+        use_torch_compile: Option<bool>,
+        two_stage: Option<bool>,
+        upscale_factor: Option<f32>,
+        stage2_denoise: Option<f32>,
+        stage2_sampler: Option<String>,
+        stage2_scheduler: Option<String>,
     },
 }
 
@@ -162,6 +174,12 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                         scheduler: t_scheduler,
                         steps: t_steps,
                         resolution: t_resolution,
+                        use_torch_compile: t_use_torch_compile,
+                        two_stage: t_two_stage,
+                        upscale_factor: t_upscale_factor,
+                        stage2_denoise: t_stage2_denoise,
+                        stage2_sampler: t_stage2_sampler,
+                        stage2_scheduler: t_stage2_scheduler,
                     },
                     LoadingBackend::StableDiffusion {
                         checkpoint: m_checkpoint,
@@ -171,6 +189,12 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                         scheduler: m_scheduler,
                         steps: m_steps,
                         resolution: m_resolution,
+                        use_torch_compile: m_use_torch_compile,
+                        two_stage: m_two_stage,
+                        upscale_factor: m_upscale_factor,
+                        stage2_denoise: m_stage2_denoise,
+                        stage2_sampler: m_stage2_sampler,
+                        stage2_scheduler: m_stage2_scheduler,
                     },
                 ) => {
                     if m_checkpoint.is_none() {
@@ -193,6 +217,24 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     }
                     if m_resolution.is_none() {
                         *m_resolution = *t_resolution;
+                    }
+                    if m_use_torch_compile.is_none() {
+                        *m_use_torch_compile = *t_use_torch_compile;
+                    }
+                    if m_two_stage.is_none() {
+                        *m_two_stage = *t_two_stage;
+                    }
+                    if m_upscale_factor.is_none() {
+                        *m_upscale_factor = *t_upscale_factor;
+                    }
+                    if m_stage2_denoise.is_none() {
+                        *m_stage2_denoise = *t_stage2_denoise;
+                    }
+                    if m_stage2_sampler.is_none() {
+                        *m_stage2_sampler = t_stage2_sampler.clone();
+                    }
+                    if m_stage2_scheduler.is_none() {
+                        *m_stage2_scheduler = t_stage2_scheduler.clone();
                     }
                 }
                 (LoadingBackend::NanoBanana, LoadingBackend::StableDiffusion { .. }) => {
@@ -227,6 +269,12 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                 scheduler,
                 steps,
                 resolution,
+                use_torch_compile,
+                two_stage,
+                upscale_factor,
+                stage2_denoise,
+                stage2_sampler,
+                stage2_scheduler,
             } => {
                 Backend::StableDiffusion {
                     checkpoint: checkpoint.as_ref()
@@ -242,6 +290,12 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                         .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'steps'", name))?,
                     resolution: resolution
                         .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'resolution'", name))?,
+                    use_torch_compile: use_torch_compile.clone(),
+                    two_stage: two_stage.clone(),
+                    upscale_factor: upscale_factor.clone(),
+                    stage2_denoise: stage2_denoise.clone(),
+                    stage2_sampler: stage2_sampler.clone(),
+                    stage2_scheduler: stage2_scheduler.clone(),
                 }
             }
         };
@@ -363,6 +417,12 @@ StableDiffusion = { checkpoint = "child.safetensors" }
             scheduler,
             steps,
             resolution,
+            use_torch_compile,
+            two_stage,
+            upscale_factor,
+            stage2_denoise,
+            stage2_sampler,
+            stage2_scheduler,
         } = &child_model.backend
         {
             assert_eq!(checkpoint, "child.safetensors"); // Override
@@ -372,6 +432,12 @@ StableDiffusion = { checkpoint = "child.safetensors" }
             assert_eq!(scheduler, "normal"); // Inherited
             assert_eq!(steps, &25); // Inherited
             assert_eq!(resolution, &(512, 512)); // Inherited
+            assert_eq!(use_torch_compile, &None); // Not specified
+            assert_eq!(two_stage, &None); // Not specified
+            assert_eq!(upscale_factor, &None); // Not specified
+            assert_eq!(stage2_denoise, &None); // Not specified
+            assert_eq!(stage2_sampler, &None); // Not specified
+            assert_eq!(stage2_scheduler, &None); // Not specified
         } else {
             panic!("Expected StableDiffusion backend");
         }

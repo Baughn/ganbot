@@ -79,6 +79,12 @@ impl Message<String> for PromptActor {
                 scheduler,
                 steps,
                 resolution,
+                use_torch_compile,
+                two_stage,
+                upscale_factor,
+                stage2_denoise,
+                stage2_sampler,
+                stage2_scheduler,
             } => {
                 self.stable_diffusion(
                     prompt,
@@ -90,6 +96,12 @@ impl Message<String> for PromptActor {
                     scheduler.as_str(),
                     *steps,
                     *resolution,
+                    use_torch_compile.unwrap_or(false),
+                    two_stage.unwrap_or(false),
+                    upscale_factor.unwrap_or(1.5),
+                    stage2_denoise.unwrap_or(0.5),
+                    stage2_sampler.as_deref().unwrap_or("euler"),
+                    stage2_scheduler.as_deref().unwrap_or("beta"),
                 )
                 .await
             }
@@ -112,6 +124,12 @@ impl PromptActor {
         scheduler: &str,
         steps: u32,
         resolution: (u32, u32),
+        use_torch_compile: bool,
+        two_stage: bool,
+        upscale_factor: f32,
+        stage2_denoise: f32,
+        stage2_sampler: &str,
+        stage2_scheduler: &str,
     ) -> Result<PromptResult> {
         let client = ComfyUIClient::new();
         let mut graph = comfyui::api::Graph::new();
@@ -137,7 +155,13 @@ impl PromptActor {
         let steps = prompt.steps.unwrap_or(steps).clamp(1, 150);
 
         // Build workflow
-        let (model, clip, vae) = graph.checkpoint_loader(checkpoint);
+        let (mut model, clip, vae) = graph.checkpoint_loader(checkpoint);
+
+        // Apply TorchCompile if enabled
+        if use_torch_compile {
+            model = graph.torch_compile_model(&model, "inductor");
+        }
+
         let vae = if let Some(vae_name) = vae_name {
             graph.vae_loader(vae_name)
         } else {
@@ -148,17 +172,51 @@ impl PromptActor {
             graph.clip_text_encode(&clip, &prompt.negative_prompt.clone().unwrap_or_default());
         let latent = graph.empty_latent_image(width, height, num_images);
 
-        let params = KSamplerParams {
-            sampler: sampler.to_string(),
-            scheduler: scheduler.to_string(),
-            steps,
-            cfg,
-            seed,
-            denoise: 1.0,
+        let final_samples = if two_stage {
+            // Stage 1: Initial sampling with half steps
+            let stage1_params = KSamplerParams {
+                sampler: sampler.to_string(),
+                scheduler: scheduler.to_string(),
+                steps: steps / 2,
+                cfg,
+                seed,
+                denoise: 1.0,
+            };
+            let stage1_samples =
+                graph.ksampler(&model, &positive, &negative, &latent, stage1_params);
+
+            // Stage 2: Upscale and refine
+            let upscaled_latent = graph.latent_upscaler(&stage1_samples, "SDXL", upscale_factor);
+
+            let stage2_params = KSamplerParams {
+                sampler: stage2_sampler.to_string(),
+                scheduler: stage2_scheduler.to_string(),
+                steps: steps / 2,
+                cfg,
+                seed,
+                denoise: stage2_denoise,
+            };
+            graph.ksampler(
+                &model,
+                &positive,
+                &negative,
+                &upscaled_latent,
+                stage2_params,
+            )
+        } else {
+            // Single-stage workflow
+            let params = KSamplerParams {
+                sampler: sampler.to_string(),
+                scheduler: scheduler.to_string(),
+                steps,
+                cfg,
+                seed,
+                denoise: 1.0,
+            };
+            graph.ksampler(&model, &positive, &negative, &latent, params)
         };
 
-        let samples = graph.ksampler(&model, &positive, &negative, &latent, params);
-        let images = graph.vae_decode(&vae, &samples);
+        let images = graph.vae_decode(&vae, &final_samples);
         graph.save_images(&images, model_name);
 
         debug!("Submitting graph to ComfyUI");

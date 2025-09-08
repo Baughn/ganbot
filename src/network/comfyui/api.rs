@@ -343,6 +343,35 @@ impl Graph {
         NodeOutput::new(node_id, 0)
     }
 
+    pub fn torch_compile_model(&mut self, model: &ModelOutput, backend: &str) -> ModelOutput {
+        let mut inputs = Map::new();
+        inputs.insert("model".to_string(), Self::node_reference(model));
+        inputs.insert("backend".to_string(), Value::String(backend.to_string()));
+
+        let node_id = self.add_node("TorchCompileModel", inputs);
+        NodeOutput::new(node_id, 0)
+    }
+
+    pub fn latent_upscaler(
+        &mut self,
+        latent: &LatentOutput,
+        latent_ver: &str,
+        scale_factor: f32,
+    ) -> LatentOutput {
+        let mut inputs = Map::new();
+        inputs.insert("latent".to_string(), Self::node_reference(latent));
+        inputs.insert("version".to_string(), Value::String(latent_ver.to_string()));
+        inputs.insert(
+            "upscale".to_string(),
+            serde_json::Number::from_f64(scale_factor as f64)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
+
+        let node_id = self.add_node("NNLatentUpscale", inputs);
+        NodeOutput::new(node_id, 0)
+    }
+
     pub fn model_sampling_aura_flow(&mut self, model: &ModelOutput, shift: f64) -> ModelOutput {
         let mut inputs = Map::new();
         inputs.insert(
