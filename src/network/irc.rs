@@ -410,6 +410,19 @@ impl Message<ProcessCommand> for ReplyActor {
 
         let reply = match command {
             "ping" => Some("Pong!".to_string()),
+            "ask" => {
+                // Spawn AskActor to handle this command
+                let ask_actor = actions::ask::AskActor::spawn_link(
+                    &ctx.actor_ref(),
+                    actions::ask::AskActor::new().await,
+                )
+                .await;
+                let ask_result = ask_actor.ask(args.to_string()).await;
+                match ask_result {
+                    Ok(result) => Some(result.response),
+                    Err(e) => Some(format!("Error: {e:#}")),
+                }
+            }
             "combine" => {
                 // Spawn Combine actor to handle this command
                 let combine_actor = actions::combine::CombineActor::spawn_link(

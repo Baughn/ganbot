@@ -328,10 +328,10 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                             .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'steps'", name))?,
                         resolution: resolution
                             .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'resolution'", name))?,
-                        use_torch_compile: use_torch_compile.clone(),
-                        two_stage: two_stage.clone(),
-                        upscale_factor: upscale_factor.clone(),
-                        stage2_denoise: stage2_denoise.clone(),
+                        use_torch_compile: *use_torch_compile,
+                        two_stage: *two_stage,
+                        upscale_factor: *upscale_factor,
+                        stage2_denoise: *stage2_denoise,
                         stage2_sampler: stage2_sampler.clone(),
                         stage2_scheduler: stage2_scheduler.clone(),
                     }
