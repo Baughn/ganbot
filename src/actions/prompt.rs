@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Error, Result};
 use kameo::{Actor, prelude::Message};
+use rand::RngCore as _;
 use tracing::{debug, info};
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
         openrouter::OpenRouter,
     },
-    persistence::images::upload_image,
+    persistence::images::{GalleryInput, upload_gallery, upload_image},
     supervisor::Supervisor,
 };
 
@@ -46,7 +47,7 @@ impl Message<String> for PromptActor {
         let model = self.resolve_model(&models_config, prompt.model.as_deref())?;
         info!("Using model: {:?}", model);
 
-        match &model.backend {
+        let prompt_result = match &model.backend {
             models::Backend::NanoBanana => self.nanobanana(prompt).await,
             models::Backend::StableDiffusion {
                 checkpoint,
@@ -70,7 +71,8 @@ impl Message<String> for PromptActor {
                 )
                 .await
             }
-        }
+        }?;
+        Ok(prompt_result)
     }
 }
 
@@ -91,6 +93,24 @@ impl PromptActor {
         let client = ComfyUIClient::new();
         let mut graph = comfyui::api::Graph::new();
 
+        // Replace model parameters with those from the prompt if specified.
+        let seed = prompt.seed.unwrap_or(rand::rng().next_u64());
+        let num_images = prompt.num_images.unwrap_or(2).clamp(1, 6);
+        let mut width = resolution.0;
+        let mut height = resolution.1;
+        if let Some(aspect) = prompt.aspect {
+            (width, height) = calculate_dimensions(aspect, width, height);
+        }
+        if let Some(w) = prompt.width {
+            width = w;
+        }
+        if let Some(h) = prompt.height {
+            height = h;
+        }
+        let width = width.clamp(256, 2048);
+        let height = height.clamp(256, 2048);
+        let steps = prompt.steps.unwrap_or(steps).clamp(1, 150);
+
         // Build workflow
         let (model, clip, vae) = graph.checkpoint_loader(checkpoint);
         let vae = if let Some(vae_name) = vae_name {
@@ -99,16 +119,16 @@ impl PromptActor {
             vae
         };
         let positive = graph.clip_text_encode(&clip, &prompt.prompt);
-        let negative = graph.clip_text_encode(&clip, &prompt.negative_prompt.unwrap_or_default());
-        let latent =
-            graph.empty_latent_image(resolution.0, resolution.1, prompt.num_images.unwrap_or(2));
+        let negative =
+            graph.clip_text_encode(&clip, &prompt.negative_prompt.clone().unwrap_or_default());
+        let latent = graph.empty_latent_image(resolution.0, resolution.1, num_images);
 
         let params = KSamplerParams {
             sampler: sampler.to_string(),
             scheduler: scheduler.to_string(),
             steps,
             cfg,
-            seed: prompt.seed.unwrap_or(0),
+            seed,
             denoise: 1.0,
         };
 
@@ -117,15 +137,31 @@ impl PromptActor {
         graph.save_images(&images, model_name);
 
         debug!("Submitting graph to ComfyUI");
-        let results = client
+        let images = client
             .execute_graph(graph, None)
             .await
             .context("while executing graph on ComfyUI")?;
         debug!("Graph execution completed");
 
         // Make a gallery from the images.
+        let title = format!("{}", prompt);
+        let subtitle = format!("Model: {}, Seed: {}", model_name, seed);
+        let gallery = upload_gallery(GalleryInput {
+            title,
+            subtitle,
+            images,
+        })
+        .await
+        .context("while uploading image gallery")?;
+        info!(
+            "Successfully generated and uploaded image gallery: {}",
+            gallery.0
+        );
 
-        todo!()
+        Ok(PromptResult {
+            text: "".to_string(),
+            image_url: Some(gallery.0),
+        })
     }
 
     /// Calls Gemini 2.5-flah-image-preview (NanoBanana) via OpenRouter
@@ -192,4 +228,17 @@ impl PromptActor {
             .get(model_name)
             .with_context(|| format!("model '{}' not found in configuration", model_name))?)
     }
+}
+
+/// Calculate dimensions based on aspect ratio and base dimensions, maintaining the pixel count.
+fn calculate_dimensions(aspect: (u32, u32), base_width: u32, base_height: u32) -> (u32, u32) {
+    let pixel_count = base_width * base_height;
+    let aspect_ratio = aspect.0 as f32 / aspect.1 as f32;
+    let height = (pixel_count as f32 / aspect_ratio).sqrt().round() as u32;
+    let width = (height as f32 * aspect_ratio).round() as u32;
+
+    // Make dimensions multiples of 64
+    let width = (width / 64) * 64;
+    let height = (height / 64) * 64;
+    (width, height)
 }

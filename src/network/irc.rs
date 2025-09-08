@@ -33,8 +33,12 @@ struct PrivMsg {
 }
 
 impl PrivMsg {
-    fn get_reply_target(&self) -> &str {
-        self.channel.as_deref().unwrap_or(&self.user)
+    fn get_reply_target(&self, reply_privately: bool) -> &str {
+        if reply_privately {
+            &self.user
+        } else {
+            self.channel.as_deref().unwrap_or(&self.user)
+        }
     }
 }
 
@@ -57,6 +61,8 @@ struct SendReply {
     privmsg: PrivMsg,
     /// The actual message to send.
     message: String,
+    /// Whether to reply privately to the user (via direct message) instead of the channel.
+    reply_privately: bool,
 }
 
 // Internal actor for handling command processing and replies.
@@ -366,7 +372,7 @@ impl Message<SendReply> for IrcActor {
         msg: SendReply,
         _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let target = msg.privmsg.get_reply_target();
+        let target = msg.privmsg.get_reply_target(msg.reply_privately);
         if let Err(e) = self.send_privmsg(target, &msg.message).await {
             error!("Error sending reply to {}: {:#}", target, e);
         }
@@ -399,6 +405,8 @@ impl Message<ProcessCommand> for ReplyActor {
             .strip_prefix(command)
             .unwrap_or("")
             .trim();
+
+        let mut reply_privately = false;
 
         let reply = match command {
             "ping" => Some("Pong!".to_string()),
@@ -434,7 +442,10 @@ impl Message<ProcessCommand> for ReplyActor {
                     Ok(result) => {
                         // Return text and optional image URL
                         match result.image_url {
-                            Some(image_url) => Some(format!("{} {}", result.text, image_url)),
+                            Some(image_url) => Some(format!(
+                                "{}: {} {}",
+                                msg.privmsg.user, result.text, image_url
+                            )),
                             None => Some(format!("{}\n(No image)", result.text)),
                         }
                     }
@@ -446,6 +457,7 @@ impl Message<ProcessCommand> for ReplyActor {
                 match help::get_models_help().await {
                     Ok(models_help) => {
                         let formatted = IrcActor::format_models_for_irc(&models_help);
+                        reply_privately = true;
                         Some(formatted)
                     }
                     Err(e) => Some(format!("Error fetching models: {e:#}")),
@@ -464,6 +476,7 @@ impl Message<ProcessCommand> for ReplyActor {
                 .tell(SendReply {
                     privmsg: msg.privmsg,
                     message: reply_message,
+                    reply_privately,
                 })
                 .send()
                 .await;
@@ -646,7 +659,7 @@ impl Message<ProcessBufferedMessages> for IrcActor {
                     error!("Error processing buffered message: {:#}", e);
 
                     // And attempt to notify the user.
-                    let reply_target = privmsg.get_reply_target();
+                    let reply_target = privmsg.get_reply_target(false);
                     let error_message = format!("{}: {e:#}", privmsg.user);
                     let _ = self.send_privmsg(reply_target, &error_message).await;
                 }

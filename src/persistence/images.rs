@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{io::Cursor, os::unix::fs::PermissionsExt as _};
 
 use ab_glyph::{FontRef, PxScale};
 use anyhow::{Context as _, Result};
@@ -119,13 +119,22 @@ impl ImageUploader {
         let gallery_url = self.upload_jpeg(gallery_jpeg, &gallery_filename).await?;
 
         // Upload individual images with indices 1, 2, 3, etc.
-        let mut image_urls = Vec::new();
-        for (index, image) in msg.images.iter().enumerate() {
-            let filename = format!("{}.{}.jpg", base_uuid, index + 1);
-            let jpeg_bytes = self.encode_image_as_jpeg(image)?;
-            let url = self.upload_jpeg(jpeg_bytes, &filename).await?;
-            image_urls.push(url);
-        }
+        // Concurrently encode and upload individual images
+        let upload_futures = msg
+            .images
+            .iter()
+            .enumerate()
+            .map(|(index, image)| async move {
+                let filename = format!("{}.{}.jpg", base_uuid, index + 1);
+                let jpeg_bytes = self.encode_image_as_jpeg(image)?;
+                self.upload_jpeg(jpeg_bytes, &filename).await
+            });
+
+        // Wait for all uploads to complete
+        let results: Vec<Result<String>> = futures::future::join_all(upload_futures).await;
+
+        // Collect the URLs, propagating the first error if any occurred
+        let image_urls = results.into_iter().collect::<Result<Vec<_>>>()?;
 
         Ok(UploadedGalleryUrls {
             gallery_url,
@@ -164,6 +173,9 @@ impl ImageUploader {
         tokio::fs::write(temp_path, &jpeg_bytes)
             .await
             .context("Failed to write temporary file")?;
+        tokio::fs::set_permissions(temp_path, std::fs::Permissions::from_mode(0o644))
+            .await
+            .context("Failed to set permissions on temporary file")?;
 
         // Upload via SCP
         let remote_path = format!(

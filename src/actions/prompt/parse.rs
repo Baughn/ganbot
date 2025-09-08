@@ -11,6 +11,8 @@
 //! --seed
 //! -s, --steps
 
+use std::fmt::{Display, Formatter};
+
 use crate::messages::imagen::{Generate, References};
 use anyhow::{Result, anyhow, bail};
 
@@ -211,6 +213,48 @@ impl Generate {
                 context: Vec::new(),
             },
         })
+    }
+}
+
+impl Display for Generate {
+    /// Format back to a command-line style string, leaving out defaults.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut parts = Vec::new();
+        parts.push(self.prompt.clone());
+        if let Some(neg) = &self.negative_prompt {
+            parts.push("--no".to_string());
+            parts.push(neg.clone());
+        }
+        if let Some(c) = self.num_images {
+            parts.push("-c".to_string());
+            parts.push(c.to_string());
+        }
+        if let Some(w) = self.width {
+            parts.push("-w".to_string());
+            parts.push(w.to_string());
+        }
+        if let Some(h) = self.height {
+            parts.push("-h".to_string());
+            parts.push(h.to_string());
+        }
+        if let Some((ar_w, ar_h)) = self.aspect {
+            parts.push("--ar".to_string());
+            parts.push(format!("{ar_w}:{ar_h}"));
+        }
+        if let Some(m) = &self.model {
+            parts.push("-m".to_string());
+            parts.push(m.clone());
+        }
+        if let Some(s) = self.seed {
+            parts.push("--seed".to_string());
+            parts.push(s.to_string());
+        }
+        if let Some(st) = self.steps {
+            parts.push("-s".to_string());
+            parts.push(st.to_string());
+        }
+
+        write!(f, "{}", parts.join(" "))
     }
 }
 
