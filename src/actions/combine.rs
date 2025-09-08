@@ -44,7 +44,7 @@ fn split_words(input: &str) -> Result<(String, String), Error> {
         .to_ascii_lowercase()
         .chars()
         .map(|c| match c {
-            ',' | '+' | '&' | '|' | '/' | ';' | ':' | '=' | '*' | '~' | '!' | '?' | '.' => ' ',
+            ',' => ' ',
             c => c,
         })
         .collect::<String>();
@@ -145,6 +145,7 @@ impl CombineActor {
             .ask(crate::messages::chat::NanoBanana {
                 origin: "combination game".to_string(),
                 prompt: response.image_prompt,
+                input_image: None,
             })
             .await
             .context("while asking OpenRouter for image")?;
@@ -293,70 +294,6 @@ mod tests {
     fn test_split_words_with_separators() {
         assert_eq!(
             split_words("fire, water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire + water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire&water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire|water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire/water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire:water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire;water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire=water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire*water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire~water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire!water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire?water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire.water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-    }
-
-    #[test]
-    fn test_split_words_multiple_separators() {
-        assert_eq!(
-            split_words("fire, + water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire & + water").unwrap(),
-            ("fire".to_string(), "water".to_string())
-        );
-        assert_eq!(
-            split_words("fire,,,water").unwrap(),
             ("fire".to_string(), "water".to_string())
         );
     }

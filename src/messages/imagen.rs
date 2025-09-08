@@ -1,9 +1,10 @@
 /// Image generation requests & responses.
 use image::RgbImage;
+use std::fmt;
 
 /// Represents a user-initiated request to generate an image.
 /// Any unset value will be based on defaults for the model.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Generate {
     /// The original, unparsed prompt.
     pub raw_prompt: String,
@@ -29,7 +30,7 @@ pub struct Generate {
     pub references: References,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct References {
     /// A starting-point image for img2img generation.
     pub img2img: Option<RgbImage>,
@@ -40,10 +41,59 @@ pub struct References {
 
 /// Represents a response containing the generated image.
 /// This is typically sent back to the user or a channel.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GeneratedImage {
     /// The generated image data.
     pub image: RgbImage,
     /// The original request that triggered this generation.
     pub request: Generate,
+}
+
+impl fmt::Debug for Generate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Generate")
+            .field("raw_prompt", &self.raw_prompt)
+            .field("prompt", &self.prompt)
+            .field("negative_prompt", &self.negative_prompt)
+            .field("num_images", &self.num_images)
+            .field("aspect", &self.aspect)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("model", &self.model)
+            .field("seed", &self.seed)
+            .field("steps", &self.steps)
+            .field("references", &self.references)
+            .finish()
+    }
+}
+
+impl fmt::Debug for References {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("References")
+            .field(
+                "img2img",
+                &self
+                    .img2img
+                    .as_ref()
+                    .map(|img| format!("RgbImage({}x{})", img.width(), img.height())),
+            )
+            .field("img2img_strength", &self.img2img_strength)
+            .field(
+                "context",
+                &format!("[{} context images]", self.context.len()),
+            )
+            .finish()
+    }
+}
+
+impl fmt::Debug for GeneratedImage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GeneratedImage")
+            .field(
+                "image",
+                &format!("RgbImage({}x{})", self.image.width(), self.image.height()),
+            )
+            .field("request", &self.request)
+            .finish()
+    }
 }

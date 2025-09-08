@@ -1,6 +1,8 @@
 // This is an API wrapper; not all code is expected to be used.
 #![allow(dead_code)]
 
+use base64::Engine;
+use image::ImageEncoder;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -307,6 +309,43 @@ impl Graph {
 
         let node_id = self.add_node("VAEDecode", inputs);
         NodeOutput::new(node_id, 0)
+    }
+
+    pub fn vae_encode(&mut self, vae: &VaeOutput, pixels: &ImageOutput) -> LatentOutput {
+        let mut inputs = Map::new();
+        inputs.insert("pixels".to_string(), Self::node_reference(pixels));
+        inputs.insert("vae".to_string(), Self::node_reference(vae));
+        let node_id = self.add_node("VAEEncode", inputs);
+        NodeOutput::new(node_id, 0)
+    }
+
+    pub fn load_image_from_base64(&mut self, base64_data: &str) -> ImageOutput {
+        let mut inputs = Map::new();
+        inputs.insert("data".to_string(), Value::String(base64_data.to_string()));
+        let node_id = self.add_node("LoadImageFromBase64", inputs);
+        NodeOutput::new(node_id, 0)
+    }
+
+    pub fn load_image_from_rgb(&mut self, image: &image::RgbImage) -> ImageOutput {
+        // Convert RgbImage to base64 PNG data
+        let mut image_data = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut image_data);
+
+        // Use PNG encoder to encode the image
+        image::codecs::png::PngEncoder::new(&mut cursor)
+            .write_image(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .expect("Failed to encode image as PNG");
+
+        // Encode as base64
+        let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
+
+        // Use the LoadImageFromBase64 node
+        self.load_image_from_base64(&base64_data)
     }
 
     pub fn save_images(&mut self, images: &ImageOutput, filename_prefix: &str) -> ImageOutput {

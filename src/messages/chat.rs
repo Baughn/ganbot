@@ -53,6 +53,8 @@ pub struct NanoBanana {
     pub origin: String,
     /// The image prompt.
     pub prompt: String,
+    /// Optional input image for editing mode.
+    pub input_image: Option<image::RgbImage>,
 }
 
 #[derive(Debug, Clone)]

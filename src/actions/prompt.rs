@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Error, Result};
+use anyhow::{Context as _, Error, Result, bail};
 use kameo::{Actor, prelude::Message};
 use rand::RngCore as _;
 use tracing::{debug, info, trace};
@@ -44,9 +44,28 @@ impl Message<String> for PromptActor {
         debug!("PromptActor received message: {}", msg);
 
         // Parse the prompt
-        let mut prompt = Generate::from_str(&msg)?;
+        let prompt = Generate::from_str(&msg)?;
         info!("Parsed prompt: {:?}", prompt);
 
+        self.process_generate(prompt).await
+    }
+}
+
+impl Message<Generate> for PromptActor {
+    type Reply = Result<PromptResult, Error>;
+
+    async fn handle(
+        &mut self,
+        prompt: Generate,
+        _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        debug!("PromptActor received Generate: {:?}", prompt);
+        self.process_generate(prompt).await
+    }
+}
+
+impl PromptActor {
+    async fn process_generate(&mut self, mut prompt: Generate) -> Result<PromptResult, Error> {
         // Get models config and look up the model
         let models_config = Supervisor::models_config().await;
         let model = self.resolve_model(&models_config, prompt.model.as_deref())?;
@@ -113,9 +132,6 @@ impl Message<String> for PromptActor {
         }?;
         Ok(prompt_result)
     }
-}
-
-impl PromptActor {
     /// Stable Diffusion image generation (SDXL, etc.)
     #[allow(clippy::too_many_arguments)]
     async fn stable_diffusion(
@@ -138,6 +154,9 @@ impl PromptActor {
     ) -> Result<PromptResult> {
         let client = ComfyUIClient::new();
         let mut graph = comfyui::api::Graph::new();
+
+        // Never do two-stage if img2img is requested
+        let two_stage = two_stage && prompt.references.img2img.is_none();
 
         // Replace model parameters with those from the prompt if specified.
         let seed = prompt.seed.unwrap_or(rand::rng().next_u64());
@@ -175,7 +194,44 @@ impl PromptActor {
         let positive = graph.clip_text_encode(&clip, &prompt.prompt);
         let negative =
             graph.clip_text_encode(&clip, &prompt.negative_prompt.clone().unwrap_or_default());
-        let latent = graph.empty_latent_image(width, height, num_images);
+
+        // Handle img2img mode vs text2img mode
+        let latent = if let Some(ref input_image) = prompt.references.img2img {
+            // img2img mode: encode the input image to latent space
+            info!(
+                "Using img2img mode with input image: {}x{}",
+                input_image.width(),
+                input_image.height()
+            );
+
+            // For img2img, use the input image dimensions instead of specified dimensions
+            let img_width = input_image.width();
+            let img_height = input_image.height();
+
+            // Confirm that denoise strength is set
+            if let Some(strength) = prompt.references.img2img_strength {
+                if !(0.0..=1.0).contains(&strength) {
+                    bail!("--denoise parameter must be between 0.0 and 1.0");
+                }
+            } else {
+                bail!("--denoise parameter is required for img2img generation");
+            }
+
+            // Load and encode the input image
+            let loaded_image = graph.load_image_from_rgb(input_image);
+            graph.vae_encode(&vae, &loaded_image)
+        } else {
+            // text2img mode: use empty latent
+            graph.empty_latent_image(width, height, num_images)
+        };
+
+        // Determine denoise strength based on mode
+        let denoise = if let Some(strength) = prompt.references.img2img_strength {
+            strength.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        trace!("Using denoise strength: {}", denoise);
 
         let final_samples = if two_stage {
             // Stage 1: Initial sampling with half steps
@@ -185,7 +241,7 @@ impl PromptActor {
                 steps: steps / 2,
                 cfg,
                 seed,
-                denoise: 1.0,
+                denoise,
             };
             let stage1_samples =
                 graph.ksampler(&model, &positive, &negative, &latent, stage1_params);
@@ -216,7 +272,7 @@ impl PromptActor {
                 steps,
                 cfg,
                 seed,
-                denoise: 1.0,
+                denoise,
             };
             graph.ksampler(&model, &positive, &negative, &latent, params)
         };
@@ -271,11 +327,18 @@ impl PromptActor {
 
     /// Calls Gemini 2.5-flah-image-preview (NanoBanana) via OpenRouter
     async fn nanobanana(&self, generate_request: Generate) -> Result<PromptResult> {
-        // Make sure we're actually asking for an image.
-        let formatted_prompt = format!(
-            "Generate an image: {}\nAlways generate an image. In addition to the image, comment on it in the style of a hard-boiled noir detective.",
-            generate_request.prompt
-        );
+        // Adjust prompt based on whether we're editing an existing image
+        let formatted_prompt = if generate_request.references.img2img.is_some() {
+            format!(
+                "Edit this image according to these instructions: {}\nAlways generate an edited image. In addition to the image, comment on the changes in the style of a hard-boiled noir detective.",
+                generate_request.prompt
+            )
+        } else {
+            format!(
+                "Generate an image: {}\nAlways generate an image. In addition to the image, comment on it in the style of a hard-boiled noir detective.",
+                generate_request.prompt
+            )
+        };
 
         // Get the OpenRouter instance
         let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
@@ -285,6 +348,7 @@ impl PromptActor {
             .ask(NanoBanana {
                 origin: "prompt command".to_string(),
                 prompt: formatted_prompt.clone(),
+                input_image: generate_request.references.img2img.clone(),
             })
             .await
             .context("while generating response with NanoBanana")?;

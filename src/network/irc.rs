@@ -465,6 +465,41 @@ impl Message<ProcessCommand> for ReplyActor {
                     Err(e) => Some(format!("Error: {e:#}")),
                 }
             }
+            "select" => {
+                // Spawn SelectActor to handle this command
+                let select_actor = actions::select::SelectActor::spawn_link(
+                    &ctx.actor_ref(),
+                    actions::select::SelectActor::new(msg.user.clone()).await,
+                )
+                .await;
+                let select_result = select_actor.ask(args.to_string()).await;
+                match select_result {
+                    Ok(result) => Some(result.message),
+                    Err(e) => Some(format!("Error: {e:#}")),
+                }
+            }
+            "edit" => {
+                // Spawn EditActor to handle this command
+                let edit_actor = actions::edit::EditActor::spawn_link(
+                    &ctx.actor_ref(),
+                    actions::edit::EditActor::new(msg.user.clone()).await,
+                )
+                .await;
+                let edit_result = edit_actor.ask(args.to_string()).await;
+                match edit_result {
+                    Ok(result) => {
+                        // Return text and optional image URL
+                        match result.image_url {
+                            Some(image_url) => Some(format!(
+                                "{}: {} {}",
+                                msg.privmsg.user, result.text, image_url
+                            )),
+                            None => Some(format!("{}\n(No image)", result.text)),
+                        }
+                    }
+                    Err(e) => Some(format!("Error: {e:#}")),
+                }
+            }
             "models" => {
                 // Fetch and format models configuration
                 match help::get_models_help().await {

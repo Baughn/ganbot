@@ -35,6 +35,7 @@ pub struct UserActor {
 pub struct User {
     pub id: UserId,
     pub username: UserName,
+    pub selected_image_url: Option<String>,
 }
 
 type UserName = String;
@@ -66,6 +67,14 @@ pub struct AddGeneratedImage {
     pub model: Option<String>,
     pub backend: String,
 }
+
+/// Set the selected image URL for the user
+#[derive(Debug, Clone)]
+pub struct SetSelectedImage(pub String);
+
+/// Get the selected image URL for the user
+#[derive(Debug, Clone)]
+pub struct GetSelectedImage;
 
 impl UserManager {
     pub fn get() -> Result<ActorRef<UserManager>> {
@@ -126,6 +135,7 @@ impl Message<GetUser> for UserManager {
             User {
                 id: msg.0.clone(),
                 username: msg.1.clone(),
+                selected_image_url: None,
             }
         };
 
@@ -201,6 +211,32 @@ impl Message<AddGeneratedImage> for UserActor {
         .context("while adding generated image to Redis")?;
 
         Ok(())
+    }
+}
+
+impl Message<SetSelectedImage> for UserActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        msg: SetSelectedImage,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.user.selected_image_url = Some(msg.0);
+        self.persist().await?;
+        Ok(())
+    }
+}
+
+impl Message<GetSelectedImage> for UserActor {
+    type Reply = Result<Option<String>>;
+
+    async fn handle(
+        &mut self,
+        _msg: GetSelectedImage,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(self.user.selected_image_url.clone())
     }
 }
 

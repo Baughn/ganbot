@@ -1,6 +1,7 @@
 /// OpenRouter API module.
 /// This mostly wraps the openrouter_api crate with some convenience methods, such as a conversation actor.
 use anyhow::{Context as _, Result, bail};
+use base64::Engine as _;
 use kameo::actor::ActorRef;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
@@ -8,10 +9,32 @@ use openrouter_api::OpenRouterClient;
 use openrouter_api::models::structured::JsonSchemaConfig;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use std::io::Cursor;
 use tracing::{error, info, instrument};
 
 use crate::config::global::OpenrouterConfig;
 use crate::messages::chat::{self, NanoBanana, NanoBananaResponse};
+
+/// Convert an RgbImage to a base64-encoded JPEG data URL
+fn rgb_image_to_base64_data_url(img: &image::RgbImage) -> Result<String> {
+    let mut buffer = Vec::new();
+    let mut cursor = Cursor::new(&mut buffer);
+
+    // Convert to JPEG format
+    image::codecs::jpeg::JpegEncoder::new(&mut cursor)
+        .encode(
+            img.as_raw(),
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .context("Failed to encode image as JPEG")?;
+
+    // Encode as base64
+    let base64_string = base64::engine::general_purpose::STANDARD.encode(&buffer);
+
+    Ok(format!("data:image/jpeg;base64,{}", base64_string))
+}
 
 /// Singleton actor that manages OpenRouter API access
 pub struct OpenRouter {
@@ -341,12 +364,35 @@ impl Message<NanoBanana> for ConversationActor {
         let url = "https://openrouter.ai/api/v1/chat/completions";
         let client = reqwest::Client::new();
         let model = "google/gemini-2.5-flash-image-preview";
+        // Build the message content based on whether we have an input image
+        let message_content = if let Some(ref input_image) = msg.input_image {
+            // We have an input image - include it in the request
+            let image_data_url = rgb_image_to_base64_data_url(input_image)
+                .context("Failed to convert input image to base64")?;
+
+            json!([
+                {
+                    "type": "text",
+                    "text": msg.prompt
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url
+                    }
+                }
+            ])
+        } else {
+            // No input image - just text
+            json!(msg.prompt)
+        };
+
         let payload = json!({
             "model": model,
             "messages": [
                 {
                     "role": "user",
-                    "content": msg.prompt,
+                    "content": message_content,
                 }
             ],
             "modalities": ["text", "image"],

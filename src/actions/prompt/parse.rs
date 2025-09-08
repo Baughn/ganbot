@@ -29,6 +29,7 @@ impl Generate {
         let mut model = None;
         let mut seed = None;
         let mut steps = None;
+        let mut denoise = None;
 
         let tokens: Vec<&str> = raw.split_whitespace().collect();
         let mut i = 0;
@@ -97,6 +98,14 @@ impl Generate {
                     steps = Some(parse_u32(tokens[i], "steps")?);
                     i += 1;
                 }
+                "--denoise" => {
+                    i += 1;
+                    if i >= tokens.len() {
+                        bail!("Option {} requires a value", token);
+                    }
+                    denoise = Some(parse_f32(tokens[i], "denoise")?);
+                    i += 1;
+                }
                 _ if token.starts_with('-') && !token.starts_with("--") && token.len() > 2 => {
                     // Handle combined short options like -w512
                     // Only try to parse if it looks like a valid combined option (number after flag)
@@ -161,6 +170,7 @@ impl Generate {
                         "--model" => model = Some(value.to_string()),
                         "--seed" => seed = Some(parse_u64(value, "seed")?),
                         "--steps" => steps = Some(parse_u32(value, "steps")?),
+                        "--denoise" => denoise = Some(parse_f32(value, "denoise")?),
                         _ => {
                             // Unknown option, treat as part of prompt
                             if in_negative_mode {
@@ -209,7 +219,7 @@ impl Generate {
             steps,
             references: References {
                 img2img: None,
-                img2img_strength: None,
+                img2img_strength: denoise,
                 context: Vec::new(),
             },
         })
@@ -253,6 +263,10 @@ impl Display for Generate {
             parts.push("-s".to_string());
             parts.push(st.to_string());
         }
+        if let Some(d) = self.references.img2img_strength {
+            parts.push("--denoise".to_string());
+            parts.push(d.to_string());
+        }
 
         write!(f, "{}", parts.join(" "))
     }
@@ -266,6 +280,19 @@ fn parse_u32(s: &str, field_name: &str) -> Result<u32> {
 fn parse_u64(s: &str, field_name: &str) -> Result<u64> {
     s.parse::<u64>()
         .map_err(|_| anyhow!("Invalid {} value: {}", field_name, s))
+}
+
+fn parse_f32(s: &str, field_name: &str) -> Result<f32> {
+    let value = s
+        .parse::<f32>()
+        .map_err(|_| anyhow!("Invalid {} value: {}", field_name, s))?;
+
+    // Validate denoise range
+    if field_name == "denoise" && (value < 0.0 || value > 1.0) {
+        bail!("denoise value must be between 0.0 and 1.0, got: {}", value);
+    }
+
+    Ok(value)
 }
 
 fn parse_aspect_ratio(s: &str) -> Result<(u32, u32)> {
