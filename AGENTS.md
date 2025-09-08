@@ -103,8 +103,8 @@ src/
 Redis is used for all persistence through a reconnecting `ConnectionManager`. Current key patterns:
 
 - `user:[userid]` -- JSON string containing User struct with configuration settings etc.
-- `combine:combination:[word1]:[word2]` -- Cached combination results for the combine game
-- `combine:basis:[word]` -- Base elements tracking for the combine game
+- `combine:combinations` -- Hash containing cached combination results for the combine game. Fields are `[word1]:[word2]` with JSON values containing CombineResult.
+- `combine:basis` -- Hash tracking base elements for the combine game. Fields are `[word]` with values referencing the combination that created them.
 - `image:files` -- Sorted set of all JPEGs uploaded to the web server. The score is the Unix timestamp at which it was created.
 
 The supervisor maintains a persistent Redis connection that's shared across actors.

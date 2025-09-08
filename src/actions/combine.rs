@@ -188,16 +188,20 @@ impl CombineActor {
             .unwrap()
     }
 
-    fn cache_key_combine(word1: &str, word2: &str) -> String {
-        format!(
-            "combine:combination:{}:{}",
-            word1.to_lowercase(),
-            word2.to_lowercase()
-        )
+    fn cache_key_combine(_word1: &str, _word2: &str) -> String {
+        "combine:combinations".to_string()
     }
 
-    fn cache_key_basis(word: &str) -> String {
-        format!("combine:basis:{}", word.to_lowercase())
+    fn cache_key_basis(_word: &str) -> String {
+        "combine:basis".to_string()
+    }
+
+    fn combination_field_name(word1: &str, word2: &str) -> String {
+        format!("{}:{}", word1.to_lowercase(), word2.to_lowercase())
+    }
+
+    fn basis_field_name(word: &str) -> String {
+        word.to_lowercase()
     }
 
     async fn get_from_cache(
@@ -206,9 +210,12 @@ impl CombineActor {
         word2: &str,
     ) -> Result<Option<CombineResult>, Error> {
         let key = Self::cache_key_combine(word1, word2);
+        let field = Self::combination_field_name(word1, word2);
         let cached = util::retry(|| async {
             let mut conn = self.redis.clone();
-            conn.get(key.clone()).await.context("Redis get failed")
+            conn.hget(key.clone(), field.clone())
+                .await
+                .context("Redis hget failed")
         })
         .await?;
         if let Some(cached_str) = cached {
@@ -222,9 +229,12 @@ impl CombineActor {
     /// Check if this word has been constructed before. (And if so, return the combination that created it)
     async fn check_basis(&mut self, word: &str) -> Result<Option<String>> {
         let key = Self::cache_key_basis(word);
+        let field = Self::basis_field_name(word);
         let source = util::retry(|| async {
             let mut conn = self.redis.clone();
-            conn.get(key.clone()).await.context("Redis get failed")
+            conn.hget(key.clone(), field.clone())
+                .await
+                .context("Redis hget failed")
         })
         .await?;
         Ok(source)
@@ -236,19 +246,27 @@ impl CombineActor {
         word2: &str,
         result: &CombineResult,
     ) -> Result<(), Error> {
-        let key = Self::cache_key_combine(word1, word2);
+        let combination_key = Self::cache_key_combine(word1, word2);
+        let combination_field = Self::combination_field_name(word1, word2);
+        let basis_key = Self::cache_key_basis(&result.result);
+        let basis_field = Self::basis_field_name(&result.result);
         let value = serde_json::to_string(result)?;
         util::retry(|| async {
             let mut conn = self.redis.clone();
-            conn.set(key.clone(), value.clone())
-                .await
-                .context("Redis set failed")?;
-            conn.set(
-                Self::cache_key_basis(&result.result),
-                Self::cache_key_combine(word1, word2),
+            conn.hset(
+                combination_key.clone(),
+                combination_field.clone(),
+                value.clone(),
             )
             .await
-            .context("Redis set failed")
+            .context("Redis hset failed")?;
+            conn.hset(
+                basis_key.clone(),
+                basis_field.clone(),
+                combination_field.clone(),
+            )
+            .await
+            .context("Redis hset failed")
         })
         .await?;
         Ok(())
