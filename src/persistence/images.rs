@@ -1,6 +1,6 @@
 use std::{io::Cursor, os::unix::fs::PermissionsExt as _};
 
-use ab_glyph::{FontRef, PxScale};
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::{Context as _, Result};
 use image::{ImageEncoder, Rgb, RgbImage, codecs::jpeg::JpegEncoder};
 use imageproc::drawing::draw_text_mut;
@@ -259,6 +259,58 @@ pub struct GalleryInput {
     pub images: Vec<RgbImage>,
 }
 
+/// Calculate the required height for the text area based on title and subtitle content
+fn calculate_text_area_height(
+    title: &str,
+    subtitle: &str,
+    canvas_width: u32,
+    text_padding: u32,
+) -> u32 {
+    let font = &*GALLERY_FONT;
+
+    // Calculate maximum text width (canvas width minus padding on both sides)
+    let max_text_width = canvas_width as f32 - (text_padding * 2) as f32;
+
+    // Define font scales and line heights (same as in render_text_on_canvas)
+    let title_scale = PxScale::from(32.0);
+    let subtitle_scale = PxScale::from(20.0);
+    let title_line_height = 40; // pixels between title lines
+    let subtitle_line_height = 25; // pixels between subtitle lines
+    let title_subtitle_spacing = 15; // pixels between title and subtitle sections
+
+    // Calculate number of lines needed
+    let title_lines = wrap_text(title, font, title_scale, max_text_width);
+    let subtitle_lines = wrap_text(subtitle, font, subtitle_scale, max_text_width);
+
+    // Calculate total height needed
+    let title_height = if title_lines.is_empty() {
+        0
+    } else {
+        title_lines.len() as u32 * title_line_height
+    };
+
+    let subtitle_height = if subtitle_lines.is_empty() {
+        0
+    } else {
+        subtitle_lines.len() as u32 * subtitle_line_height
+    };
+
+    let spacing = if !title_lines.is_empty() && !subtitle_lines.is_empty() {
+        title_subtitle_spacing
+    } else {
+        0
+    };
+
+    // Add top and bottom padding, plus a small buffer zone
+    let buffer_zone = 20; // Extra space to ensure text doesn't touch images
+    let total_height =
+        text_padding + title_height + spacing + subtitle_height + text_padding + buffer_zone;
+
+    // Ensure minimum height even for very short text
+    const MIN_TEXT_AREA_HEIGHT: u32 = 60;
+    total_height.max(MIN_TEXT_AREA_HEIGHT)
+}
+
 /// Creates a gallery image from multiple images with a title and subtitle
 pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
     if input.images.is_empty() {
@@ -274,16 +326,21 @@ pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
 
     // Calculate mean color across all images for border
     let border_color = calculate_mean_color(&input.images);
-    let text_color = negate_color(border_color);
+    let text_color = calculate_text_color(border_color);
 
     // Define spacing and text area
     const BORDER_SIZE: u32 = 4;
-    const TEXT_AREA_HEIGHT: u32 = 100; // Extra space for title and subtitle
     const TEXT_PADDING: u32 = 20;
 
-    // Calculate canvas dimensions
+    // Calculate canvas width first (needed for text area height calculation)
     let canvas_width = grid_cols * img_width + (grid_cols + 1) * BORDER_SIZE;
-    let canvas_height = grid_rows * img_height + (grid_rows + 1) * BORDER_SIZE + TEXT_AREA_HEIGHT;
+
+    // Calculate required text area height based on actual content
+    let text_area_height =
+        calculate_text_area_height(&input.title, &input.subtitle, canvas_width, TEXT_PADDING);
+
+    // Calculate final canvas height
+    let canvas_height = grid_rows * img_height + (grid_rows + 1) * BORDER_SIZE + text_area_height;
 
     // Create canvas with border color
     let mut canvas = RgbImage::from_pixel(canvas_width, canvas_height, border_color);
@@ -294,7 +351,7 @@ pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
         let col = (i as u32) % grid_cols;
 
         let x = col * (img_width + BORDER_SIZE) + BORDER_SIZE;
-        let y = row * (img_height + BORDER_SIZE) + BORDER_SIZE + TEXT_AREA_HEIGHT;
+        let y = row * (img_height + BORDER_SIZE) + BORDER_SIZE + text_area_height;
 
         // Copy image pixels to canvas
         for img_y in 0..img_height {
@@ -381,9 +438,78 @@ fn calculate_mean_color(images: &[RgbImage]) -> Rgb<u8> {
     ])
 }
 
-/// Negate a color for contrast
-fn negate_color(color: Rgb<u8>) -> Rgb<u8> {
-    Rgb([255 - color[0], 255 - color[1], 255 - color[2]])
+/// Calculate optimal text color (black or white) for maximum contrast against background
+fn calculate_text_color(background: Rgb<u8>) -> Rgb<u8> {
+    // Calculate perceived brightness using the luminance formula
+    // This accounts for how the human eye perceives different colors
+    let r = background[0] as f32;
+    let g = background[1] as f32;
+    let b = background[2] as f32;
+
+    let luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+    // Use white text for dark backgrounds, black text for light backgrounds
+    if luminance < 128.0 {
+        Rgb([255, 255, 255]) // White text
+    } else {
+        Rgb([0, 0, 0]) // Black text
+    }
+}
+
+/// Measure the width of text in pixels using the given font and scale
+fn measure_text_width(text: &str, font: &FontRef, scale: PxScale) -> f32 {
+    let scaled_font = font.as_scaled(scale);
+    text.chars()
+        .map(|c| scaled_font.h_advance(scaled_font.glyph_id(c)))
+        .sum()
+}
+
+/// Split text into lines that fit within the given width, wrapping at word boundaries
+fn wrap_text(text: &str, font: &FontRef, scale: PxScale, max_width: f32) -> Vec<String> {
+    if text.is_empty() {
+        return vec![];
+    }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return vec![];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    let space_width = measure_text_width(" ", font, scale);
+
+    for word in words {
+        let word_width = measure_text_width(word, font, scale);
+
+        // If this is the first word in the line
+        if current_line.is_empty() {
+            // If even a single word is too wide, we have to use it anyway
+            current_line.push_str(word);
+        } else {
+            // Calculate width if we add this word (including space)
+            let current_width = measure_text_width(&current_line, font, scale);
+            let total_width = current_width + space_width + word_width;
+
+            if total_width <= max_width {
+                // Word fits, add it to current line
+                current_line.push(' ');
+                current_line.push_str(word);
+            } else {
+                // Word doesn't fit, start new line
+                lines.push(current_line);
+                current_line = word.to_string();
+            }
+        }
+    }
+
+    // Don't forget the last line
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    lines
 }
 
 /// Render title and subtitle text on canvas
@@ -397,26 +523,44 @@ fn render_text_on_canvas(
     // Use the lazy-loaded font (parsed once at startup)
     let font = &*GALLERY_FONT;
 
+    // Calculate maximum text width (canvas width minus padding on both sides)
+    let max_text_width = canvas.width() as f32 - (padding * 2) as f32;
+
     // Convert coordinates to i32
     let x = padding as i32;
-    let title_y = padding as i32;
-    let subtitle_y = (padding + 45) as i32;
+    let mut current_y = padding as i32;
 
-    // Draw title with larger font
+    // Define font scales and line heights
     let title_scale = PxScale::from(32.0);
-    draw_text_mut(canvas, text_color, x, title_y, title_scale, font, title);
-
-    // Draw subtitle with smaller font, positioned below title
     let subtitle_scale = PxScale::from(20.0);
-    draw_text_mut(
-        canvas,
-        text_color,
-        x,
-        subtitle_y,
-        subtitle_scale,
-        font,
-        subtitle,
-    );
+    let title_line_height = 40; // pixels between title lines
+    let subtitle_line_height = 25; // pixels between subtitle lines
+    let title_subtitle_spacing = 15; // pixels between title and subtitle sections
+
+    // Wrap and draw title
+    let title_lines = wrap_text(title, font, title_scale, max_text_width);
+    for line in title_lines {
+        draw_text_mut(canvas, text_color, x, current_y, title_scale, font, &line);
+        current_y += title_line_height;
+    }
+
+    // Add spacing between title and subtitle
+    current_y += title_subtitle_spacing;
+
+    // Wrap and draw subtitle
+    let subtitle_lines = wrap_text(subtitle, font, subtitle_scale, max_text_width);
+    for line in subtitle_lines {
+        draw_text_mut(
+            canvas,
+            text_color,
+            x,
+            current_y,
+            subtitle_scale,
+            font,
+            &line,
+        );
+        current_y += subtitle_line_height;
+    }
 
     Ok(())
 }
@@ -532,31 +676,47 @@ mod tests {
     }
 
     #[test]
-    fn test_negate_color_black() {
+    fn test_calculate_text_color_black_background() {
         let black = Rgb([0, 0, 0]);
-        let negated = negate_color(black);
-        assert_eq!(negated, Rgb([255, 255, 255])); // Should become white
+        let text_color = calculate_text_color(black);
+        assert_eq!(text_color, Rgb([255, 255, 255])); // Should be white text on black
     }
 
     #[test]
-    fn test_negate_color_white() {
+    fn test_calculate_text_color_white_background() {
         let white = Rgb([255, 255, 255]);
-        let negated = negate_color(white);
-        assert_eq!(negated, Rgb([0, 0, 0])); // Should become black
+        let text_color = calculate_text_color(white);
+        assert_eq!(text_color, Rgb([0, 0, 0])); // Should be black text on white
     }
 
     #[test]
-    fn test_negate_color_gray() {
-        let gray = Rgb([128, 128, 128]);
-        let negated = negate_color(gray);
-        assert_eq!(negated, Rgb([127, 127, 127])); // 255-128=127
+    fn test_calculate_text_color_dark_gray() {
+        let dark_gray = Rgb([64, 64, 64]); // Dark gray, luminance = 64
+        let text_color = calculate_text_color(dark_gray);
+        assert_eq!(text_color, Rgb([255, 255, 255])); // Should be white text on dark
     }
 
     #[test]
-    fn test_negate_color_mixed() {
-        let color = Rgb([100, 200, 50]);
-        let negated = negate_color(color);
-        assert_eq!(negated, Rgb([155, 55, 205])); // (255-100, 255-200, 255-50)
+    fn test_calculate_text_color_light_gray() {
+        let light_gray = Rgb([192, 192, 192]); // Light gray, luminance = 192
+        let text_color = calculate_text_color(light_gray);
+        assert_eq!(text_color, Rgb([0, 0, 0])); // Should be black text on light
+    }
+
+    #[test]
+    fn test_calculate_text_color_colored_backgrounds() {
+        // Test with various colored backgrounds
+        let dark_red = Rgb([100, 0, 0]); // Luminance ≈ 30, should be white text
+        let text_color = calculate_text_color(dark_red);
+        assert_eq!(text_color, Rgb([255, 255, 255]));
+
+        let light_yellow = Rgb([200, 200, 100]); // Luminance ≈ 180, should be black text
+        let text_color = calculate_text_color(light_yellow);
+        assert_eq!(text_color, Rgb([0, 0, 0]));
+
+        let dark_blue = Rgb([0, 0, 100]); // Luminance ≈ 11, should be white text
+        let text_color = calculate_text_color(dark_blue);
+        assert_eq!(text_color, Rgb([255, 255, 255]));
     }
 
     #[test]
@@ -617,9 +777,12 @@ mod tests {
         assert!(result.is_ok());
 
         let gallery = result.unwrap();
-        // Should have dimensions: 1*100 + 2*4 = 108 width, 1*100 + 2*4 + 100 = 208 height
+        // Width should still be: 1*100 + 2*4 = 108
         assert_eq!(gallery.width(), 108);
-        assert_eq!(gallery.height(), 208);
+        // Height is now dynamic based on text content, but should be at least the image height + borders
+        let expected_min_height = 100 + 2 * 4 + 60; // image + borders + min text area
+        assert!(gallery.height() >= expected_min_height);
+        assert!(gallery.height() < 400); // Should be reasonable for short text
     }
 
     #[test]
@@ -636,9 +799,12 @@ mod tests {
         assert!(result.is_ok());
 
         let gallery = result.unwrap();
-        // Should have 2x1 grid: 2*50 + 3*4 = 112 width, 1*50 + 2*4 + 100 = 158 height
+        // Width should be 2x1 grid: 2*50 + 3*4 = 112
         assert_eq!(gallery.width(), 112);
-        assert_eq!(gallery.height(), 158);
+        // Height is now dynamic based on text content, but should be at least the image height + borders
+        let expected_min_height = 50 + 2 * 4 + 60; // image + borders + min text area
+        assert!(gallery.height() >= expected_min_height);
+        assert!(gallery.height() < 300); // Should be reasonable for short text
     }
 
     #[test]
@@ -667,5 +833,163 @@ mod tests {
                 .to_string()
                 .contains("Cannot upload empty gallery")
         );
+    }
+
+    #[test]
+    fn test_measure_text_width() {
+        let font = &*GALLERY_FONT;
+        let scale = PxScale::from(20.0);
+
+        let width = measure_text_width("Hello", font, scale);
+        assert!(width > 0.0);
+
+        // Longer text should be wider
+        let longer_width = measure_text_width("Hello World", font, scale);
+        assert!(longer_width > width);
+
+        // Empty text should have zero width
+        let empty_width = measure_text_width("", font, scale);
+        assert_eq!(empty_width, 0.0);
+    }
+
+    #[test]
+    fn test_wrap_text_empty() {
+        let font = &*GALLERY_FONT;
+        let scale = PxScale::from(20.0);
+        let max_width = 100.0;
+
+        let lines = wrap_text("", font, scale, max_width);
+        assert!(lines.is_empty());
+
+        let lines = wrap_text("   ", font, scale, max_width);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_wrap_text_single_word() {
+        let font = &*GALLERY_FONT;
+        let scale = PxScale::from(20.0);
+        let max_width = 1000.0; // Large width
+
+        let lines = wrap_text("Hello", font, scale, max_width);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "Hello");
+    }
+
+    #[test]
+    fn test_wrap_text_multiple_words_fit() {
+        let font = &*GALLERY_FONT;
+        let scale = PxScale::from(20.0);
+        let max_width = 1000.0; // Large width
+
+        let lines = wrap_text("Hello World Test", font, scale, max_width);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "Hello World Test");
+    }
+
+    #[test]
+    fn test_wrap_text_wrapping_required() {
+        let font = &*GALLERY_FONT;
+        let scale = PxScale::from(20.0);
+        let max_width = 50.0; // Very narrow width to force wrapping
+
+        let lines = wrap_text(
+            "This is a very long line that should wrap",
+            font,
+            scale,
+            max_width,
+        );
+        assert!(
+            lines.len() > 1,
+            "Text should be wrapped into multiple lines"
+        );
+
+        // Verify that each line is not empty
+        for line in &lines {
+            assert!(!line.is_empty(), "No line should be empty");
+        }
+
+        // Verify that when joined, we get back the original words (may have different spacing)
+        let joined = lines.join(" ");
+        let original_words: Vec<&str> = "This is a very long line that should wrap"
+            .split_whitespace()
+            .collect();
+        let joined_words: Vec<&str> = joined.split_whitespace().collect();
+        assert_eq!(original_words, joined_words);
+    }
+
+    #[test]
+    fn test_wrap_text_single_long_word() {
+        let font = &*GALLERY_FONT;
+        let scale = PxScale::from(20.0);
+        let max_width = 10.0; // Very narrow, even single word won't fit
+
+        let lines = wrap_text("supercalifragilisticexpialidocious", font, scale, max_width);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "supercalifragilisticexpialidocious");
+    }
+
+    #[test]
+    fn test_calculate_text_area_height_short_text() {
+        let canvas_width = 400;
+        let text_padding = 20;
+
+        let height =
+            calculate_text_area_height("Short title", "Short subtitle", canvas_width, text_padding);
+
+        // Should be at least the minimum height
+        assert!(height >= 60);
+        // Should be reasonable for short text
+        assert!(height < 200);
+    }
+
+    #[test]
+    fn test_calculate_text_area_height_long_text() {
+        let canvas_width = 400;
+        let text_padding = 20;
+
+        let long_title = "This is a very long title that should definitely wrap to multiple lines when rendered in a gallery with limited width";
+        let long_subtitle = "This is also a very long subtitle that contains lots of detailed information and should also wrap to multiple lines";
+
+        let height =
+            calculate_text_area_height(long_title, long_subtitle, canvas_width, text_padding);
+
+        // Long text should require more height
+        assert!(height > 100);
+
+        // Should accommodate multiple lines
+        let short_height = calculate_text_area_height("Short", "Short", canvas_width, text_padding);
+        assert!(height > short_height);
+    }
+
+    #[test]
+    fn test_calculate_text_area_height_empty_text() {
+        let canvas_width = 400;
+        let text_padding = 20;
+
+        let height = calculate_text_area_height("", "", canvas_width, text_padding);
+
+        // Even empty text should have minimum height
+        assert_eq!(height, 60); // MIN_TEXT_AREA_HEIGHT
+    }
+
+    #[test]
+    fn test_create_gallery_with_long_text() {
+        let image = RgbImage::from_pixel(100, 100, Rgb([255, 0, 0]));
+        let long_title = "This is an extremely long gallery title that would definitely cause overflow issues with the old fixed-height implementation and should now be properly handled";
+        let long_subtitle = "And this is also a very long subtitle with lots of descriptive text that provides detailed information about the gallery contents";
+
+        let input = GalleryInput {
+            title: long_title.to_string(),
+            subtitle: long_subtitle.to_string(),
+            images: vec![image],
+        };
+
+        let result = create_gallery(input);
+        assert!(result.is_ok());
+
+        let gallery = result.unwrap();
+        // The gallery should be taller than the old fixed height would allow
+        assert!(gallery.height() > 208); // old height was 1*100 + 2*4 + 100 = 208
     }
 }

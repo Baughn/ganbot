@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Error, Result};
 use kameo::{Actor, prelude::Message};
 use rand::RngCore as _;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::{
     config::models::{self, Model, ModelsConfig},
@@ -122,7 +122,9 @@ impl PromptActor {
         let mut width = resolution.0;
         let mut height = resolution.1;
         if let Some(aspect) = prompt.aspect {
+            trace!("Calculating dimensions for aspect ratio {:?}", aspect);
             (width, height) = calculate_dimensions(aspect, width, height);
+            trace!("Calculated dimensions: {}x{}", width, height);
         }
         if let Some(w) = prompt.width {
             width = w;
@@ -144,7 +146,7 @@ impl PromptActor {
         let positive = graph.clip_text_encode(&clip, &prompt.prompt);
         let negative =
             graph.clip_text_encode(&clip, &prompt.negative_prompt.clone().unwrap_or_default());
-        let latent = graph.empty_latent_image(resolution.0, resolution.1, num_images);
+        let latent = graph.empty_latent_image(width, height, num_images);
 
         let params = KSamplerParams {
             sampler: sampler.to_string(),
@@ -167,7 +169,7 @@ impl PromptActor {
         debug!("Graph execution completed");
 
         // Make a gallery from the images.
-        let title = format!("{}", prompt);
+        let title = prompt.raw_prompt.clone();
         let subtitle = format!("Model: {}, Seed: {}", model_name, seed);
         let gallery = upload_gallery(GalleryInput {
             title,
