@@ -571,6 +571,9 @@ impl
         trace!("Received IRC message: {:?}", msg);
 
         match msg {
+            StreamMessage::Started(marker) => {
+                info!("IRC stream started: {}", marker);
+            }
             StreamMessage::Next(Ok(message)) => {
                 if let Err(e) = handle_irc_message(message, self, ctx).await {
                     error!("Error processing IRC message: {e:#}");
@@ -578,8 +581,14 @@ impl
             }
             StreamMessage::Next(Err(e)) => {
                 error!("Error in IRC stream: {e:#}");
+                info!("Stopping IRC actor due to stream error, supervisor will restart");
+                let _ = ctx.actor_ref().stop_gracefully().await;
             }
-            _ => {}
+            StreamMessage::Finished(marker) => {
+                info!("IRC stream finished: {}", marker);
+                info!("Stopping IRC actor for restart");
+                let _ = ctx.actor_ref().stop_gracefully().await;
+            }
         }
     }
 }
