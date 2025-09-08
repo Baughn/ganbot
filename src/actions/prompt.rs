@@ -10,7 +10,7 @@ use crate::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
         openrouter::OpenRouter,
     },
-    persistence::images::{GalleryInput, upload_gallery, upload_image},
+    persistence::images::{GalleryInput, upload_gallery, upload_image_with_workflow},
     supervisor::Supervisor,
 };
 
@@ -219,9 +219,12 @@ impl PromptActor {
         let images = graph.vae_decode(&vae, &final_samples);
         graph.save_images(&images, model_name);
 
+        // Capture the workflow before executing
+        let workflow = graph.build();
+
         debug!("Submitting graph to ComfyUI");
         let images = client
-            .execute_graph(graph, None)
+            .execute_workflow(workflow.clone(), None)
             .await
             .context("while executing graph on ComfyUI")?;
         debug!("Graph execution completed");
@@ -233,6 +236,8 @@ impl PromptActor {
             title,
             subtitle,
             images,
+            workflow: Some(workflow),
+            backend: Some("StableDiffusion".to_string()),
         })
         .await
         .context("while uploading image gallery")?;
@@ -248,11 +253,11 @@ impl PromptActor {
     }
 
     /// Calls Gemini 2.5-flah-image-preview (NanoBanana) via OpenRouter
-    async fn nanobanana(&self, prompt: Generate) -> Result<PromptResult> {
+    async fn nanobanana(&self, generate_request: Generate) -> Result<PromptResult> {
         // Make sure we're actually asking for an image.
-        let prompt = format!(
+        let formatted_prompt = format!(
             "Generate an image: {}\nAlways generate an image. In addition to the image, comment on it in the style of a hard-boiled noir detective.",
-            prompt.prompt
+            generate_request.prompt
         );
 
         // Get the OpenRouter instance
@@ -262,16 +267,26 @@ impl PromptActor {
         let response = router
             .ask(NanoBanana {
                 origin: "prompt command".to_string(),
-                prompt: prompt.to_string(),
+                prompt: formatted_prompt.clone(),
             })
             .await
             .context("while generating response with NanoBanana")?;
 
         // Upload the image if one was generated
         let image_url = if let Some(image) = response.image {
-            let url = upload_image(image)
-                .await
-                .context("while uploading generated image")?;
+            // Create a workflow object representing the NanoBanana request
+            let workflow = serde_json::json!({
+                "model": "gemini-2.5-flash-image-preview",
+                "original_prompt": generate_request.prompt,
+                "raw_prompt": generate_request.raw_prompt,
+                "formatted_prompt": formatted_prompt,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            });
+
+            let url =
+                upload_image_with_workflow(image, Some(workflow), Some("NanoBanana".to_string()))
+                    .await
+                    .context("while uploading generated image")?;
             info!("Successfully generated and uploaded image: {}", url);
             Some(url)
         } else {

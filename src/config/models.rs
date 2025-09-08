@@ -254,13 +254,17 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
     for (name, template) in resolved_templates.iter_mut() {
         if let Some(inherit_from) = &template.inherit {
             debug!("Template '{}' inheriting from '{}'", name, inherit_from);
-            let parent_template = loading_config.templates.get(inherit_from).with_context(|| {
-                format!(
-                    "Template '{}' inherits from unknown template '{}'",
-                    name, inherit_from
-                )
-            })?;
-            
+            let parent_template =
+                loading_config
+                    .templates
+                    .get(inherit_from)
+                    .with_context(|| {
+                        format!(
+                            "Template '{}' inherits from unknown template '{}'",
+                            name, inherit_from
+                        )
+                    })?;
+
             apply_inheritance(template, parent_template)?;
         }
     }

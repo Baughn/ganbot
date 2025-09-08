@@ -2,6 +2,8 @@ use std::{io::Cursor, os::unix::fs::PermissionsExt as _};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::{Context as _, Result};
+use exif::experimental::Writer;
+use exif::{Field, In, Tag, Value};
 use image::{ImageEncoder, Rgb, RgbImage, codecs::jpeg::JpegEncoder};
 use imageproc::drawing::draw_text_mut;
 use kameo::message::Context;
@@ -37,6 +39,8 @@ impl ImageUploader {
 /// Message to upload an image
 pub struct UploadImage {
     pub image: RgbImage,
+    pub workflow: Option<serde_json::Value>,
+    pub backend: Option<String>,
 }
 
 /// Message to upload a gallery of images with title and subtitle
@@ -44,6 +48,8 @@ pub struct UploadGallery {
     pub images: Vec<RgbImage>,
     pub title: String,
     pub subtitle: String,
+    pub workflow: Option<serde_json::Value>,
+    pub backend: Option<String>,
 }
 
 /// Reply containing the uploaded image URL
@@ -88,7 +94,8 @@ impl ImageUploader {
         let filename = format!("{}.jpg", uuid);
 
         // Convert image to JPEG with high quality
-        let jpeg_bytes = self.encode_image_as_jpeg(&msg.image)?;
+        let jpeg_bytes =
+            self.encode_image_as_jpeg(&msg.image, msg.workflow.as_ref(), msg.backend.as_deref())?;
 
         // Upload the JPEG data
         self.upload_jpeg(jpeg_bytes, &filename).await
@@ -107,6 +114,8 @@ impl ImageUploader {
             title: msg.title,
             subtitle: msg.subtitle,
             images: msg.images.clone(),
+            workflow: msg.workflow.clone(),
+            backend: msg.backend.clone(),
         };
         let gallery_image = create_gallery(gallery_input)?;
 
@@ -115,18 +124,28 @@ impl ImageUploader {
         let gallery_filename = format!("{}.0.jpg", base_uuid);
 
         // Encode and upload gallery image
-        let gallery_jpeg = self.encode_image_as_jpeg(&gallery_image)?;
+        let gallery_jpeg = self.encode_image_as_jpeg(
+            &gallery_image,
+            msg.workflow.as_ref(),
+            msg.backend.as_deref(),
+        )?;
         let gallery_url = self.upload_jpeg(gallery_jpeg, &gallery_filename).await?;
 
         // Upload individual images with indices 1, 2, 3, etc.
         // Concurrently encode and upload individual images
+        let workflow_ref = &msg.workflow;
+        let backend_ref = &msg.backend;
         let upload_futures = msg
             .images
             .iter()
             .enumerate()
             .map(|(index, image)| async move {
                 let filename = format!("{}.{}.jpg", base_uuid, index + 1);
-                let jpeg_bytes = self.encode_image_as_jpeg(image)?;
+                let jpeg_bytes = self.encode_image_as_jpeg(
+                    image,
+                    workflow_ref.as_ref(),
+                    backend_ref.as_deref(),
+                )?;
                 self.upload_jpeg(jpeg_bytes, &filename).await
             });
 
@@ -142,8 +161,13 @@ impl ImageUploader {
         })
     }
 
-    /// Encode an RgbImage as high-quality JPEG bytes
-    fn encode_image_as_jpeg(&self, image: &RgbImage) -> Result<Vec<u8>> {
+    /// Encode an RgbImage as high-quality JPEG bytes with optional workflow EXIF metadata
+    fn encode_image_as_jpeg(
+        &self,
+        image: &RgbImage,
+        workflow: Option<&serde_json::Value>,
+        backend: Option<&str>,
+    ) -> Result<Vec<u8>> {
         let mut jpeg_bytes = Vec::new();
         {
             let mut cursor = Cursor::new(&mut jpeg_bytes);
@@ -157,6 +181,62 @@ impl ImageUploader {
                 )
                 .context("Failed to encode image as JPEG")?;
         }
+
+        // Add EXIF metadata if workflow is provided
+        if let (Some(workflow), Some(backend_name)) = (workflow, backend) {
+            // Create the wrapped workflow JSON
+            let wrapped_workflow = serde_json::json!({
+                "backend": backend_name,
+                "workflow": workflow
+            });
+
+            // Format as pretty JSON
+            let workflow_json = serde_json::to_string(&wrapped_workflow)
+                .context("Failed to serialize workflow to JSON")?;
+
+            // Create EXIF writer and add workflow as UserComment
+            let mut writer = Writer::new();
+            let field = Field {
+                tag: Tag::UserComment,
+                ifd_num: In::PRIMARY,
+                value: Value::Undefined(workflow_json.into_bytes(), 0),
+            };
+            writer.push_field(&field);
+
+            // Write EXIF metadata to a buffer
+            let mut exif_buffer = Cursor::new(Vec::new());
+            writer
+                .write(&mut exif_buffer, false) // false for big-endian
+                .context("Failed to write EXIF metadata")?;
+
+            // Get the EXIF data
+            let exif_data = exif_buffer.into_inner();
+
+            // Insert EXIF data into JPEG
+            // For JPEG, we need to manually construct the EXIF APP1 segment
+            // JPEG format: SOI (0xFFD8) + APP1 (0xFFE1) + length + "Exif\0\0" + EXIF data + rest of JPEG
+            if jpeg_bytes.len() >= 2 && jpeg_bytes[0] == 0xFF && jpeg_bytes[1] == 0xD8 {
+                let mut new_jpeg = Vec::new();
+
+                // Add SOI marker
+                new_jpeg.extend_from_slice(&[0xFF, 0xD8]);
+
+                // Add APP1 segment with EXIF data
+                let mut exif_segment_data = b"Exif\0\0".to_vec();
+                exif_segment_data.extend_from_slice(&exif_data);
+                let segment_length = (exif_segment_data.len() + 2) as u16; // +2 for length field itself
+
+                new_jpeg.extend_from_slice(&[0xFF, 0xE1]); // APP1 marker
+                new_jpeg.extend_from_slice(&segment_length.to_be_bytes()); // Length
+                new_jpeg.extend_from_slice(&exif_segment_data);
+
+                // Add the rest of the original JPEG (skip SOI marker)
+                new_jpeg.extend_from_slice(&jpeg_bytes[2..]);
+
+                jpeg_bytes = new_jpeg;
+            }
+        }
+
         Ok(jpeg_bytes)
     }
 
@@ -227,10 +307,23 @@ impl ImageUploader {
 
 /// Upload an image to the configured host
 pub async fn upload_image(image: RgbImage) -> Result<String> {
+    upload_image_with_workflow(image, None, None).await
+}
+
+/// Upload an image with optional workflow metadata to the configured host
+pub async fn upload_image_with_workflow(
+    image: RgbImage,
+    workflow: Option<serde_json::Value>,
+    backend: Option<String>,
+) -> Result<String> {
     let config = Supervisor::image_host().await;
     let uploader = ImageUploader::spawn(ImageUploader::new(config));
     let result = uploader
-        .ask(UploadImage { image })
+        .ask(UploadImage {
+            image,
+            workflow,
+            backend,
+        })
         .await
         .context("Failed to communicate with uploader")?;
     Ok(result.0)
@@ -246,6 +339,8 @@ pub async fn upload_gallery(input: GalleryInput) -> Result<(String, Vec<String>)
             images: input.images,
             title: input.title,
             subtitle: input.subtitle,
+            workflow: input.workflow,
+            backend: input.backend,
         })
         .await
         .context("Failed to communicate with uploader")?;
@@ -257,6 +352,8 @@ pub struct GalleryInput {
     pub title: String,
     pub subtitle: String,
     pub images: Vec<RgbImage>,
+    pub workflow: Option<serde_json::Value>,
+    pub backend: Option<String>,
 }
 
 /// Calculate the required height for the text area based on title and subtitle content
@@ -757,6 +854,8 @@ mod tests {
             title: "Test".to_string(),
             subtitle: "Test subtitle".to_string(),
             images: vec![],
+            workflow: None,
+            backend: None,
         };
 
         let result = create_gallery(empty_input);
@@ -771,6 +870,8 @@ mod tests {
             title: "Single Image".to_string(),
             subtitle: "Test".to_string(),
             images: vec![image],
+            workflow: None,
+            backend: None,
         };
 
         let result = create_gallery(input);
@@ -793,6 +894,8 @@ mod tests {
             title: "Two Images".to_string(),
             subtitle: "Test".to_string(),
             images: vec![image1, image2],
+            workflow: None,
+            backend: None,
         };
 
         let result = create_gallery(input);
@@ -821,6 +924,8 @@ mod tests {
             images: vec![],
             title: "Empty".to_string(),
             subtitle: "Should fail".to_string(),
+            workflow: None,
+            backend: None,
         };
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -983,6 +1088,8 @@ mod tests {
             title: long_title.to_string(),
             subtitle: long_subtitle.to_string(),
             images: vec![image],
+            workflow: None,
+            backend: None,
         };
 
         let result = create_gallery(input);
