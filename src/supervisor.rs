@@ -95,6 +95,7 @@ impl Actor for Supervisor {
             .get_connection_manager()
             .await
             .expect("Failed to connect to Redis");
+        tokio::spawn(redis_keepalive(redis_connection.clone()));
         // Initialize the user manager.
         let user_manager = UserManager::spawn_link(&actor_ref, redis_connection.clone()).await;
 
@@ -145,6 +146,14 @@ impl Actor for Supervisor {
         }
 
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+/// Periodically send PING to Redis to keep the connection alive.
+async fn redis_keepalive(redis: redis::aio::ConnectionManager) {
+    loop {
+        let _: Result<String, _> = redis::cmd("PING").query_async(&mut redis.clone()).await;
+        sleep(Duration::from_secs(60)).await;
     }
 }
 
