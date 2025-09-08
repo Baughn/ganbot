@@ -13,6 +13,10 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+
+type WsReceiver = futures::stream::SplitStream<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+>;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -63,6 +67,9 @@ enum WsMessageType {
     #[serde(rename = "progress")]
     Progress { data: ProgressData },
 
+    #[serde(rename = "execution_cached")]
+    ExecutionCached { data: ExecutionCachedData },
+
     #[serde(other)]
     Other,
 }
@@ -94,6 +101,12 @@ struct ProgressData {
     max: u32,
     prompt_id: String,
     node: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExecutionCachedData {
+    nodes: Vec<String>,
+    prompt_id: String,
 }
 
 /// Request structure for prompt submission
@@ -347,17 +360,13 @@ impl ComfyUIClient {
         Ok(response.bytes().await?)
     }
 
-    /// Monitor workflow execution via WebSocket
-    async fn monitor_execution(
+    /// Monitor workflow execution via WebSocket with an existing receiver
+    async fn monitor_execution_with_receiver(
         &self,
         prompt_id: &str,
+        ws_receiver: &mut WsReceiver,
         progress_callback: Option<&ProgressCallback>,
     ) -> Result<(), ComfyUIError> {
-        debug!("Connecting to WebSocket for monitoring: {}", self.ws_url());
-
-        let (ws_stream, _) = connect_async(&self.ws_url()).await?;
-        let (_, mut ws_receiver) = ws_stream.split();
-
         let execution_future = async {
             while let Some(message) = ws_receiver.next().await {
                 match message? {
@@ -390,6 +399,18 @@ impl ComfyUIClient {
                                         );
                                         if let Some(callback) = progress_callback {
                                             callback(progress, Some(&data.node));
+                                        }
+                                    }
+                                }
+                                WsMessageType::ExecutionCached { data } => {
+                                    if data.prompt_id == prompt_id {
+                                        debug!(
+                                            "Cached nodes for prompt_id {}: {:?}",
+                                            prompt_id, data.nodes
+                                        );
+                                        // For fully cached executions, this might be the completion signal
+                                        if let Some(callback) = progress_callback {
+                                            callback(0.9, Some("cached"));
                                         }
                                     }
                                 }
@@ -431,6 +452,21 @@ impl ComfyUIClient {
         }
     }
 
+    /// Monitor workflow execution via WebSocket (legacy method)
+    async fn monitor_execution(
+        &self,
+        prompt_id: &str,
+        progress_callback: Option<&ProgressCallback>,
+    ) -> Result<(), ComfyUIError> {
+        debug!("Connecting to WebSocket for monitoring: {}", self.ws_url());
+
+        let (ws_stream, _) = connect_async(&self.ws_url()).await?;
+        let (_, mut ws_receiver) = ws_stream.split();
+
+        self.monitor_execution_with_receiver(prompt_id, &mut ws_receiver, progress_callback)
+            .await
+    }
+
     /// Execute a workflow and return generated images
     pub async fn execute_workflow(
         &self,
@@ -438,6 +474,11 @@ impl ComfyUIClient {
         progress_callback: Option<ProgressCallback>,
     ) -> Result<Vec<RgbImage>, ComfyUIError> {
         info!("Starting workflow execution");
+
+        // First establish WebSocket connection to avoid race condition
+        debug!("Connecting to WebSocket for monitoring: {}", self.ws_url());
+        let (ws_stream, _) = connect_async(&self.ws_url()).await?;
+        let (_, mut ws_receiver) = ws_stream.split();
 
         // Submit workflow to queue
         let prompt_response = self.queue_prompt(workflow).await?;
@@ -448,9 +489,26 @@ impl ComfyUIClient {
             prompt_id, prompt_response.number
         );
 
-        // Monitor execution
-        self.monitor_execution(prompt_id, progress_callback.as_ref())
+        // Check if execution completed immediately (cached)
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        if let Ok(history) = self.get_history(prompt_id).await {
+            info!(
+                "Workflow execution completed immediately (cached) for prompt_id: {}",
+                prompt_id
+            );
+            if let Some(callback) = progress_callback.as_ref() {
+                callback(1.0, Some("completed"));
+            }
+        } else {
+            // Monitor execution via WebSocket
+            self.monitor_execution_with_receiver(
+                prompt_id,
+                &mut ws_receiver,
+                progress_callback.as_ref(),
+            )
             .await?;
+        }
 
         // Get execution results
         let history = self.get_history(prompt_id).await?;

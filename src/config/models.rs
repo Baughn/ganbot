@@ -1,8 +1,9 @@
 //! Configuration for image-generation models
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::{debug, info, trace};
 
 /// Public API structs - guaranteed to have all required fields populated
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +18,15 @@ pub struct Model {
     pub name: String,
     pub description: Option<String>,
     pub backend: Backend,
+    pub prompt_defaults: PromptDefaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptDefaults {
+    pub positive_prepend: Option<String>,
+    pub negative_prepend: Option<String>,
+    pub positive_append: Option<String>,
+    pub negative_append: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +45,7 @@ pub enum Backend {
 
 /// Internal structs used during loading and inheritance - these can have None values
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LoadingModelsConfig {
     pub default: String,
     pub aliases: HashMap<String, String>,
@@ -43,14 +54,26 @@ struct LoadingModelsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LoadingModel {
     pub name: Option<String>,
     pub inherit: Option<String>,
     pub description: Option<String>,
     pub backend: LoadingBackend,
+    pub prompt_defaults: Option<LoadingPromptDefaults>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoadingPromptDefaults {
+    pub positive_prepend: Option<String>,
+    pub negative_prepend: Option<String>,
+    pub positive_append: Option<String>,
+    pub negative_append: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 enum LoadingBackend {
     NanoBanana,
     StableDiffusion {
@@ -71,6 +94,7 @@ pub fn load_models_config() -> Result<ModelsConfig> {
 
 /// Load model configuration from a specific path (used for testing)
 pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
+    info!("Loading models configuration from {}", path);
     let content =
         std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?;
 
@@ -80,13 +104,16 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
     // Apply inheritance - models inherit from templates
     let templates = loading_config.templates.clone();
     for (name, model) in loading_config.models.iter_mut() {
+        debug!("Processing model '{}'", name);
         if let Some(inherit_from) = &model.inherit {
+            debug!("  Inheriting from '{}'", inherit_from);
             let template = templates.get(inherit_from).with_context(|| {
                 format!(
                     "Model '{}' inherits from unknown template '{}'",
                     name, inherit_from
                 )
             })?;
+            trace!("  Template: {:?}", template);
 
             // Apply template values to model where model has None
             if model.name.is_none() {
@@ -94,6 +121,34 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
             }
             if model.description.is_none() {
                 model.description = template.description.clone();
+            }
+
+            // Merge prompt_defaults
+            match (&template.prompt_defaults, &mut model.prompt_defaults) {
+                (Some(template_defaults), Some(model_defaults)) => {
+                    // Model has prompt_defaults, merge with template
+                    if model_defaults.positive_prepend.is_none() {
+                        model_defaults.positive_prepend =
+                            template_defaults.positive_prepend.clone();
+                    }
+                    if model_defaults.negative_prepend.is_none() {
+                        model_defaults.negative_prepend =
+                            template_defaults.negative_prepend.clone();
+                    }
+                    if model_defaults.positive_append.is_none() {
+                        model_defaults.positive_append = template_defaults.positive_append.clone();
+                    }
+                    if model_defaults.negative_append.is_none() {
+                        model_defaults.negative_append = template_defaults.negative_append.clone();
+                    }
+                }
+                (Some(template_defaults), None) => {
+                    // Model has no prompt_defaults, inherit from template
+                    model.prompt_defaults = Some(template_defaults.clone());
+                }
+                (None, _) => {
+                    // Template has no prompt_defaults, keep model's (if any)
+                }
             }
 
             // For backend, merge StableDiffusion fields
@@ -141,10 +196,10 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     }
                 }
                 (LoadingBackend::NanoBanana, LoadingBackend::StableDiffusion { .. }) => {
-                    // Can't inherit from NanoBanana to StableDiffusion
+                    bail!("Can't inherit from NanoBanana to StableDiffusion")
                 }
                 (LoadingBackend::StableDiffusion { .. }, LoadingBackend::NanoBanana) => {
-                    // Can't inherit from StableDiffusion to NanoBanana
+                    bail!("Can't inherit from StableDiffusion to NanoBanana")
                 }
                 (LoadingBackend::NanoBanana, LoadingBackend::NanoBanana) => {
                     // Both are NanoBanana, nothing to inherit
@@ -191,10 +246,26 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
             }
         };
 
+        let prompt_defaults = match &loading_model.prompt_defaults {
+            Some(loading_defaults) => PromptDefaults {
+                positive_prepend: loading_defaults.positive_prepend.clone(),
+                negative_prepend: loading_defaults.negative_prepend.clone(),
+                positive_append: loading_defaults.positive_append.clone(),
+                negative_append: loading_defaults.negative_append.clone(),
+            },
+            None => PromptDefaults {
+                positive_prepend: None,
+                negative_prepend: None,
+                positive_append: None,
+                negative_append: None,
+            },
+        };
+
         let model = Model {
             name: model_name.clone(),
             description: loading_model.description.clone(),
             backend,
+            prompt_defaults,
         };
 
         models.insert(name.clone(), model);

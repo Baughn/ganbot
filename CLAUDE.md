@@ -100,6 +100,7 @@ Redis is used for all persistence through a reconnecting `ConnectionManager`. Cu
 - `user:[userid]` -- JSON string containing User struct with configuration settings etc.
 - `combine:combination:[word1]:[word2]` -- Cached combination results for the combine game
 - `combine:basis:[word]` -- Base elements tracking for the combine game
+- `image:files` -- Sorted set of all JPEGs uploaded to the web server. The score is the Unix timestamp at which it was created.
 
 The supervisor maintains a persistent Redis connection that's shared across actors.
 

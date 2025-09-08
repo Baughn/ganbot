@@ -162,6 +162,17 @@ impl ImageUploader {
 
     /// Upload JPEG bytes to the remote host with the given filename
     async fn upload_jpeg(&self, jpeg_bytes: Vec<u8>, filename: &str) -> Result<String> {
+        // Register the file in Redis for tracking and cleanup
+        let mut conn = Supervisor::redis().await;
+        let timestamp = chrono::Utc::now().timestamp() as f64;
+        let _: () = redis::cmd("ZADD")
+            .arg("image:files")
+            .arg(timestamp)
+            .arg(filename)
+            .query_async(&mut conn)
+            .await
+            .context("Failed to register image in Redis")?;
+
         // Create temporary file using tempfile crate
         let temp_file = NamedTempFile::new().context("Failed to create temporary file")?;
 

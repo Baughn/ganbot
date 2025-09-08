@@ -6,7 +6,8 @@ default = "fanart"
 [templates.illustrious]
 name = "illustrious"
 description = "Template for Illustrious-based models"
-
+[templates.illustrious.prompt_defaults]
+negative_append = "bored, 3d, bad quality, worst quality, lowres, jpeg artifacts, bad anatomy, bad hands, multiple views, signature, watermark, censored, ugly, messy"
 [templates.illustrious.backend]
 StableDiffusion = { cfg = 4.5, sampler = "er_sde", scheduler = "beta", steps = 25, resolution = [
     1024,

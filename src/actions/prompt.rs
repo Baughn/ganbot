@@ -39,13 +39,35 @@ impl Message<String> for PromptActor {
         debug!("PromptActor received message: {}", msg);
 
         // Parse the prompt
-        let prompt = Generate::from_str(&msg)?;
+        let mut prompt = Generate::from_str(&msg)?;
         info!("Parsed prompt: {:?}", prompt);
 
         // Get models config and look up the model
         let models_config = Supervisor::models_config().await;
         let model = self.resolve_model(&models_config, prompt.model.as_deref())?;
         info!("Using model: {:?}", model);
+
+        // Extend the prompt with information from the model defaults.
+        if let Some(prepend) = &model.prompt_defaults.positive_prepend {
+            prompt.prompt = format!("{}. {}", prepend, prompt.prompt);
+        }
+        if let Some(append) = &model.prompt_defaults.positive_append {
+            prompt.prompt = format!("{}. {}", prompt.prompt, append);
+        }
+        if let Some(neg_prepend) = &model.prompt_defaults.negative_prepend {
+            prompt.negative_prompt = Some(format!(
+                "{}. {}",
+                neg_prepend,
+                prompt.negative_prompt.unwrap_or_default()
+            ));
+        }
+        if let Some(neg_append) = &model.prompt_defaults.negative_append {
+            prompt.negative_prompt = Some(format!(
+                "{}. {}",
+                prompt.negative_prompt.unwrap_or_default(),
+                neg_append
+            ));
+        }
 
         let prompt_result = match &model.backend {
             models::Backend::NanoBanana => self.nanobanana(prompt).await,
@@ -78,6 +100,7 @@ impl Message<String> for PromptActor {
 
 impl PromptActor {
     /// Stable Diffusion image generation (SDXL, etc.)
+    #[allow(clippy::too_many_arguments)]
     async fn stable_diffusion(
         &self,
         prompt: Generate,
@@ -223,10 +246,10 @@ impl PromptActor {
             .map(String::as_str)
             .unwrap_or(model_name);
         // Look up the model in the config
-        Ok(config
+        config
             .models
             .get(model_name)
-            .with_context(|| format!("model '{}' not found in configuration", model_name))?)
+            .with_context(|| format!("model '{}' not found in configuration", model_name))
     }
 }
 
