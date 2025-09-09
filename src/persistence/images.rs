@@ -9,12 +9,13 @@ use imageproc::drawing::draw_text_mut;
 use kameo::message::Context;
 use kameo::prelude::*;
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::{config::global::ImageHostConfig, supervisor::Supervisor};
+use crate::{config::global::ImageHostConfig, messages::imagen::Generate, supervisor::Supervisor};
 
 // Lazy-loaded font to avoid re-parsing TTF data on every gallery creation
 lazy_static! {
@@ -22,6 +23,19 @@ lazy_static! {
         let font_data = include_bytes!("../../fonts/gallery.ttf");
         FontRef::try_from_slice(font_data).expect("Failed to load embedded gallery font")
     };
+}
+
+/// Represents an image generation request for tracking in Redis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGenerationRequest {
+    /// The original generation request
+    pub prompt: Generate,
+    /// When the image was generated
+    pub timestamp: String,
+    /// Which backend was used (StableDiffusion, NanoBanana, etc.)
+    pub backend: String,
+    /// Optional ComfyUI workflow JSON
+    pub workflow: Option<serde_json::Value>,
 }
 
 /// Actor responsible for uploading images to a remote host
@@ -41,6 +55,7 @@ pub struct UploadImage {
     pub image: RgbImage,
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
+    pub generation_request: Option<Generate>,
 }
 
 /// Message to upload a gallery of images with title and subtitle
@@ -50,6 +65,7 @@ pub struct UploadGallery {
     pub subtitle: String,
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
+    pub generation_request: Option<Generate>,
 }
 
 /// Reply containing the uploaded image URL
@@ -93,6 +109,23 @@ impl ImageUploader {
         let uuid = Uuid::now_v7();
         let filename = format!("{}.jpg", uuid);
 
+        // Store generation data if provided
+        if let Some(ref generation_request) = msg.generation_request {
+            if let Some(ref backend) = msg.backend {
+                if let Err(e) = Self::store_generation_data(
+                    &uuid.to_string(),
+                    generation_request,
+                    backend,
+                    msg.workflow.as_ref(),
+                )
+                .await
+                {
+                    error!("Failed to store generation data: {}", e);
+                    // Continue with upload even if generation data storage fails
+                }
+            }
+        }
+
         // Convert image to JPEG with high quality
         let jpeg_bytes =
             self.encode_image_as_jpeg(&msg.image, msg.workflow.as_ref(), msg.backend.as_deref())?;
@@ -109,6 +142,23 @@ impl ImageUploader {
         // Generate base UUID for this gallery (time-ordered)
         let base_uuid = Uuid::now_v7();
 
+        // Store generation data if requested
+        if let Some(ref generation_request) = msg.generation_request {
+            if let Some(ref backend) = msg.backend {
+                if let Err(e) = Self::store_generation_data(
+                    &base_uuid.to_string(),
+                    generation_request,
+                    backend,
+                    msg.workflow.as_ref(),
+                )
+                .await
+                {
+                    error!("Failed to store generation data for gallery image: {}", e);
+                    // Continue with upload even if generation data storage fails
+                }
+            }
+        }
+
         // Create gallery image using existing function
         let gallery_input = GalleryInput {
             title: msg.title,
@@ -116,6 +166,7 @@ impl ImageUploader {
             images: msg.images.clone(),
             workflow: msg.workflow.clone(),
             backend: msg.backend.clone(),
+            generation_request: None, // Not used for gallery image creation
         };
         let gallery_image = create_gallery(gallery_input)?;
 
@@ -303,6 +354,57 @@ impl ImageUploader {
 
         Ok(url)
     }
+
+    /// Store image generation data in Redis for later retrieval
+    async fn store_generation_data(
+        uuid: &str,
+        generation_request: &Generate,
+        backend: &str,
+        workflow: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let generation_data = ImageGenerationRequest {
+            prompt: generation_request.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            backend: backend.to_string(),
+            workflow: workflow.cloned(),
+        };
+
+        let mut conn = Supervisor::redis().await;
+        let generation_json = serde_json::to_string(&generation_data)
+            .context("Failed to serialize generation data")?;
+
+        let _: () = redis::cmd("HSET")
+            .arg("image:generations")
+            .arg(uuid)
+            .arg(generation_json)
+            .query_async(&mut conn)
+            .await
+            .context("Failed to store generation data in Redis")?;
+
+        debug!("Stored generation data for image UUID: {}", uuid);
+        Ok(())
+    }
+}
+
+/// Retrieve image generation data from Redis by UUID
+pub async fn get_image_generation(uuid: &str) -> Result<Option<ImageGenerationRequest>> {
+    let mut conn = Supervisor::redis().await;
+
+    let result: Option<String> = redis::cmd("HGET")
+        .arg("image:generations")
+        .arg(uuid)
+        .query_async(&mut conn)
+        .await
+        .context("Failed to retrieve generation data from Redis")?;
+
+    match result {
+        Some(json_data) => {
+            let generation_data = serde_json::from_str(&json_data)
+                .context("Failed to deserialize generation data")?;
+            Ok(Some(generation_data))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Upload an image to the configured host
@@ -316,6 +418,16 @@ pub async fn upload_image_with_workflow(
     workflow: Option<serde_json::Value>,
     backend: Option<String>,
 ) -> Result<String> {
+    upload_image_with_generation(image, workflow, backend, None).await
+}
+
+/// Upload an image with complete generation request data to the configured host
+pub async fn upload_image_with_generation(
+    image: RgbImage,
+    workflow: Option<serde_json::Value>,
+    backend: Option<String>,
+    generation_request: Option<Generate>,
+) -> Result<String> {
     let config = Supervisor::image_host().await;
     let uploader = ImageUploader::spawn(ImageUploader::new(config));
     let result = uploader
@@ -323,6 +435,7 @@ pub async fn upload_image_with_workflow(
             image,
             workflow,
             backend,
+            generation_request,
         })
         .await
         .context("Failed to communicate with uploader")?;
@@ -341,6 +454,7 @@ pub async fn upload_gallery(input: GalleryInput) -> Result<(String, Vec<String>)
             subtitle: input.subtitle,
             workflow: input.workflow,
             backend: input.backend,
+            generation_request: input.generation_request,
         })
         .await
         .context("Failed to communicate with uploader")?;
@@ -354,6 +468,7 @@ pub struct GalleryInput {
     pub images: Vec<RgbImage>,
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
+    pub generation_request: Option<Generate>,
 }
 
 /// Calculate the required height for the text area based on title and subtitle content
@@ -856,6 +971,7 @@ mod tests {
             images: vec![],
             workflow: None,
             backend: None,
+            generation_request: None,
         };
 
         let result = create_gallery(empty_input);
@@ -872,6 +988,7 @@ mod tests {
             images: vec![image],
             workflow: None,
             backend: None,
+            generation_request: None,
         };
 
         let result = create_gallery(input);
@@ -896,6 +1013,7 @@ mod tests {
             images: vec![image1, image2],
             workflow: None,
             backend: None,
+            generation_request: None,
         };
 
         let result = create_gallery(input);
@@ -926,6 +1044,7 @@ mod tests {
             subtitle: "Should fail".to_string(),
             workflow: None,
             backend: None,
+            generation_request: None,
         };
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1090,6 +1209,7 @@ mod tests {
             images: vec![image],
             workflow: None,
             backend: None,
+            generation_request: None,
         };
 
         let result = create_gallery(input);

@@ -11,7 +11,7 @@ use crate::{
         openrouter::OpenRouter,
     },
     persistence::{
-        images::{GalleryInput, upload_gallery, upload_image_with_workflow},
+        images::{GalleryInput, upload_gallery, upload_image_with_generation},
         user::{AddGeneratedImage, UserActor},
     },
     supervisor::Supervisor,
@@ -299,6 +299,7 @@ impl PromptActor {
             images,
             workflow: Some(workflow),
             backend: Some("StableDiffusion".to_string()),
+            generation_request: Some(prompt.clone()),
         })
         .await
         .context("while uploading image gallery")?;
@@ -364,10 +365,14 @@ impl PromptActor {
                 "timestamp": chrono::Utc::now().to_rfc3339()
             });
 
-            let url =
-                upload_image_with_workflow(image, Some(workflow), Some("NanoBanana".to_string()))
-                    .await
-                    .context("while uploading generated image")?;
+            let url = upload_image_with_generation(
+                image,
+                Some(workflow),
+                Some("NanoBanana".to_string()),
+                Some(generate_request.clone()),
+            )
+            .await
+            .context("while uploading generated image")?;
             info!("Successfully generated and uploaded image: {}", url);
             Some(url)
         } else {

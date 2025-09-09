@@ -107,6 +107,7 @@ Redis is used for all persistence through a reconnecting `ConnectionManager`. Cu
 - `combine:combinations` -- Hash containing cached combination results for the combine game. Fields are `[word1]:[word2]` with JSON values containing CombineResult.
 - `combine:basis` -- Hash tracking base elements for the combine game. Fields are `[word]` with values referencing the combination that created them.
 - `image:files` -- Sorted set of all JPEGs uploaded to the web server. The score is the Unix timestamp at which it was created.
+- `image:generations` -- Hash from image UUID to generation request.
 
 The supervisor maintains a persistent Redis connection that's shared across actors.
 

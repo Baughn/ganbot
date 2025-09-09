@@ -1,10 +1,11 @@
 /// Image generation requests & responses.
 use image::RgbImage;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Represents a user-initiated request to generate an image.
 /// Any unset value will be based on defaults for the model.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Generate {
     /// The original, unparsed prompt.
     pub raw_prompt: String,
@@ -30,12 +31,14 @@ pub struct Generate {
     pub references: References,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct References {
     /// A starting-point image for img2img generation.
+    #[serde(skip)]
     pub img2img: Option<RgbImage>,
     pub img2img_strength: Option<f32>,
     /// A reference image for Kontext / Qwen-Image-Edit.
+    #[serde(skip)]
     pub context: Vec<RgbImage>,
 }
 
