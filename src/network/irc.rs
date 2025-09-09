@@ -23,6 +23,12 @@ pub struct IrcActor {
     user_manager: ActorRef<UserManager>,
     /// Rate limiter for outgoing messages (250ms between messages, burst of 4)
     token_bucket: TokenBucket,
+    /// Cache for user identification status
+    /// Maps nickname -> (is_identified, cache_time)
+    identification_cache: HashMap<String, (bool, Instant)>,
+    /// Pending WHOIS requests to avoid duplicates
+    /// Maps nickname -> timestamp when request was sent
+    pending_whois: HashMap<String, Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +69,9 @@ struct SendReply {
     message: String,
     /// Whether to reply privately to the user (via direct message) instead of the channel.
     reply_privately: bool,
+}
+struct CheckUserIdentified {
+    nickname: String,
 }
 
 // Internal actor for handling command processing and replies.
@@ -130,6 +139,8 @@ impl Actor for IrcActor {
             message_buffer: HashMap::new(),
             user_manager: UserManager::get().context("while getting UserManager")?,
             token_bucket: TokenBucket::new(4.0, 2.0), // 4 tokens max, 2 tokens/sec
+            identification_cache: HashMap::new(),
+            pending_whois: HashMap::new(),
         })
     }
 }
@@ -361,6 +372,57 @@ impl IrcActor {
 
         Ok(())
     }
+
+    /// Check if a user is identified with NickServ
+    /// Returns cached result if available and not expired (5 minutes TTL)
+    /// Otherwise sends WHOIS and returns None to indicate pending status
+    fn check_user_identified(&mut self, nickname: &str) -> Result<Option<bool>> {
+        let now = Instant::now();
+
+        // Check cache first
+        if let Some((is_identified, cache_time)) = self.identification_cache.get(nickname)
+            && now.duration_since(*cache_time) < Duration::from_secs(300)
+        {
+            // 5 minutes TTL
+            trace!(
+                "Using cached identification status for {}: {}",
+                nickname, is_identified
+            );
+            return Ok(Some(*is_identified));
+        }
+
+        // Check if we already have a pending WHOIS request (avoid spam)
+        if let Some(request_time) = self.pending_whois.get(nickname)
+            && now.duration_since(*request_time) < Duration::from_secs(3)
+        {
+            // Still waiting for previous WHOIS response
+            return Ok(None);
+        }
+
+        // Send WHOIS command and mark as pending
+        let client = self.client.get().context("IRC client not connected")?;
+        self.pending_whois.insert(nickname.to_string(), now);
+
+        trace!("Sending WHOIS for {}", nickname);
+        client.send(Command::WHOIS(
+            Some(nickname.to_string()),
+            nickname.to_string(),
+        ))?;
+
+        // Return None to indicate we need to wait for the response
+        Ok(None)
+    }
+
+    /// Invalidate identification cache for a user
+    fn invalidate_user_cache(&mut self, nickname: &str, reason: &str) {
+        if self.identification_cache.remove(nickname).is_some() {
+            trace!(
+                "Invalidated identification cache for {} ({})",
+                nickname, reason
+            );
+        }
+        self.pending_whois.remove(nickname);
+    }
 }
 
 impl Message<SendReply> for IrcActor {
@@ -376,6 +438,19 @@ impl Message<SendReply> for IrcActor {
         if let Err(e) = self.send_privmsg(target, &msg.message).await {
             error!("Error sending reply to {}: {:#}", target, e);
         }
+    }
+}
+
+impl Message<CheckUserIdentified> for IrcActor {
+    type Reply = Result<Option<bool>>;
+
+    #[instrument(skip_all, fields(server = %self.name, nick = %msg.nickname))]
+    async fn handle(
+        &mut self,
+        msg: CheckUserIdentified,
+        _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.check_user_identified(&msg.nickname)
     }
 }
 
@@ -466,16 +541,53 @@ impl Message<ProcessCommand> for ReplyActor {
                 }
             }
             "select" => {
-                // Spawn SelectActor to handle this command
-                let select_actor = actions::select::SelectActor::spawn_link(
-                    &ctx.actor_ref(),
-                    actions::select::SelectActor::new(msg.user.clone()).await,
-                )
-                .await;
-                let select_result = select_actor.ask(args.to_string()).await;
-                match select_result {
-                    Ok(result) => Some(result.message),
-                    Err(e) => Some(format!("Error: {e:#}")),
+                // Check if user is identified before allowing select command
+                // Retry up to 5 times with exponential backoff for pending WHOIS
+                let mut is_identified = false;
+                let mut attempts = 0;
+                let max_attempts = 5;
+
+                while attempts < max_attempts {
+                    match msg
+                        .irc_actor
+                        .ask(CheckUserIdentified {
+                            nickname: msg.privmsg.user.clone(),
+                        })
+                        .await
+                    {
+                        Ok(Some(identified)) => {
+                            is_identified = identified;
+                            break;
+                        }
+                        Ok(None) => {
+                            // WHOIS is pending, wait and retry
+                            attempts += 1;
+                            if attempts < max_attempts {
+                                let delay_ms = 150 * (1 << (attempts - 1)); // 150, 300, 600, 1200ms
+                                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to check user identification: {e:#}");
+                            break;
+                        }
+                    }
+                }
+
+                if !is_identified {
+                    Some("You must be identified with NickServ to use this command.".to_string())
+                } else {
+                    // Spawn SelectActor to handle this command
+                    let select_actor = actions::select::SelectActor::spawn_link(
+                        &ctx.actor_ref(),
+                        actions::select::SelectActor::new(msg.user.clone()).await,
+                    )
+                    .await;
+                    let select_result = select_actor.ask(args.to_string()).await;
+                    match select_result {
+                        Ok(result) => Some(result.message),
+                        Err(e) => Some(format!("Error: {e:#}")),
+                    }
                 }
             }
             "edit" => {
@@ -671,6 +783,86 @@ async fn handle_irc_message(
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let _ = actor_ref.tell(ProcessBufferedMessages).try_send();
             });
+        }
+        Command::QUIT(ref reason) => {
+            // User quit - invalidate their identification cache
+            let user = message.source_nickname().unwrap_or("unknown").to_string();
+            let quit_reason = format!("quit: {:?}", reason);
+            actor.invalidate_user_cache(&user, &quit_reason);
+        }
+        Command::NICK(ref new_nick) => {
+            // User changed nick - invalidate old nick cache
+            let old_nick = message.source_nickname().unwrap_or("unknown").to_string();
+            let nick_reason = format!("nick change to {}", new_nick);
+            actor.invalidate_user_cache(&old_nick, &nick_reason);
+        }
+        Command::KICK(ref _channel, ref kicked_nick, ref _reason) => {
+            // User was kicked - invalidate their identification cache
+            actor.invalidate_user_cache(kicked_nick, "kicked");
+        }
+        Command::PART(ref _channel, ref reason) => {
+            // User left channel - invalidate their identification cache
+            let user = message.source_nickname().unwrap_or("unknown").to_string();
+            let part_reason = format!("part: {:?}", reason);
+            actor.invalidate_user_cache(&user, &part_reason);
+        }
+        Command::Response(response, args) => {
+            // Handle numeric responses, particularly WHOIS responses
+            match response {
+                irc::client::prelude::Response::RPL_ENDOFWHOIS => {
+                    // End of WHOIS - if we haven't seen identification, user is not identified
+                    if let Some(nickname) = args.get(1)
+                        && !actor.identification_cache.contains_key(nickname)
+                    {
+                        actor
+                            .identification_cache
+                            .insert(nickname.clone(), (false, Instant::now()));
+                        trace!("WHOIS completed for {} - not identified", nickname);
+                    }
+                }
+                irc::client::prelude::Response::RPL_LOGGEDIN => {
+                    // User is logged in (RPL_LOGGEDIN)
+                    if let Some(nickname) = args.first() {
+                        actor
+                            .identification_cache
+                            .insert(nickname.clone(), (true, Instant::now()));
+                        trace!("User {} is identified (RPL_LOGGEDIN)", nickname);
+                    }
+                }
+                _ => {
+                    trace!("Other WHOIS response: {:?} {:?}", response, args);
+                }
+            }
+        }
+        Command::Raw(command, args) => {
+            // Handle raw numeric codes that might not be in the Response enum
+            if let Ok(numeric_code) = command.parse::<u16>() {
+                match numeric_code {
+                    330 => {
+                        // RPL_WHOISACCOUNT - user is identified
+                        if let Some(nickname) = args.get(1) {
+                            actor
+                                .identification_cache
+                                .insert(nickname.clone(), (true, Instant::now()));
+                            trace!("User {} is identified (330 response)", nickname);
+                        }
+                    }
+                    307 => {
+                        // RPL_WHOISREGNICK - user is registered
+                        if let Some(nickname) = args.get(1) {
+                            actor
+                                .identification_cache
+                                .insert(nickname.clone(), (true, Instant::now()));
+                            trace!("User {} is identified (307 response)", nickname);
+                        }
+                    }
+                    _ => {
+                        trace!("Unhandled raw numeric {}: {:?}", numeric_code, args);
+                    }
+                }
+            } else {
+                trace!("Unhandled raw command: {} {:?}", command, args);
+            }
         }
         _ => {
             trace!("Unhandled IRC command: {:?}", message.command);
