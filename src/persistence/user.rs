@@ -41,7 +41,7 @@ pub struct User {
 type UserName = String;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub(crate) enum UserId {
+pub enum UserId {
     Irc(String),
     Discord(DiscordUserId),
 }
@@ -75,6 +75,9 @@ pub struct SetSelectedImage(pub String);
 /// Get the selected image URL for the user
 #[derive(Debug, Clone)]
 pub struct GetSelectedImage;
+
+#[derive(Debug, Clone)]
+pub struct GetUserId;
 
 impl UserManager {
     pub fn get() -> Result<ActorRef<UserManager>> {
@@ -240,6 +243,18 @@ impl Message<GetSelectedImage> for UserActor {
     }
 }
 
+impl Message<GetUserId> for UserActor {
+    type Reply = Result<UserId>;
+
+    async fn handle(
+        &mut self,
+        _msg: GetUserId,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(self.user.id.clone())
+    }
+}
+
 impl UserActor {
     /// Persist the user to Redis.
     /// This is called whenever the user is updated.
@@ -261,7 +276,7 @@ impl UserActor {
 }
 
 impl UserId {
-    fn key(&self) -> String {
+    pub fn key(&self) -> String {
         match self {
             UserId::Irc(nick) => format!("user:irc:{}", nick),
             UserId::Discord(id) => format!("user:discord:{}", id),

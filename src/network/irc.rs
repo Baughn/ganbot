@@ -252,8 +252,8 @@ impl IrcActor {
         let formatted_messages = Self::format_privmsg(target, message);
 
         for msg in formatted_messages {
-            // Skip empty lines (represented as single space)
-            if msg.trim().is_empty() {
+            // Only skip truly empty strings; allow single-space lines to preserve blanks
+            if msg.is_empty() {
                 continue;
             }
 
@@ -454,6 +454,47 @@ impl Message<CheckUserIdentified> for IrcActor {
     }
 }
 
+impl ReplyActor {
+    /// Check if user is identified with NickServ with retry logic
+    /// Returns true if identified, false if not identified
+    async fn check_user_identified_with_retry(
+        irc_actor: &ActorRef<IrcActor>,
+        nickname: String,
+    ) -> Result<bool> {
+        let mut is_identified = false;
+        let mut attempts = 0;
+        let max_attempts = 5;
+
+        while attempts < max_attempts {
+            match irc_actor
+                .ask(CheckUserIdentified {
+                    nickname: nickname.clone(),
+                })
+                .await
+            {
+                Ok(Some(identified)) => {
+                    is_identified = identified;
+                    break;
+                }
+                Ok(None) => {
+                    // WHOIS is pending, wait and retry
+                    attempts += 1;
+                    if attempts < max_attempts {
+                        let delay_ms = 150 * (1 << (attempts - 1)); // 150, 300, 600, 1200ms
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to check user identification: {e:#}");
+                    break;
+                }
+            }
+        }
+
+        Ok(is_identified)
+    }
+}
+
 impl Message<ProcessCommand> for ReplyActor {
     type Reply = ();
 
@@ -542,37 +583,18 @@ impl Message<ProcessCommand> for ReplyActor {
             }
             "select" => {
                 // Check if user is identified before allowing select command
-                // Retry up to 5 times with exponential backoff for pending WHOIS
-                let mut is_identified = false;
-                let mut attempts = 0;
-                let max_attempts = 5;
-
-                while attempts < max_attempts {
-                    match msg
-                        .irc_actor
-                        .ask(CheckUserIdentified {
-                            nickname: msg.privmsg.user.clone(),
-                        })
-                        .await
-                    {
-                        Ok(Some(identified)) => {
-                            is_identified = identified;
-                            break;
-                        }
-                        Ok(None) => {
-                            // WHOIS is pending, wait and retry
-                            attempts += 1;
-                            if attempts < max_attempts {
-                                let delay_ms = 150 * (1 << (attempts - 1)); // 150, 300, 600, 1200ms
-                                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to check user identification: {e:#}");
-                            break;
-                        }
+                let is_identified = match Self::check_user_identified_with_retry(
+                    &msg.irc_actor,
+                    msg.privmsg.user.clone(),
+                )
+                .await
+                {
+                    Ok(identified) => identified,
+                    Err(e) => {
+                        error!("Failed to check user identification: {e:#}");
+                        false
                     }
-                }
+                };
 
                 if !is_identified {
                     Some("You must be identified with NickServ to use this command.".to_string())
@@ -610,6 +632,37 @@ impl Message<ProcessCommand> for ReplyActor {
                         }
                     }
                     Err(e) => Some(format!("Error: {e:#}")),
+                }
+            }
+            "delete" => {
+                // Check if user is identified before allowing delete command
+                let is_identified = match Self::check_user_identified_with_retry(
+                    &msg.irc_actor,
+                    msg.privmsg.user.clone(),
+                )
+                .await
+                {
+                    Ok(identified) => identified,
+                    Err(e) => {
+                        error!("Failed to check user identification: {e:#}");
+                        false
+                    }
+                };
+
+                if !is_identified {
+                    Some("You must be identified with NickServ to use this command.".to_string())
+                } else {
+                    // Spawn DeleteActor to handle this command
+                    let delete_actor = actions::delete::DeleteActor::spawn_link(
+                        &ctx.actor_ref(),
+                        actions::delete::DeleteActor::new(msg.user.clone()).await,
+                    )
+                    .await;
+                    let delete_result = delete_actor.ask(args.to_string()).await;
+                    match delete_result {
+                        Ok(result) => Some(result.message),
+                        Err(e) => Some(format!("Error: {e:#}")),
+                    }
                 }
             }
             "models" => {

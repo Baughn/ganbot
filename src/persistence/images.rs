@@ -327,21 +327,38 @@ impl ImageUploader {
 
         debug!("Uploading image to {}", remote_path);
 
-        let output = Command::new("scp")
+        // Execute SCP and ensure Redis registration is cleaned up on error
+        let scp_result = Command::new("scp")
             .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg(temp_path)
             .arg(&remote_path)
             .output()
-            .await
-            .context("Failed to execute scp command")?;
+            .await;
 
-        // temp_file automatically cleans up when dropped
+        let cleanup_redis = || async {
+            let mut cleanup_conn = Supervisor::redis().await;
+            let _: () = redis::cmd("ZREM")
+                .arg("image:files")
+                .arg(filename)
+                .query_async(&mut cleanup_conn)
+                .await
+                .context("Failed to cleanup Redis after SCP error")?;
+            Ok(())
+        };
+
+        let output = match scp_result {
+            Ok(o) => o,
+            Err(e) => return cleanup_redis().await.and_then(|_| Err(e.into())),
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            error!("SCP upload failed: {}", stderr);
-            anyhow::bail!("Failed to upload image: {}", stderr);
+            error!(stderr = %stderr, filename = %filename, "SCP upload failed");
+            // Cleanup Redis registration since upload failed
+            return cleanup_redis()
+                .await
+                .and_then(|_| anyhow::bail!("Failed to upload image via SCP: {}", stderr));
         }
 
         // Construct public URL
@@ -350,7 +367,7 @@ impl ImageUploader {
             self.config.base_url.trim_end_matches('/'),
             filename
         );
-        info!("Successfully uploaded image to {}", url);
+        info!(url = %url, filename = %filename, "Successfully uploaded image");
 
         Ok(url)
     }
@@ -405,6 +422,182 @@ pub async fn get_image_generation(uuid: &str) -> Result<Option<ImageGenerationRe
         }
         None => Ok(None),
     }
+}
+
+/// Result of a delete operation
+#[derive(Debug)]
+pub struct DeleteResult {
+    pub message: String,
+}
+
+/// Delete an image by UUID, verifying user ownership
+pub async fn delete_image(uuid: &str, username: &str) -> Result<DeleteResult> {
+    info!(uuid = %uuid, user = %username, "Attempting to delete image");
+
+    let mut conn = Supervisor::redis().await;
+
+    // Verify ownership by checking if this image is in the user's history
+    let user_images_key = format!("user:images:{}", username);
+    let user_images: Vec<String> = redis::cmd("ZRANGE")
+        .arg(&user_images_key)
+        .arg(0)
+        .arg(-1)
+        .query_async(&mut conn)
+        .await
+        .context("Failed to get user images from Redis")?;
+
+    let mut user_owns_image = false;
+    for image_json in &user_images {
+        if let Ok(image_data) = serde_json::from_str::<serde_json::Value>(image_json)
+            && let Some(url) = image_data.get("url").and_then(|v| v.as_str())
+            && url.contains(uuid)
+        {
+            user_owns_image = true;
+            break;
+        }
+    }
+
+    if !user_owns_image {
+        anyhow::bail!("You can only delete images you generated.");
+    }
+
+    info!(user = %username, uuid = %uuid, "User authorized to delete image");
+
+    // Find all files associated with this UUID (including gallery images) via ZSCAN MATCH
+    let pattern = format!("{}*", uuid);
+    let mut cursor: u64 = 0;
+    let mut matching_files: Vec<String> = Vec::new();
+    loop {
+        let (next_cursor, entries): (u64, Vec<(String, f64)>) = redis::cmd("ZSCAN")
+            .arg("image:files")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(1000)
+            .query_async(&mut conn)
+            .await
+            .context("Failed to scan Redis image files")?;
+
+        for (member, _score) in entries {
+            matching_files.push(member);
+        }
+
+        if next_cursor == 0 {
+            break;
+        }
+        cursor = next_cursor;
+    }
+
+    if matching_files.is_empty() {
+        info!("No files found for UUID {}", uuid);
+        // Still remove from generations hash in case of orphaned data
+        let _: () = redis::cmd("HDEL")
+            .arg("image:generations")
+            .arg(uuid)
+            .query_async(&mut conn)
+            .await
+            .context("Failed to remove generation data from Redis")?;
+
+        return Ok(DeleteResult {
+            message: "Image metadata cleaned up (files were already missing).".to_string(),
+        });
+    }
+
+    info!(uuid = %uuid, count = matching_files.len(), files = ?matching_files, "Found files to delete");
+
+    // Delete files from remote server
+    let config = Supervisor::image_host().await;
+    let mut deletion_errors = Vec::new();
+    let mut deleted_files = Vec::new();
+
+    for filename in &matching_files {
+        let remote_path = format!(
+            "{}:{}/{}",
+            config.ssh_hostname, config.ssh_directory, filename
+        );
+
+        debug!("Deleting remote file: {}", remote_path);
+
+        let output = Command::new("ssh")
+            .arg("-o")
+            .arg("StrictHostKeyChecking=no")
+            .arg(&config.ssh_hostname)
+            .arg("rm")
+            .arg("-f")
+            .arg(format!("{}/{}", config.ssh_directory, filename))
+            .output()
+            .await
+            .context("Failed to execute ssh rm command")?;
+
+        if output.status.success() {
+            info!(filename = %filename, "Successfully deleted remote file");
+            deleted_files.push(filename.clone());
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let error_msg = format!("Failed to delete {}: {}", filename, stderr);
+            error!("{}", error_msg);
+            deletion_errors.push(error_msg);
+        }
+    }
+
+    // Remove files from Redis tracking (only successfully deleted ones)
+    for filename in &deleted_files {
+        let _: () = redis::cmd("ZREM")
+            .arg("image:files")
+            .arg(filename)
+            .query_async(&mut conn)
+            .await
+            .context("Failed to remove file from Redis tracking")?;
+    }
+
+    // Remove generation data from Redis
+    let _: () = redis::cmd("HDEL")
+        .arg("image:generations")
+        .arg(uuid)
+        .query_async(&mut conn)
+        .await
+        .context("Failed to remove generation data from Redis")?;
+
+    // Remove from user's image history
+    // Find and remove entries that reference this UUID
+    for image_json in &user_images {
+        if let Ok(image_data) = serde_json::from_str::<serde_json::Value>(image_json)
+            && let Some(url) = image_data.get("url").and_then(|v| v.as_str())
+            && url.contains(uuid)
+        {
+            let _: () = redis::cmd("ZREM")
+                .arg(&user_images_key)
+                .arg(image_json)
+                .query_async(&mut conn)
+                .await
+                .context("Failed to remove image from user history")?;
+            debug!("Removed image from user history: {}", url);
+        }
+    }
+
+    // Prepare result message
+    let message = if deletion_errors.is_empty() {
+        if deleted_files.len() == 1 {
+            "Successfully deleted image.".to_string()
+        } else {
+            format!(
+                "Successfully deleted {} images (including gallery images).",
+                deleted_files.len()
+            )
+        }
+    } else {
+        format!(
+            "Partially completed: deleted {} files, but {} failures: {}",
+            deleted_files.len(),
+            deletion_errors.len(),
+            deletion_errors.join("; ")
+        )
+    };
+
+    info!(uuid = %uuid, result = %message, "Delete operation completed");
+
+    Ok(DeleteResult { message })
 }
 
 /// Upload an image to the configured host
