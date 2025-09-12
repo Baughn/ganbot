@@ -87,7 +87,7 @@ impl PromptActor {
     async fn process_generate(&mut self, mut prompt: Generate) -> Result<PromptResult, Error> {
         // Get models config and look up the model
         let models_config = Supervisor::models_config().await;
-        let model = self.resolve_model(&models_config, prompt.model.as_deref())?;
+        let model = self.resolve_model(&prompt.prompt, &models_config, prompt.model.as_deref())?;
         info!("Using model: {:?}", model);
 
         // Extend the prompt with information from the model defaults.
@@ -421,11 +421,26 @@ impl PromptActor {
     /// Resolve model name to Model, handling aliases and defaults
     fn resolve_model<'a>(
         &self,
+        prompt: &str,
         config: &'a ModelsConfig,
         model_name: Option<&str>,
     ) -> Result<&'a Model> {
         // Use default model if none specified
-        let model_name = model_name.unwrap_or(&config.default);
+        let mut model_name = model_name.unwrap_or(&config.default);
+        if model_name == "auto" {
+            // Determine default based on comma levels.
+            let commacity = prompt.matches(',').count() as f32 / prompt.len() as f32;
+            if commacity >= 0.04 {
+                model_name = &config.default_tagged;
+            } else {
+                model_name = &config.default_english;
+            }
+            info!(
+                "Auto-selected model '{}' based on prompt commacity of {:.3}",
+                model_name, commacity
+            );
+        }
+
         // Resolve alias if it exists
         let model_name = config
             .aliases

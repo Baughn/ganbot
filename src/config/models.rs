@@ -9,6 +9,8 @@ use tracing::{debug, info, trace};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
     pub default: String,
+    pub default_english: String,
+    pub default_tagged: String,
     pub aliases: HashMap<String, String>,
     pub models: HashMap<String, Model>,
 }
@@ -64,6 +66,8 @@ pub enum Checkpoint {
 #[serde(deny_unknown_fields)]
 struct LoadingModelsConfig {
     pub default: String,
+    pub default_english: String,
+    pub default_tagged: String,
     pub aliases: HashMap<String, String>,
     pub templates: HashMap<String, LoadingModel>,
     pub models: HashMap<String, LoadingModel>,
@@ -431,6 +435,8 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
 
     Ok(ModelsConfig {
         default: loading_config.default,
+        default_english: loading_config.default_english,
+        default_tagged: loading_config.default_tagged,
         aliases: loading_config.aliases,
         models,
     })
@@ -455,6 +461,8 @@ mod tests {
     fn test_simple_model_without_inheritance() {
         let content = r#"
 default = "simple"
+default_english = "simple"
+default_tagged = "simple"
 
 [aliases]
 "alias1" = "simple"
@@ -487,6 +495,8 @@ NanoBanana = {}
     fn test_model_inheritance_from_template() {
         let content = r#"
 default = "child"
+default_english = "child"
+default_tagged = "child"
 
 [aliases]
 
@@ -552,6 +562,8 @@ ComfyUI = { checkpoint = "child.safetensors" }
     fn test_validation_missing_required_fields() {
         let content = r#"
 default = "incomplete"
+default_english = "incomplete"
+default_tagged = "incomplete"
 
 [aliases]
 
@@ -577,6 +589,8 @@ ComfyUI = { checkpoint = "incomplete.safetensors" }
     fn test_missing_template_error() {
         let content = r#"
 default = "orphan"
+default_english = "orphan"
+default_tagged = "orphan"
 
 [aliases]
 
@@ -618,6 +632,8 @@ default = "broken
     fn test_missing_name_validation() {
         let content = r#"
 default = "nameless"
+default_english = "nameless"
+default_tagged = "nameless"
 
 [aliases]
 

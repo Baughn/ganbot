@@ -79,11 +79,10 @@ impl Message<String> for DeleteActor {
 /// Validate that a URL's host matches the expected base URL
 fn validate_url_host(url: &str, expected_base_url: &str) -> Result<()> {
     // Parse both URLs to compare their hosts
-    let input_url = Url::parse(url)
-        .map_err(|_| anyhow::anyhow!("Invalid URL format"))?;
+    let input_url = Url::parse(url).map_err(|_| anyhow::anyhow!("Invalid URL format"))?;
     let expected_url = Url::parse(expected_base_url)
         .map_err(|_| anyhow::anyhow!("Invalid expected base URL format"))?;
-    
+
     // Compare the host portions
     if input_url.host_str() != expected_url.host_str() {
         bail!(
@@ -93,7 +92,7 @@ fn validate_url_host(url: &str, expected_base_url: &str) -> Result<()> {
             expected_base_url
         );
     }
-    
+
     Ok(())
 }
 
@@ -112,7 +111,7 @@ fn extract_uuid_from_input(input: &str, expected_base_url: &str) -> Result<Strin
     if input.starts_with("http://") || input.starts_with("https://") {
         // Validate the host matches our expected base URL
         validate_url_host(input, expected_base_url)?;
-        
+
         // Extract filename from URL
         if let Some(filename) = input.split('/').next_back() {
             // Remove file extension if present
@@ -193,7 +192,12 @@ mod tests {
         let url = "https://malicious.com/550e8400-e29b-41d4-a716-446655440000.jpg";
         let result = extract_uuid_from_input(url, TEST_BASE_URL);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("does not match expected host"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match expected host")
+        );
     }
 
     #[test]
@@ -201,6 +205,11 @@ mod tests {
         let url = "https://sub.example.com/550e8400-e29b-41d4-a716-446655440000.jpg";
         let result = extract_uuid_from_input(url, TEST_BASE_URL);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("does not match expected host"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match expected host")
+        );
     }
 }
