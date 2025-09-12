@@ -36,6 +36,7 @@ pub struct User {
     pub id: UserId,
     pub username: UserName,
     pub selected_image_url: Option<String>,
+    pub default_prompt: Option<String>,
 }
 
 type UserName = String;
@@ -75,6 +76,14 @@ pub struct SetSelectedImage(pub String);
 /// Get the selected image URL for the user
 #[derive(Debug, Clone)]
 pub struct GetSelectedImage;
+
+/// Set the default prompt text for the user
+#[derive(Debug, Clone)]
+pub struct SetDefaultPrompt(pub Option<String>);
+
+/// Get the default prompt text for the user
+#[derive(Debug, Clone)]
+pub struct GetDefaultPrompt;
 
 #[derive(Debug, Clone)]
 pub struct GetUserId;
@@ -139,6 +148,7 @@ impl Message<GetUser> for UserManager {
                 id: msg.0.clone(),
                 username: msg.1.clone(),
                 selected_image_url: None,
+                default_prompt: None,
             }
         };
 
@@ -240,6 +250,32 @@ impl Message<GetSelectedImage> for UserActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         Ok(self.user.selected_image_url.clone())
+    }
+}
+
+impl Message<SetDefaultPrompt> for UserActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        msg: SetDefaultPrompt,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.user.default_prompt = msg.0;
+        self.persist().await?;
+        Ok(())
+    }
+}
+
+impl Message<GetDefaultPrompt> for UserActor {
+    type Reply = Result<Option<String>>;
+
+    async fn handle(
+        &mut self,
+        _msg: GetDefaultPrompt,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(self.user.default_prompt.clone())
     }
 }
 

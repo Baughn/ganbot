@@ -12,7 +12,7 @@ use crate::{
     },
     persistence::{
         images::{GalleryInput, upload_gallery, upload_image_with_generation},
-        user::{AddGeneratedImage, UserActor},
+        user::{AddGeneratedImage, GetDefaultPrompt, UserActor},
     },
     supervisor::Supervisor,
 };
@@ -43,9 +43,67 @@ impl Message<String> for PromptActor {
     ) -> Self::Reply {
         debug!("PromptActor received message: {}", msg);
 
-        // Parse the prompt
-        let prompt = Generate::from_str(&msg)?;
-        info!("Parsed prompt: {:?}", prompt);
+        // Parse the user's prompt first
+        let mut prompt = Generate::from_str(&msg)?;
+
+        // Get user's default prompt settings
+        let default_prompt_str = self
+            .user_actor
+            .ask(GetDefaultPrompt)
+            .await
+            .context("Failed to get default prompt")?;
+
+        // If there are defaults, parse and merge them
+        if let Some(default_str) = default_prompt_str {
+            // Parse defaults with a dummy prompt to extract just the settings
+            let defaults = Generate::from_str(&default_str)
+                .context("Failed to parse default prompt settings")?;
+
+            // Merge defaults into the prompt - user's settings take precedence
+            // Only apply defaults where user hasn't specified a value
+            if !defaults.prompt.is_empty() {
+                prompt.prompt = format!("{}. {}", prompt.prompt, defaults.prompt);
+            }
+            if let Some(neg) = defaults.negative_prompt {
+                if prompt.negative_prompt.is_none() {
+                    prompt.negative_prompt = Some(neg);
+                } else {
+                    // If user has a negative prompt, append the defaults
+                    let user_neg = prompt.negative_prompt.unwrap_or_default();
+                    prompt.negative_prompt = Some(format!("{}. {}", neg, user_neg));
+                }
+            }
+            if prompt.num_images.is_none() && defaults.num_images.is_some() {
+                prompt.num_images = defaults.num_images;
+            }
+            if prompt.width.is_none() && defaults.width.is_some() {
+                prompt.width = defaults.width;
+            }
+            if prompt.height.is_none() && defaults.height.is_some() {
+                prompt.height = defaults.height;
+            }
+            if prompt.aspect.is_none() && defaults.aspect.is_some() {
+                prompt.aspect = defaults.aspect;
+            }
+            if prompt.model.is_none() && defaults.model.is_some() {
+                prompt.model = defaults.model;
+            }
+            if prompt.seed.is_none() && defaults.seed.is_some() {
+                prompt.seed = defaults.seed;
+            }
+            if prompt.steps.is_none() && defaults.steps.is_some() {
+                prompt.steps = defaults.steps;
+            }
+            if prompt.references.img2img_strength.is_none()
+                && defaults.references.img2img_strength.is_some()
+            {
+                prompt.references.img2img_strength = defaults.references.img2img_strength;
+            }
+
+            debug!("Merged defaults into prompt");
+        }
+
+        info!("Final parsed prompt: {:?}", prompt);
 
         self.process_generate(prompt).await
     }

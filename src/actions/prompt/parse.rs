@@ -201,11 +201,6 @@ impl Generate {
             Some(negative_parts.join(" "))
         };
 
-        // Validate that we have at least a prompt or negative prompt
-        if prompt.is_empty() && negative_prompt.is_none() {
-            bail!("No prompt provided");
-        }
-
         Ok(Generate {
             raw_prompt: raw.to_string(),
             prompt,
@@ -428,23 +423,6 @@ mod tests {
         let result2 = Generate::from_str("batch --count 10").unwrap();
         assert_eq!(result2.prompt, "batch");
         assert_eq!(result2.num_images, Some(10));
-    }
-
-    #[test]
-    fn test_empty_prompt_with_negative() {
-        // Empty prompt with only negative is allowed
-        let result = Generate::from_str("--no blurry distorted").unwrap();
-        assert_eq!(result.prompt, "");
-        assert_eq!(result.negative_prompt, Some("blurry distorted".to_string()));
-    }
-
-    #[test]
-    fn test_empty_input() {
-        let result = Generate::from_str("");
-        assert!(result.is_err());
-
-        let result2 = Generate::from_str("   ");
-        assert!(result2.is_err());
     }
 
     #[test]

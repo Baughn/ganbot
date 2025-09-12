@@ -581,6 +581,37 @@ impl Message<ProcessCommand> for ReplyActor {
                     Err(e) => Some(format!("Error: {e:#}")),
                 }
             }
+            "config" => {
+                // Check if user is identified before allowing config command
+                let is_identified = match Self::check_user_identified_with_retry(
+                    &msg.irc_actor,
+                    msg.privmsg.user.clone(),
+                )
+                .await
+                {
+                    Ok(identified) => identified,
+                    Err(e) => {
+                        error!("Failed to check user identification: {e:#}");
+                        false
+                    }
+                };
+
+                if !is_identified {
+                    Some("You must be identified with NickServ to use this command.".to_string())
+                } else {
+                    // Spawn ConfigActor to handle this command
+                    let config_actor = actions::config::ConfigActor::spawn_link(
+                        &ctx.actor_ref(),
+                        actions::config::ConfigActor::new(msg.user.clone()).await,
+                    )
+                    .await;
+                    let config_result = config_actor.ask(args.to_string()).await;
+                    match config_result {
+                        Ok(result) => Some(result.message),
+                        Err(e) => Some(format!("Error: {e:#}")),
+                    }
+                }
+            }
             "select" => {
                 // Check if user is identified before allowing select command
                 let is_identified = match Self::check_user_identified_with_retry(
