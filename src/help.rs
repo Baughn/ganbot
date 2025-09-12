@@ -24,14 +24,13 @@ pub struct ModelInfo {
 #[derive(Debug, Clone)]
 pub enum BackendInfo {
     NanoBanana,
-    StableDiffusion {
+    ComfyUI {
         checkpoint: String,
         sampler: String,
         steps: u32,
         resolution: (u32, u32),
         cfg: f32,
         scheduler: String,
-        vae: Option<String>,
     },
 }
 
@@ -59,21 +58,24 @@ fn models_config_to_help(config: ModelsConfig) -> ModelsHelp {
                 Backend::NanoBanana => BackendInfo::NanoBanana,
                 Backend::ComfyUI {
                     checkpoint,
-                    vae,
                     cfg,
                     sampler,
                     scheduler,
                     steps,
                     resolution,
                     ..
-                } => BackendInfo::StableDiffusion {
-                    checkpoint,
+                } => BackendInfo::ComfyUI {
+                    checkpoint: match &checkpoint {
+                        crate::config::models::Checkpoint::Combined(name) => name.clone(),
+                        crate::config::models::Checkpoint::Split { unet, clip, vae } => {
+                            unet.clone()
+                        }
+                    },
                     sampler,
                     steps,
                     resolution,
                     cfg,
                     scheduler,
-                    vae,
                 },
             };
 

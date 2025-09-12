@@ -33,8 +33,7 @@ pub struct PromptDefaults {
 pub enum Backend {
     NanoBanana,
     ComfyUI {
-        checkpoint: String,
-        vae: Option<String>,
+        checkpoint: Checkpoint,
         cfg: f32,
         sampler: String,
         scheduler: String,
@@ -46,6 +45,17 @@ pub enum Backend {
         stage2_denoise: Option<f32>,
         stage2_sampler: Option<String>,
         stage2_scheduler: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub enum Checkpoint {
+    Combined(String),
+    Split {
+        unet: String,
+        vae: String,
+        clip: String,
     },
 }
 
@@ -84,7 +94,9 @@ enum LoadingBackend {
     NanoBanana,
     ComfyUI {
         checkpoint: Option<String>,
+        unet: Option<String>,
         vae: Option<String>,
+        clip: Option<String>,
         cfg: Option<f32>,
         sampler: Option<String>,
         scheduler: Option<String>,
@@ -148,7 +160,9 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                 (
                     LoadingBackend::ComfyUI {
                         checkpoint: p_checkpoint,
+                        unet: p_unet,
                         vae: p_vae,
+                        clip: p_clip,
                         cfg: p_cfg,
                         sampler: p_sampler,
                         scheduler: p_scheduler,
@@ -163,7 +177,9 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                     },
                     LoadingBackend::ComfyUI {
                         checkpoint: c_checkpoint,
+                        unet: c_unet,
                         vae: c_vae,
+                        clip: c_clip,
                         cfg: c_cfg,
                         sampler: c_sampler,
                         scheduler: c_scheduler,
@@ -179,6 +195,12 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                 ) => {
                     if c_checkpoint.is_none() {
                         *c_checkpoint = p_checkpoint.clone();
+                    }
+                    if c_unet.is_none() {
+                        *c_unet = p_unet.clone();
+                    }
+                    if c_clip.is_none() {
+                        *c_clip = p_clip.clone();
                     }
                     if c_vae.is_none() {
                         *c_vae = p_vae.clone();
@@ -301,7 +323,9 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                 LoadingBackend::NanoBanana => Backend::NanoBanana,
                 LoadingBackend::ComfyUI {
                     checkpoint,
+                    unet,
                     vae,
+                    clip,
                     cfg,
                     sampler,
                     scheduler,
@@ -314,16 +338,20 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     stage2_sampler,
                     stage2_scheduler,
                 } => Backend::ComfyUI {
-                    checkpoint: checkpoint
-                        .as_ref()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Model '{}' ComfyUI backend is missing required field 'checkpoint'",
+                    checkpoint: match (checkpoint, unet, vae, clip) {
+                        (Some(ckpt), None, None, None) => Checkpoint::Combined(ckpt.clone()),
+                        (None, Some(u), Some(v), Some(c)) => Checkpoint::Split {
+                            unet: u.clone(),
+                            vae: v.clone(),
+                            clip: c.clone(),
+                        },
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "Model '{}' ComfyUI backend must have either 'checkpoint' or all of 'unet', 'vae', and 'clip'",
                                 name
-                            )
-                        })?
-                        .clone(),
-                    vae: vae.clone(),
+                            ));
+                        }
+                    },
                     cfg: cfg.ok_or_else(|| {
                         anyhow::anyhow!(
                             "Model '{}' ComfyUI backend is missing required field 'cfg'",
@@ -487,7 +515,6 @@ ComfyUI = { checkpoint = "child.safetensors" }
 
         if let Backend::ComfyUI {
             checkpoint,
-            vae,
             cfg,
             sampler,
             scheduler,
@@ -501,8 +528,10 @@ ComfyUI = { checkpoint = "child.safetensors" }
             stage2_scheduler,
         } = &child_model.backend
         {
-            assert_eq!(checkpoint, "child.safetensors"); // Override
-            assert_eq!(vae, &None); // Not specified, should be None
+            assert_eq!(
+                checkpoint,
+                &Checkpoint::Combined("child.safetensors".to_string())
+            );
             assert_eq!(cfg, &7.5); // Inherited
             assert_eq!(sampler, "euler"); // Inherited
             assert_eq!(scheduler, "normal"); // Inherited
@@ -607,34 +636,5 @@ NanoBanana = {}
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("missing required field 'name'"));
-    }
-
-    #[test]
-    fn test_vae_field_optional() {
-        let content = r#"
-default = "no_vae"
-
-[aliases]
-
-[templates]
-
-[models.no_vae]
-name = "no_vae"
-description = "VAE field should be optional"
-
-[models.no_vae.backend]
-ComfyUI = { checkpoint = "model.safetensors", cfg = 7.0, sampler = "euler", scheduler = "normal", steps = 30, resolution = [1024, 1024] }
-"#;
-
-        let temp_file = create_temp_models_file(content);
-        let config = load_models_config_from_path(temp_file.path().to_str().unwrap())
-            .expect("VAE should be optional");
-
-        let model = &config.models["no_vae"];
-        if let Backend::ComfyUI { vae, .. } = &model.backend {
-            assert_eq!(vae, &None); // VAE should be None and that should be OK
-        } else {
-            panic!("Expected ComfyUI backend");
-        }
     }
 }

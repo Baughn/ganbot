@@ -306,14 +306,13 @@ impl IrcActor {
                             "Backend:  NanoBanana (Gemini 2.5-flash-image-preview)".to_string(),
                         );
                     }
-                    help::BackendInfo::StableDiffusion {
+                    help::BackendInfo::ComfyUI {
                         checkpoint,
                         sampler,
                         steps,
                         resolution,
                         cfg,
                         scheduler,
-                        vae,
                     } => {
                         output.push("  Backend: Stable Diffusion".to_string());
                         output.push(format!("  Checkpoint: {}", checkpoint));
@@ -322,9 +321,6 @@ impl IrcActor {
                             resolution.0, resolution.1, steps, cfg
                         ));
                         output.push(format!("  Sampler: {} ({})", sampler, scheduler));
-                        if let Some(vae_name) = vae {
-                            output.push(format!("  VAE: {}", vae_name));
-                        }
                     }
                 }
                 output.push("".to_string()); // Empty line after each model

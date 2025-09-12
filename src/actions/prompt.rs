@@ -68,8 +68,7 @@ impl Message<Generate> for PromptActor {
 struct ComfyParams<'a> {
     prompt: Generate,
     model_name: &'a str,
-    checkpoint: &'a str,
-    vae_name: Option<&'a str>,
+    checkpoint: &'a models::Checkpoint,
     cfg: f32,
     sampler: &'a str,
     scheduler: &'a str,
@@ -84,6 +83,7 @@ struct ComfyParams<'a> {
 }
 
 impl PromptActor {
+    /// Common processing for all generation requests, i.e. prompt extension and model resolution.
     async fn process_generate(&mut self, mut prompt: Generate) -> Result<PromptResult, Error> {
         // Get models config and look up the model
         let models_config = Supervisor::models_config().await;
@@ -116,7 +116,6 @@ impl PromptActor {
             models::Backend::NanoBanana => self.nanobanana(prompt).await,
             models::Backend::ComfyUI {
                 checkpoint,
-                vae,
                 cfg,
                 sampler,
                 scheduler,
@@ -132,8 +131,7 @@ impl PromptActor {
                 self.comfyui(ComfyParams {
                     prompt,
                     model_name: &model.name,
-                    checkpoint: checkpoint.as_str(),
-                    vae_name: vae.as_deref(),
+                    checkpoint,
                     cfg: *cfg,
                     sampler: sampler.as_str(),
                     scheduler: scheduler.as_str(),
@@ -152,7 +150,7 @@ impl PromptActor {
         Ok(prompt_result)
     }
 
-    /// Stable Diffusion image generation (SDXL, etc.)
+    /// Stable Diffusion, Qwen-Image, etc. via ComfyUI
     async fn comfyui<'a>(&self, params: ComfyParams<'a>) -> Result<PromptResult> {
         let client = ComfyUIClient::new();
         let mut graph = comfyui::api::Graph::new();
@@ -180,19 +178,22 @@ impl PromptActor {
         let height = height.clamp(256, 2048);
         let steps = params.prompt.steps.unwrap_or(params.steps).clamp(1, 150);
 
-        // Build workflow
-        let (mut model, clip, vae) = graph.checkpoint_loader(params.checkpoint);
+        // Load model, CLIP, and VAE
+        let (mut model, clip, vae) = match params.checkpoint {
+            // graph.checkpoint_loader(params.checkpoint);
+            models::Checkpoint::Combined(name) => graph.checkpoint_loader(name),
+            models::Checkpoint::Split { unet, clip, vae } => (
+                graph.unet_loader(unet),
+                graph.clip_loader(clip),
+                graph.vae_loader(vae),
+            ),
+        };
 
         // Apply TorchCompile if enabled
         if params.use_torch_compile {
             model = graph.torch_compile_model(&model, "inductor");
         }
 
-        let vae = if let Some(vae_name) = params.vae_name {
-            graph.vae_loader(vae_name)
-        } else {
-            vae
-        };
         let positive = graph.clip_text_encode(&clip, &params.prompt.prompt);
         let negative = graph.clip_text_encode(
             &clip,
