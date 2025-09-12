@@ -161,11 +161,15 @@ impl IrcActor {
         let mut result = Vec::new();
 
         // Split on newlines first
+        let mut empty_lines = 0;
         for line in message.lines() {
-            if line.is_empty() {
+            if line.is_empty() && empty_lines < 1 {
                 // Send empty lines as a single space to preserve line breaks
                 result.push(" ".to_string());
+                empty_lines += 1;
                 continue;
+            } else {
+                empty_lines = 0;
             }
 
             // Handle long lines by breaking on word boundaries
@@ -1007,7 +1011,7 @@ mod tests {
     #[test]
     fn test_format_privmsg_multiple_empty_lines() {
         let result = IrcActor::format_privmsg("#test", "Line 1\n\n\nLine 4");
-        assert_eq!(result, vec!["Line 1", " ", " ", "Line 4"]);
+        assert_eq!(result, vec!["Line 1", " ", "", "Line 4"]);
     }
 
     #[test]
