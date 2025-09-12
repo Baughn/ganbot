@@ -23,7 +23,7 @@
           # System dependencies
           pkg-config
           openssl
-          
+
           # For image processing
           libwebp
           
@@ -33,6 +33,8 @@
           cargo-edit
           cargo-outdated
           cargo-audit
+          cargo-machete
+          cargo-features-manager
           bacon
         ];
 
@@ -42,7 +44,9 @@
       in
       {
         # Development shell
-        devShells.default = pkgs.mkShell {
+        devShells.default = pkgs.mkShell.override {
+          stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.clangStdenv;
+        } {
           inherit buildInputs nativeBuildInputs;
 
           # Environment variables for compilation
@@ -63,6 +67,8 @@
             echo "  cargo test     - Run tests"
             echo "  cargo check    - Check for compilation errors"
             echo "  bacon          - Run bacon for continuous checking"
+            echo "  cargo machete   - Remove old deps"
+            echo "  cargo features prune"
             echo ""
           '';
         };

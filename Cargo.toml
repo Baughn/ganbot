@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 default-run = "ganbot"
 
+[profile.dev]
+debug = 0
+strip = "debuginfo"
+[profile.dev.build-override]
+opt-level = 3
+
 [[bin]]
 name = "comfyui_example"
 path = "src/bin/comfyui_example.rs"
@@ -15,22 +21,17 @@ dead_code = "allow"
 
 [dependencies]
 anyhow = { version = "1.0.98" }
-async-trait = "0.1"
 base64 = "0.22.1"
 bytes = "1.8"
 config = "0.14"
-dotenvy = "0.15.7"
 futures = "0.3.31"
 ab_glyph = "0.2"
 image = "0.25.6"
 imageproc = "0.25"
 indexmap = "2.6"
 lazy_static = "1.5"
-rusttype = "0.9"
 irc = "1.1.0"
 kameo = "0.17.2"
-kameo_macros = "0.17.0"
-notify = "7.0"
 openrouter_api = { version = "0.1.6", features = [
     "tracing",
 ], path = "../openrouter_api" }
@@ -54,5 +55,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.11", features = ["v4", "v7"] }
 tempfile = "3.0"
 chrono = "0.4.41"
-kamadak-exif = "0.5"
 url = "2.5.7"
+kamadak-exif = "0.6.1"

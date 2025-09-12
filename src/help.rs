@@ -57,7 +57,7 @@ fn models_config_to_help(config: ModelsConfig) -> ModelsHelp {
         .map(|(key, model)| {
             let backend_info = match model.backend {
                 Backend::NanoBanana => BackendInfo::NanoBanana,
-                Backend::StableDiffusion {
+                Backend::ComfyUI {
                     checkpoint,
                     vae,
                     cfg,

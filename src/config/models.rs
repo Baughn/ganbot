@@ -32,7 +32,7 @@ pub struct PromptDefaults {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Backend {
     NanoBanana,
-    StableDiffusion {
+    ComfyUI {
         checkpoint: String,
         vae: Option<String>,
         cfg: f32,
@@ -82,7 +82,7 @@ struct LoadingPromptDefaults {
 #[serde(deny_unknown_fields)]
 enum LoadingBackend {
     NanoBanana,
-    StableDiffusion {
+    ComfyUI {
         checkpoint: Option<String>,
         vae: Option<String>,
         cfg: Option<f32>,
@@ -143,10 +143,10 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
     // For backend, merge fields
     match (&parent.backend, &mut child.backend) {
         (Some(parent_backend), Some(child_backend)) => {
-            // Both have backends, merge StableDiffusion fields
+            // Both have backends, merge ComfyUI fields
             match (parent_backend, child_backend) {
                 (
-                    LoadingBackend::StableDiffusion {
+                    LoadingBackend::ComfyUI {
                         checkpoint: p_checkpoint,
                         vae: p_vae,
                         cfg: p_cfg,
@@ -161,7 +161,7 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                         stage2_sampler: p_stage2_sampler,
                         stage2_scheduler: p_stage2_scheduler,
                     },
-                    LoadingBackend::StableDiffusion {
+                    LoadingBackend::ComfyUI {
                         checkpoint: c_checkpoint,
                         vae: c_vae,
                         cfg: c_cfg,
@@ -217,11 +217,11 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                         *c_stage2_scheduler = p_stage2_scheduler.clone();
                     }
                 }
-                (LoadingBackend::NanoBanana, LoadingBackend::StableDiffusion { .. }) => {
-                    bail!("Can't inherit from NanoBanana to StableDiffusion")
+                (LoadingBackend::NanoBanana, LoadingBackend::ComfyUI { .. }) => {
+                    bail!("Can't inherit from NanoBanana to ComfyUI")
                 }
-                (LoadingBackend::StableDiffusion { .. }, LoadingBackend::NanoBanana) => {
-                    bail!("Can't inherit from StableDiffusion to NanoBanana")
+                (LoadingBackend::ComfyUI { .. }, LoadingBackend::NanoBanana) => {
+                    bail!("Can't inherit from ComfyUI to NanoBanana")
                 }
                 (LoadingBackend::NanoBanana, LoadingBackend::NanoBanana) => {
                     // Both are NanoBanana, nothing to inherit
@@ -299,7 +299,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
         let backend = match &loading_model.backend {
             Some(backend) => match backend {
                 LoadingBackend::NanoBanana => Backend::NanoBanana,
-                LoadingBackend::StableDiffusion {
+                LoadingBackend::ComfyUI {
                     checkpoint,
                     vae,
                     cfg,
@@ -313,32 +313,66 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     stage2_denoise,
                     stage2_sampler,
                     stage2_scheduler,
-                } => {
-                    Backend::StableDiffusion {
-                        checkpoint: checkpoint.as_ref()
-                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'checkpoint'", name))?.clone(),
-                        vae: vae.clone(),
-                        cfg: cfg
-                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'cfg'", name))?,
-                        sampler: sampler.as_ref()
-                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'sampler'", name))?.clone(),
-                        scheduler: scheduler.as_ref()
-                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'scheduler'", name))?.clone(),
-                        steps: steps
-                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'steps'", name))?,
-                        resolution: resolution
-                            .ok_or_else(|| anyhow::anyhow!("Model '{}' StableDiffusion backend is missing required field 'resolution'", name))?,
-                        use_torch_compile: *use_torch_compile,
-                        two_stage: *two_stage,
-                        upscale_factor: *upscale_factor,
-                        stage2_denoise: *stage2_denoise,
-                        stage2_sampler: stage2_sampler.clone(),
-                        stage2_scheduler: stage2_scheduler.clone(),
-                    }
-                }
-            }
+                } => Backend::ComfyUI {
+                    checkpoint: checkpoint
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Model '{}' ComfyUI backend is missing required field 'checkpoint'",
+                                name
+                            )
+                        })?
+                        .clone(),
+                    vae: vae.clone(),
+                    cfg: cfg.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Model '{}' ComfyUI backend is missing required field 'cfg'",
+                            name
+                        )
+                    })?,
+                    sampler: sampler
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Model '{}' ComfyUI backend is missing required field 'sampler'",
+                                name
+                            )
+                        })?
+                        .clone(),
+                    scheduler: scheduler
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Model '{}' ComfyUI backend is missing required field 'scheduler'",
+                                name
+                            )
+                        })?
+                        .clone(),
+                    steps: steps.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Model '{}' ComfyUI backend is missing required field 'steps'",
+                            name
+                        )
+                    })?,
+                    resolution: resolution.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Model '{}' ComfyUI backend is missing required field 'resolution'",
+                            name
+                        )
+                    })?,
+                    use_torch_compile: *use_torch_compile,
+                    two_stage: *two_stage,
+                    upscale_factor: *upscale_factor,
+                    stage2_denoise: *stage2_denoise,
+                    stage2_sampler: stage2_sampler.clone(),
+                    stage2_scheduler: stage2_scheduler.clone(),
+                },
+            },
             None => {
-                return Err(anyhow::anyhow!("Model '{}' has no backend after inheritance processing", name));
+                return Err(anyhow::anyhow!(
+                    "Model '{}' has no backend after inheritance processing",
+                    name
+                ));
             }
         };
 
@@ -433,14 +467,14 @@ name = "base_template"
 description = "Base template"
 
 [templates.base.backend]
-StableDiffusion = { cfg = 7.5, sampler = "euler", scheduler = "normal", steps = 25, resolution = [512, 512] }
+ComfyUI = { cfg = 7.5, sampler = "euler", scheduler = "normal", steps = 25, resolution = [512, 512] }
 
 [models.child]
 name = "child_model"
 inherit = "base"
 
 [models.child.backend]
-StableDiffusion = { checkpoint = "child.safetensors" }
+ComfyUI = { checkpoint = "child.safetensors" }
 "#;
 
         let temp_file = create_temp_models_file(content);
@@ -451,7 +485,7 @@ StableDiffusion = { checkpoint = "child.safetensors" }
         assert_eq!(child_model.name, "child_model");
         assert_eq!(child_model.description, Some("Base template".to_string())); // Inherited
 
-        if let Backend::StableDiffusion {
+        if let Backend::ComfyUI {
             checkpoint,
             vae,
             cfg,
@@ -481,7 +515,7 @@ StableDiffusion = { checkpoint = "child.safetensors" }
             assert_eq!(stage2_sampler, &None); // Not specified
             assert_eq!(stage2_scheduler, &None); // Not specified
         } else {
-            panic!("Expected StableDiffusion backend");
+            panic!("Expected ComfyUI backend");
         }
     }
 
@@ -499,7 +533,7 @@ name = "incomplete"
 description = "Missing required fields"
 
 [models.incomplete.backend]
-StableDiffusion = { checkpoint = "incomplete.safetensors" }
+ComfyUI = { checkpoint = "incomplete.safetensors" }
 "#;
 
         let temp_file = create_temp_models_file(content);
@@ -589,7 +623,7 @@ name = "no_vae"
 description = "VAE field should be optional"
 
 [models.no_vae.backend]
-StableDiffusion = { checkpoint = "model.safetensors", cfg = 7.0, sampler = "euler", scheduler = "normal", steps = 30, resolution = [1024, 1024] }
+ComfyUI = { checkpoint = "model.safetensors", cfg = 7.0, sampler = "euler", scheduler = "normal", steps = 30, resolution = [1024, 1024] }
 "#;
 
         let temp_file = create_temp_models_file(content);
@@ -597,10 +631,10 @@ StableDiffusion = { checkpoint = "model.safetensors", cfg = 7.0, sampler = "eule
             .expect("VAE should be optional");
 
         let model = &config.models["no_vae"];
-        if let Backend::StableDiffusion { vae, .. } = &model.backend {
+        if let Backend::ComfyUI { vae, .. } = &model.backend {
             assert_eq!(vae, &None); // VAE should be None and that should be OK
         } else {
-            panic!("Expected StableDiffusion backend");
+            panic!("Expected ComfyUI backend");
         }
     }
 }

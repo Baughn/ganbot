@@ -64,6 +64,25 @@ impl Message<Generate> for PromptActor {
     }
 }
 
+#[derive(Debug)]
+struct ComfyParams<'a> {
+    prompt: Generate,
+    model_name: &'a str,
+    checkpoint: &'a str,
+    vae_name: Option<&'a str>,
+    cfg: f32,
+    sampler: &'a str,
+    scheduler: &'a str,
+    steps: u32,
+    resolution: (u32, u32),
+    use_torch_compile: bool,
+    two_stage: bool,
+    upscale_factor: f32,
+    stage2_denoise: f32,
+    stage2_sampler: &'a str,
+    stage2_scheduler: &'a str,
+}
+
 impl PromptActor {
     async fn process_generate(&mut self, mut prompt: Generate) -> Result<PromptResult, Error> {
         // Get models config and look up the model
@@ -95,7 +114,7 @@ impl PromptActor {
 
         let prompt_result = match &model.backend {
             models::Backend::NanoBanana => self.nanobanana(prompt).await,
-            models::Backend::StableDiffusion {
+            models::Backend::ComfyUI {
                 checkpoint,
                 vae,
                 cfg,
@@ -110,93 +129,78 @@ impl PromptActor {
                 stage2_sampler,
                 stage2_scheduler,
             } => {
-                self.stable_diffusion(
+                self.comfyui(ComfyParams {
                     prompt,
-                    &model.name,
-                    checkpoint.as_str(),
-                    vae.as_deref(),
-                    *cfg,
-                    sampler.as_str(),
-                    scheduler.as_str(),
-                    *steps,
-                    *resolution,
-                    use_torch_compile.unwrap_or(false),
-                    two_stage.unwrap_or(false),
-                    upscale_factor.unwrap_or(1.5),
-                    stage2_denoise.unwrap_or(0.5),
-                    stage2_sampler.as_deref().unwrap_or("euler"),
-                    stage2_scheduler.as_deref().unwrap_or("beta"),
-                )
+                    model_name: &model.name,
+                    checkpoint: checkpoint.as_str(),
+                    vae_name: vae.as_deref(),
+                    cfg: *cfg,
+                    sampler: sampler.as_str(),
+                    scheduler: scheduler.as_str(),
+                    steps: *steps,
+                    resolution: *resolution,
+                    use_torch_compile: use_torch_compile.unwrap_or(false),
+                    two_stage: two_stage.unwrap_or(false),
+                    upscale_factor: upscale_factor.unwrap_or(1.5),
+                    stage2_denoise: stage2_denoise.unwrap_or(0.5),
+                    stage2_sampler: stage2_sampler.as_deref().unwrap_or("euler"),
+                    stage2_scheduler: stage2_scheduler.as_deref().unwrap_or("beta"),
+                })
                 .await
             }
         }?;
         Ok(prompt_result)
     }
+
     /// Stable Diffusion image generation (SDXL, etc.)
-    #[allow(clippy::too_many_arguments)]
-    async fn stable_diffusion(
-        &self,
-        prompt: Generate,
-        model_name: &str,
-        checkpoint: &str,
-        vae_name: Option<&str>,
-        cfg: f32,
-        sampler: &str,
-        scheduler: &str,
-        steps: u32,
-        resolution: (u32, u32),
-        use_torch_compile: bool,
-        two_stage: bool,
-        upscale_factor: f32,
-        stage2_denoise: f32,
-        stage2_sampler: &str,
-        stage2_scheduler: &str,
-    ) -> Result<PromptResult> {
+    async fn comfyui<'a>(&self, params: ComfyParams<'a>) -> Result<PromptResult> {
         let client = ComfyUIClient::new();
         let mut graph = comfyui::api::Graph::new();
 
         // Never do two-stage if img2img is requested
-        let two_stage = two_stage && prompt.references.img2img.is_none();
+        let two_stage = params.two_stage && params.prompt.references.img2img.is_none();
 
         // Replace model parameters with those from the prompt if specified.
-        let seed = prompt.seed.unwrap_or(rand::rng().next_u64());
-        let num_images = prompt.num_images.unwrap_or(2).clamp(1, 6);
-        let mut width = resolution.0;
-        let mut height = resolution.1;
-        if let Some(aspect) = prompt.aspect {
+        let seed = params.prompt.seed.unwrap_or(rand::rng().next_u64());
+        let num_images = params.prompt.num_images.unwrap_or(2).clamp(1, 6);
+        let mut width = params.resolution.0;
+        let mut height = params.resolution.1;
+        if let Some(aspect) = params.prompt.aspect {
             trace!("Calculating dimensions for aspect ratio {:?}", aspect);
             (width, height) = calculate_dimensions(aspect, width, height);
             trace!("Calculated dimensions: {}x{}", width, height);
         }
-        if let Some(w) = prompt.width {
+        if let Some(w) = params.prompt.width {
             width = w;
         }
-        if let Some(h) = prompt.height {
+        if let Some(h) = params.prompt.height {
             height = h;
         }
         let width = width.clamp(256, 2048);
         let height = height.clamp(256, 2048);
-        let steps = prompt.steps.unwrap_or(steps).clamp(1, 150);
+        let steps = params.prompt.steps.unwrap_or(params.steps).clamp(1, 150);
 
         // Build workflow
-        let (mut model, clip, vae) = graph.checkpoint_loader(checkpoint);
+        let (mut model, clip, vae) = graph.checkpoint_loader(params.checkpoint);
 
         // Apply TorchCompile if enabled
-        if use_torch_compile {
+        if params.use_torch_compile {
             model = graph.torch_compile_model(&model, "inductor");
         }
 
-        let vae = if let Some(vae_name) = vae_name {
+        let vae = if let Some(vae_name) = params.vae_name {
             graph.vae_loader(vae_name)
         } else {
             vae
         };
-        let positive = graph.clip_text_encode(&clip, &prompt.prompt);
-        let negative =
-            graph.clip_text_encode(&clip, &prompt.negative_prompt.clone().unwrap_or_default());
+        let positive = graph.clip_text_encode(&clip, &params.prompt.prompt);
+        let negative = graph.clip_text_encode(
+            &clip,
+            &params.prompt.negative_prompt.clone().unwrap_or_default(),
+        );
 
         // Handle img2img mode vs text2img mode
-        let latent = if let Some(ref input_image) = prompt.references.img2img {
+        let latent = if let Some(ref input_image) = params.prompt.references.img2img {
             // img2img mode: encode the input image to latent space
             info!(
                 "Using img2img mode with input image: {}x{}",
@@ -209,7 +213,7 @@ impl PromptActor {
             let img_height = input_image.height();
 
             // Confirm that denoise strength is set
-            if let Some(strength) = prompt.references.img2img_strength {
+            if let Some(strength) = params.prompt.references.img2img_strength {
                 if !(0.0..=1.0).contains(&strength) {
                     bail!("--denoise parameter must be between 0.0 and 1.0");
                 }
@@ -226,7 +230,7 @@ impl PromptActor {
         };
 
         // Determine denoise strength based on mode
-        let denoise = if let Some(strength) = prompt.references.img2img_strength {
+        let denoise = if let Some(strength) = params.prompt.references.img2img_strength {
             strength.clamp(0.0, 1.0)
         } else {
             1.0
@@ -236,10 +240,10 @@ impl PromptActor {
         let final_samples = if two_stage {
             // Stage 1: Initial sampling with half steps
             let stage1_params = KSamplerParams {
-                sampler: sampler.to_string(),
-                scheduler: scheduler.to_string(),
+                sampler: params.sampler.to_string(),
+                scheduler: params.scheduler.to_string(),
                 steps: steps / 2,
-                cfg,
+                cfg: params.cfg,
                 seed,
                 denoise,
             };
@@ -247,15 +251,16 @@ impl PromptActor {
                 graph.ksampler(&model, &positive, &negative, &latent, stage1_params);
 
             // Stage 2: Upscale and refine
-            let upscaled_latent = graph.latent_upscaler(&stage1_samples, "SDXL", upscale_factor);
+            let upscaled_latent =
+                graph.latent_upscaler(&stage1_samples, "SDXL", params.upscale_factor);
 
             let stage2_params = KSamplerParams {
-                sampler: stage2_sampler.to_string(),
-                scheduler: stage2_scheduler.to_string(),
+                sampler: params.stage2_sampler.to_string(),
+                scheduler: params.stage2_scheduler.to_string(),
                 steps: steps / 2,
-                cfg,
+                cfg: params.cfg,
                 seed,
-                denoise: stage2_denoise,
+                denoise: params.stage2_denoise,
             };
             graph.ksampler(
                 &model,
@@ -267,10 +272,10 @@ impl PromptActor {
         } else {
             // Single-stage workflow
             let params = KSamplerParams {
-                sampler: sampler.to_string(),
-                scheduler: scheduler.to_string(),
+                sampler: params.sampler.to_string(),
+                scheduler: params.scheduler.to_string(),
                 steps,
-                cfg,
+                cfg: params.cfg,
                 seed,
                 denoise,
             };
@@ -278,7 +283,7 @@ impl PromptActor {
         };
 
         let images = graph.vae_decode(&vae, &final_samples);
-        graph.save_images(&images, model_name);
+        graph.save_images(&images, params.model_name);
 
         // Capture the workflow before executing
         let workflow = graph.build();
@@ -291,15 +296,15 @@ impl PromptActor {
         debug!("Graph execution completed");
 
         // Make a gallery from the images.
-        let title = prompt.raw_prompt.clone();
-        let subtitle = format!("Model: {}, Seed: {}", model_name, seed);
+        let title = params.prompt.raw_prompt.clone();
+        let subtitle = format!("Model: {}, Seed: {}", params.model_name, seed);
         let gallery = upload_gallery(GalleryInput {
             title,
             subtitle,
             images,
             workflow: Some(workflow),
             backend: Some("StableDiffusion".to_string()),
-            generation_request: Some(prompt.clone()),
+            generation_request: Some(params.prompt.clone()),
         })
         .await
         .context("while uploading image gallery")?;
@@ -313,8 +318,8 @@ impl PromptActor {
             .user_actor
             .tell(AddGeneratedImage {
                 url: gallery.0.clone(),
-                prompt: prompt.raw_prompt.clone(),
-                model: Some(model_name.to_string()),
+                prompt: params.prompt.raw_prompt.clone(),
+                model: Some(params.model_name.to_string()),
                 backend: "StableDiffusion".to_string(),
             })
             .send()
