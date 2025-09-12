@@ -165,10 +165,6 @@ impl Graph {
         NodeOutput::new(node_id, 0)
     }
 
-    pub fn clip_loader(&mut self, clip_name: &str) -> ClipOutput {
-        self.clip_loader_with_type(clip_name, "qwen_image")
-    }
-
     pub fn clip_loader_with_type(&mut self, clip_name: &str, clip_type: &str) -> ClipOutput {
         let mut inputs = Map::new();
         inputs.insert(
@@ -485,7 +481,7 @@ mod tests {
         let mut g = Graph::new();
 
         let model = g.unet_loader("qwen_image_fp8_e4m3fn.safetensors");
-        let clip = g.clip_loader("qwen_2.5_vl_7b_fp8_scaled.safetensors");
+        let clip = g.clip_loader_with_type("qwen_2.5_vl_7b_fp8_scaled.safetensors", "qwen_image");
         let vae = g.vae_loader("qwen_image_vae.safetensors");
 
         let model_with_sampling = g.model_sampling_aura_flow(&model, 3.1000000000000005);

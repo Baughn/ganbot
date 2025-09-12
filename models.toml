@@ -1,6 +1,7 @@
-default = "fanart"
+default = "qwen"
 
 [aliases]
+qwen = "qwen_image_fp8"
 fanart = "walnut"
 fanart-cute = "monody"
 fanart-realistic = "realism-illustrious"
@@ -31,6 +32,19 @@ inherit = "sdxl"
 description = "Illustrious-based settings"
 [templates.illustrious.prompt_defaults]
 negative_append = "bored, 3d, bad quality, worst quality, lowres, jpeg artifacts, bad anatomy, bad hands, multiple views, signature, watermark, censored, ugly, messy"
+
+[models.qwen_image_fp8]
+name = "qwen_image_fp8"
+description = "Qwen-Image. A general-purpose model; use English, preferably."
+[models.qwen_image_fp8.backend.ComfyUI]
+unet = "qwen/qwen_image_fp8_e4m3fn.safetensors"
+clip = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+vae = "qwen_image_vae.safetensors"
+cfg = 3.5
+sampler = "euler_ancestral"
+scheduler = "beta"
+steps = 20
+resolution = [1280, 1280]
 
 [models.walnut]
 name = "walnut"

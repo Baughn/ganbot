@@ -182,11 +182,17 @@ impl PromptActor {
         let (mut model, clip, vae) = match params.checkpoint {
             // graph.checkpoint_loader(params.checkpoint);
             models::Checkpoint::Combined(name) => graph.checkpoint_loader(name),
-            models::Checkpoint::Split { unet, clip, vae } => (
-                graph.unet_loader(unet),
-                graph.clip_loader(clip),
-                graph.vae_loader(vae),
-            ),
+            models::Checkpoint::Split { unet, clip, vae } => {
+                let clip_type = match unet.split('/').next().unwrap() {
+                    "qwen" => "qwen_image",
+                    _ => bail!("Unknown CLIP type for checkpoint: {}", unet),
+                };
+                (
+                    graph.unet_loader(unet),
+                    graph.clip_loader_with_type(clip, clip_type),
+                    graph.vae_loader(vae),
+                )
+            }
         };
 
         // Apply TorchCompile if enabled
