@@ -29,6 +29,9 @@ pub struct Generate {
     pub steps: Option<u32>,
     /// References to images that can be used as starting points or for context.
     pub references: References,
+    /// Optional alias name to load settings from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -66,6 +69,7 @@ impl fmt::Debug for Generate {
             .field("seed", &self.seed)
             .field("steps", &self.steps)
             .field("references", &self.references)
+            .field("alias", &self.alias)
             .finish()
     }
 }

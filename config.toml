@@ -8,8 +8,7 @@
 url = "http://localhost:9090"
 
 [openrouter]
-token = "your-openrouter-token-here"
-chat_model = "google/gemini-2.5-pro"
+chat_model = "openrouter/sonoma-sky-alpha"
 image_model = "google/gemini-2.5-flash-image-preview"
 
 [image_host]

@@ -12,7 +12,7 @@ use crate::{
     },
     persistence::{
         images::{GalleryInput, upload_gallery, upload_image_with_generation},
-        user::{AddGeneratedImage, GetDefaultPrompt, UserActor},
+        user::{AddGeneratedImage, GetAlias, GetDefaultPrompt, UserActor},
     },
     supervisor::Supervisor,
 };
@@ -46,61 +46,46 @@ impl Message<String> for PromptActor {
         // Parse the user's prompt first
         let mut prompt = Generate::from_str(&msg)?;
 
-        // Get user's default prompt settings
-        let default_prompt_str = self
+        // Parse default settings (if any).
+        let default_prompt = self
             .user_actor
             .ask(GetDefaultPrompt)
             .await
-            .context("Failed to get default prompt")?;
+            .context("Failed to get default prompt")?
+            .map(|base_str| Generate::from_str(&base_str))
+            .transpose()
+            .context("Failed to parse default prompt")?;
 
-        // If there are defaults, parse and merge them
-        if let Some(default_str) = default_prompt_str {
-            // Parse defaults with a dummy prompt to extract just the settings
-            let defaults = Generate::from_str(&default_str)
-                .context("Failed to parse default prompt settings")?;
+        // Have we got any aliases?
+        let alias = prompt
+            .alias
+            .clone()
+            .or(default_prompt.as_ref().and_then(|d| d.alias.clone()));
+        if let Some(alias_name) = &alias {
+            // Apply alias settings prior to defaults, so aliases override defaults.
+            let alias = self
+                .user_actor
+                .ask(GetAlias(alias_name.clone()))
+                .await
+                .context("Failed to get alias")?;
+            if let Some(alias_str) = alias {
+                let alias = Generate::from_str(&alias_str)
+                    .with_context(|| format!("Failed to parse alias '{}'", alias_name))?;
+                prompt = Self::merge_prompt_settings(prompt, alias);
+                debug!("Merged alias settings into prompt");
+            } else {
+                bail!(
+                    "Alias '{}' not found. Use !config alias {} [settings] to create it.",
+                    alias_name,
+                    alias_name
+                );
+            }
+        }
 
-            // Merge defaults into the prompt - user's settings take precedence
-            // Only apply defaults where user hasn't specified a value
-            if !defaults.prompt.is_empty() {
-                prompt.prompt = format!("{}. {}", prompt.prompt, defaults.prompt);
-            }
-            if let Some(neg) = defaults.negative_prompt {
-                if prompt.negative_prompt.is_none() {
-                    prompt.negative_prompt = Some(neg);
-                } else {
-                    // If user has a negative prompt, append the defaults
-                    let user_neg = prompt.negative_prompt.unwrap_or_default();
-                    prompt.negative_prompt = Some(format!("{}. {}", neg, user_neg));
-                }
-            }
-            if prompt.num_images.is_none() && defaults.num_images.is_some() {
-                prompt.num_images = defaults.num_images;
-            }
-            if prompt.width.is_none() && defaults.width.is_some() {
-                prompt.width = defaults.width;
-            }
-            if prompt.height.is_none() && defaults.height.is_some() {
-                prompt.height = defaults.height;
-            }
-            if prompt.aspect.is_none() && defaults.aspect.is_some() {
-                prompt.aspect = defaults.aspect;
-            }
-            if prompt.model.is_none() && defaults.model.is_some() {
-                prompt.model = defaults.model;
-            }
-            if prompt.seed.is_none() && defaults.seed.is_some() {
-                prompt.seed = defaults.seed;
-            }
-            if prompt.steps.is_none() && defaults.steps.is_some() {
-                prompt.steps = defaults.steps;
-            }
-            if prompt.references.img2img_strength.is_none()
-                && defaults.references.img2img_strength.is_some()
-            {
-                prompt.references.img2img_strength = defaults.references.img2img_strength;
-            }
-
-            debug!("Merged defaults into prompt");
+        // Apply the default settings (if any).
+        if let Some(default_prompt) = default_prompt {
+            prompt = Self::merge_prompt_settings(prompt, default_prompt);
+            debug!("Merged default settings into prompt");
         }
 
         info!("Final parsed prompt: {:?}", prompt);
@@ -479,6 +464,54 @@ impl PromptActor {
 impl PromptActor {
     pub async fn new(user_actor: kameo::actor::ActorRef<UserActor>) -> Self {
         Self { user_actor }
+    }
+
+    /// Merge base settings (from alias or defaults) into a prompt.
+    /// User's settings in the prompt take precedence.
+    fn merge_prompt_settings(mut prompt: Generate, base: Generate) -> Generate {
+        // Merge prompt text
+        if !base.prompt.is_empty() {
+            prompt.prompt = format!("{}. {}", prompt.prompt, base.prompt);
+        }
+
+        // Merge negative prompt
+        if let Some(neg) = base.negative_prompt {
+            if prompt.negative_prompt.is_none() {
+                prompt.negative_prompt = Some(neg);
+            } else {
+                // If user has a negative prompt, append the base
+                let user_neg = prompt.negative_prompt.unwrap_or_default();
+                prompt.negative_prompt = Some(format!("{}, {}", user_neg, neg));
+            }
+        }
+
+        // Merge optional settings - only apply base where user hasn't specified a value
+        if prompt.num_images.is_none() {
+            prompt.num_images = base.num_images;
+        }
+        if prompt.width.is_none() {
+            prompt.width = base.width;
+        }
+        if prompt.height.is_none() {
+            prompt.height = base.height;
+        }
+        if prompt.aspect.is_none() {
+            prompt.aspect = base.aspect;
+        }
+        if prompt.model.is_none() {
+            prompt.model = base.model;
+        }
+        if prompt.seed.is_none() {
+            prompt.seed = base.seed;
+        }
+        if prompt.steps.is_none() {
+            prompt.steps = base.steps;
+        }
+        if prompt.references.img2img_strength.is_none() {
+            prompt.references.img2img_strength = base.references.img2img_strength;
+        }
+
+        prompt
     }
 
     /// Resolve model name to Model, handling aliases and defaults

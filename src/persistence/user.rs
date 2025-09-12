@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Context as _, Error, Result};
+use anyhow::{Context as _, Error, Result, bail};
 use kameo::{
     Actor,
     actor::ActorRef,
@@ -31,12 +31,14 @@ pub struct UserActor {
     redis: ConnectionManager,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub id: UserId,
     pub username: UserName,
     pub selected_image_url: Option<String>,
     pub default_prompt: Option<String>,
+    #[serde(default)]
+    pub aliases: HashMap<String, String>,
 }
 
 type UserName = String;
@@ -84,6 +86,21 @@ pub struct SetDefaultPrompt(pub Option<String>);
 /// Get the default prompt text for the user
 #[derive(Debug, Clone)]
 pub struct GetDefaultPrompt;
+
+/// Set an alias for the user
+#[derive(Debug, Clone)]
+pub struct SetAlias {
+    pub name: String,
+    pub settings: Option<String>,
+}
+
+/// Get an alias for the user
+#[derive(Debug, Clone)]
+pub struct GetAlias(pub String);
+
+/// Get all aliases for the user
+#[derive(Debug, Clone)]
+pub struct GetAllAliases;
 
 #[derive(Debug, Clone)]
 pub struct GetUserId;
@@ -149,6 +166,7 @@ impl Message<GetUser> for UserManager {
                 username: msg.1.clone(),
                 selected_image_url: None,
                 default_prompt: None,
+                aliases: HashMap::new(),
             }
         };
 
@@ -276,6 +294,45 @@ impl Message<GetDefaultPrompt> for UserActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         Ok(self.user.default_prompt.clone())
+    }
+}
+
+impl Message<SetAlias> for UserActor {
+    type Reply = Result<()>;
+
+    async fn handle(&mut self, msg: SetAlias, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(settings) = msg.settings {
+            // Validate that the settings are valid prompt syntax
+            if let Err(e) = crate::messages::imagen::Generate::from_str(&settings) {
+                bail!("Invalid alias prompt syntax: {}", e);
+            }
+            self.user.aliases.insert(msg.name, settings);
+        } else {
+            // Remove the alias if no settings provided
+            self.user.aliases.remove(&msg.name);
+        }
+        self.persist().await?;
+        Ok(())
+    }
+}
+
+impl Message<GetAlias> for UserActor {
+    type Reply = Result<Option<String>>;
+
+    async fn handle(&mut self, msg: GetAlias, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Ok(self.user.aliases.get(&msg.0).cloned())
+    }
+}
+
+impl Message<GetAllAliases> for UserActor {
+    type Reply = Result<HashMap<String, String>>;
+
+    async fn handle(
+        &mut self,
+        _msg: GetAllAliases,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(self.user.aliases.clone())
     }
 }
 

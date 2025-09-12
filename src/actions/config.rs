@@ -4,7 +4,9 @@ use tracing::{debug, info};
 
 use crate::{
     messages::imagen::Generate,
-    persistence::user::{GetDefaultPrompt, SetDefaultPrompt, UserActor},
+    persistence::user::{
+        GetAlias, GetAllAliases, GetDefaultPrompt, SetAlias, SetDefaultPrompt, UserActor,
+    },
 };
 
 /// Actor for the !config command - manages user configuration settings
@@ -41,10 +43,8 @@ impl Message<String> for ConfigActor {
 
         if parts.is_empty() || args.is_empty() {
             // No subcommand - show usage.
-            let message = format!(
-                "Usage: !config default {}",
-                "[set your default settings here]".to_string()
-            );
+            let message =
+                format!("Usage: !config default [settings] or !config alias [name] [settings]");
 
             return Ok(ConfigResult { message });
         }
@@ -91,6 +91,86 @@ impl Message<String> for ConfigActor {
                         Err(e) => {
                             // Invalid syntax
                             bail!("Invalid prompt syntax: {}", e)
+                        }
+                    }
+                }
+            }
+            "alias" => {
+                if parts.len() < 2 || parts[1].trim().is_empty() {
+                    // No alias name provided, show all aliases
+                    let aliases = self
+                        .user_actor
+                        .ask(GetAllAliases)
+                        .await
+                        .context("Failed to get aliases")?;
+
+                    if aliases.is_empty() {
+                        Ok(ConfigResult {
+                            message: "No aliases configured. Use !config alias [name] [settings] to add one.".to_string(),
+                        })
+                    } else {
+                        let alias_list: Vec<String> = aliases
+                            .iter()
+                            .map(|(name, settings)| format!("{}: {}", name, settings))
+                            .collect();
+                        Ok(ConfigResult {
+                            message: format!("Configured aliases:\n{}", alias_list.join("\n")),
+                        })
+                    }
+                } else {
+                    // Parse alias name and optional settings
+                    let alias_args = parts[1].trim();
+                    let alias_parts: Vec<&str> = alias_args.splitn(2, ' ').collect();
+                    let alias_name = alias_parts[0];
+
+                    if alias_parts.len() < 2 || alias_parts[1].trim().is_empty() {
+                        // No settings provided, show current alias
+                        let alias_settings = self
+                            .user_actor
+                            .ask(GetAlias(alias_name.to_string()))
+                            .await
+                            .context("Failed to get alias")?;
+
+                        if let Some(settings) = alias_settings {
+                            Ok(ConfigResult {
+                                message: format!("Alias '{}': {}", alias_name, settings),
+                            })
+                        } else {
+                            Ok(ConfigResult {
+                                message: format!(
+                                    "Alias '{}' not found. Use !config alias {} [settings] to create it.",
+                                    alias_name, alias_name
+                                ),
+                            })
+                        }
+                    } else {
+                        // Set new alias
+                        let new_settings = alias_parts[1].trim();
+
+                        // Validate the prompt text using the parser
+                        match Generate::from_str(&new_settings) {
+                            Ok(_) => {
+                                // Valid prompt syntax, save it
+                                self.user_actor
+                                    .ask(SetAlias {
+                                        name: alias_name.to_string(),
+                                        settings: Some(new_settings.to_string()),
+                                    })
+                                    .await
+                                    .context("Failed to set alias")?;
+
+                                info!("User set alias '{}' to: {}", alias_name, new_settings);
+                                Ok(ConfigResult {
+                                    message: format!(
+                                        "Alias '{}' updated: {}",
+                                        alias_name, new_settings
+                                    ),
+                                })
+                            }
+                            Err(e) => {
+                                // Invalid syntax
+                                bail!("Invalid prompt syntax for alias: {}", e)
+                            }
                         }
                     }
                 }

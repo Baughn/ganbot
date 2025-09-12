@@ -30,6 +30,7 @@ impl Generate {
         let mut seed = None;
         let mut steps = None;
         let mut denoise = None;
+        let mut alias = None;
 
         let tokens: Vec<&str> = raw.split_whitespace().collect();
         let mut i = 0;
@@ -106,6 +107,14 @@ impl Generate {
                     denoise = Some(parse_f32(tokens[i], "denoise")?);
                     i += 1;
                 }
+                "--alias" => {
+                    i += 1;
+                    if i >= tokens.len() {
+                        bail!("Option {} requires a value", token);
+                    }
+                    alias = Some(tokens[i].to_string());
+                    i += 1;
+                }
                 _ if token.starts_with('-') && !token.starts_with("--") && token.len() > 2 => {
                     // Handle combined short options like -w512
                     // Only try to parse if it looks like a valid combined option (number after flag)
@@ -171,6 +180,7 @@ impl Generate {
                         "--seed" => seed = Some(parse_u64(value, "seed")?),
                         "--steps" => steps = Some(parse_u32(value, "steps")?),
                         "--denoise" => denoise = Some(parse_f32(value, "denoise")?),
+                        "--alias" => alias = Some(value.to_string()),
                         _ => {
                             // Unknown option, treat as part of prompt
                             if in_negative_mode {
@@ -217,6 +227,7 @@ impl Generate {
                 img2img_strength: denoise,
                 context: Vec::new(),
             },
+            alias,
         })
     }
 }
@@ -261,6 +272,10 @@ impl Display for Generate {
         if let Some(d) = self.references.img2img_strength {
             parts.push("--denoise".to_string());
             parts.push(d.to_string());
+        }
+        if let Some(a) = &self.alias {
+            parts.push("--alias".to_string());
+            parts.push(a.clone());
         }
 
         write!(f, "{}", parts.join(" "))
