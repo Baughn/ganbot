@@ -68,6 +68,7 @@ impl Message<Generate> for PromptActor {
 struct ComfyParams<'a> {
     prompt: Generate,
     model_name: &'a str,
+    count: u32,
     checkpoint: &'a models::Checkpoint,
     cfg: f32,
     sampler: &'a str,
@@ -129,6 +130,10 @@ impl PromptActor {
                 stage2_scheduler,
             } => {
                 self.comfyui(ComfyParams {
+                    count: prompt
+                        .num_images
+                        .unwrap_or(model.prompt_defaults.count.unwrap_or(2))
+                        .clamp(1, 6),
                     prompt,
                     model_name: &model.name,
                     checkpoint,
@@ -160,7 +165,7 @@ impl PromptActor {
 
         // Replace model parameters with those from the prompt if specified.
         let seed = params.prompt.seed.unwrap_or(rand::rng().next_u64());
-        let num_images = params.prompt.num_images.unwrap_or(2).clamp(1, 6);
+        let num_images = params.count;
         let mut width = params.resolution.0;
         let mut height = params.resolution.1;
         if let Some(aspect) = params.prompt.aspect {

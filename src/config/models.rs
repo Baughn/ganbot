@@ -29,6 +29,7 @@ pub struct PromptDefaults {
     pub negative_prepend: Option<String>,
     pub positive_append: Option<String>,
     pub negative_append: Option<String>,
+    pub count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +91,7 @@ struct LoadingPromptDefaults {
     pub negative_prepend: Option<String>,
     pub positive_append: Option<String>,
     pub negative_append: Option<String>,
+    pub count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,12 +416,14 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                 negative_prepend: loading_defaults.negative_prepend.clone(),
                 positive_append: loading_defaults.positive_append.clone(),
                 negative_append: loading_defaults.negative_append.clone(),
+                count: loading_defaults.count,
             },
             None => PromptDefaults {
                 positive_prepend: None,
                 negative_prepend: None,
                 positive_append: None,
                 negative_append: None,
+                count: None,
             },
         };
 
