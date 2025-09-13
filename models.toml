@@ -4,7 +4,7 @@ default_tagged = "fanart"
 
 [aliases]
 qwen = "qwen_image_fp8"
-fanart = "walnut"
+fanart = "oneobsession"
 fanart-cute = "monody"
 fanart-realistic = "realism-illustrious"
 fanart-photorealistic = "realism-illustrious-1.6-photorealistic"
@@ -34,6 +34,21 @@ inherit = "sdxl"
 description = "Illustrious-based settings"
 [templates.illustrious.prompt_defaults]
 negative_append = "bored, 3d, bad quality, worst quality, lowres, jpeg artifacts, bad anatomy, bad hands, multiple views, signature, watermark, censored, ugly, messy"
+
+[templates.noobai]
+inherit = "sdxl"
+[templates.noobai.backend.ComfyUI]
+cfg = 4.5
+sampler = "er_sde"
+scheduler = "sgm_uniform"
+steps = 28
+resolution = [1024, 1024]
+two_stage = false
+
+[models.oneobsession]
+name = "oneobsession"
+inherit = "noobai"
+backend.ComfyUI.checkpoint = "xl-noob/oneObsession_v16Noobai.safetensors"
 
 [models.qwen_image_fp8]
 name = "qwen_image_fp8"
