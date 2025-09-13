@@ -117,7 +117,7 @@ impl Actor for Supervisor {
     async fn on_link_died(
         &mut self,
         actor_ref: WeakActorRef<Self>,
-        id: ActorID,
+        id: ActorId,
         reason: ActorStopReason,
     ) -> std::result::Result<ControlFlow<ActorStopReason>, Self::Error> {
         // Check for dead actors & restart them.

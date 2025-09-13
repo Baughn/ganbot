@@ -984,7 +984,10 @@ impl Message<ProcessBufferedMessages> for IrcActor {
                     message: buffered.content,
                 };
                 trace!("Flushing buffered message: {:?}", privmsg);
-                if let Err(e) = self.process_privmsg(privmsg.clone(), ctx.actor_ref()).await {
+                if let Err(e) = self
+                    .process_privmsg(privmsg.clone(), ctx.actor_ref().clone())
+                    .await
+                {
                     // Log full error chain with Debug format for complete details
                     error!("Error processing buffered message: {:#}", e);
 
