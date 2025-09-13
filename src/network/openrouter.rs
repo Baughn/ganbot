@@ -149,7 +149,6 @@ impl Actor for ConversationActor {
 fn select_model(purpose: &chat::Purpose, config: &OpenrouterConfig) -> String {
     match purpose {
         chat::Purpose::Chat => config.chat_model.clone(),
-        chat::Purpose::Image => config.image_model.clone(),
     }
 }
 
@@ -225,9 +224,9 @@ where
                 // This should be JSON. Attempt the extract $.error.message.
                 match e {
                     openrouter_api::Error::ApiError {
-                        code,
+                        code: _,
                         message,
-                        metadata,
+                        metadata: _,
                     } => {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message)
                             && let Some(msg) = json
@@ -325,9 +324,9 @@ impl Message<chat::Oneshot> for ConversationActor {
                 // This should be JSON. Attempt the extract $.error.message.
                 match e {
                     openrouter_api::Error::ApiError {
-                        code,
+                        code: _,
                         message,
-                        metadata,
+                        metadata: _,
                     } => {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message)
                             && let Some(msg) = json

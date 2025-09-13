@@ -59,7 +59,7 @@ impl Message<String> for SelectActor {
         info!("Selected image URL set to: {}", url);
 
         Ok(SelectResult {
-            message: format!("✓ Selected image"),
+            message: "✓ Selected image".to_string(),
         })
     }
 }

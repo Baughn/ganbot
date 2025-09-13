@@ -492,7 +492,7 @@ impl ComfyUIClient {
         // Check if execution completed immediately (cached)
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        if let Ok(history) = self.get_history(prompt_id).await {
+        if let Ok(_history) = self.get_history(prompt_id).await {
             info!(
                 "Workflow execution completed immediately (cached) for prompt_id: {}",
                 prompt_id
@@ -614,7 +614,6 @@ pub fn create_client() -> ComfyUIConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_config_builder() {
@@ -642,26 +641,5 @@ mod tests {
         assert!(client.base_url().starts_with("http://"));
         assert!(client.ws_url().starts_with("ws://"));
         assert!(client.ws_url().contains("clientId="));
-    }
-
-    // Integration tests would go here but require a running ComfyUI instance
-    #[tokio::test]
-    #[ignore] // Only run with actual ComfyUI server
-    async fn test_workflow_execution() {
-        let client = ComfyUIClient::new();
-
-        // Simple workflow for testing
-        let workflow = json!({
-            "1": {
-                "class_type": "CheckpointLoaderSimple",
-                "inputs": {
-                    "ckpt_name": "test_model.safetensors"
-                }
-            }
-        });
-
-        // This would require an actual ComfyUI server to test
-        // let result = client.execute_workflow(workflow, None).await;
-        // assert!(result.is_ok());
     }
 }

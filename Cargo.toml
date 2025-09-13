@@ -14,11 +14,6 @@ opt-level = 3
 name = "comfyui_example"
 path = "src/bin/comfyui_example.rs"
 
-# Just during initial development
-[lints.rust]
-unused_variables = "allow"
-dead_code = "allow"
-
 [dependencies]
 anyhow = { version = "1.0.98" }
 base64 = "0.22.1"

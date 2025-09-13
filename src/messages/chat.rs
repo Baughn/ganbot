@@ -6,8 +6,6 @@ use openrouter_api::models::structured::JsonSchemaDefinition;
 pub enum Purpose {
     /// General chat style interactions, e.g. casual conversation.
     Chat,
-    /// Image generation request enhancements, e.g. "Follow these rules to improve the following prompt".
-    Image,
 }
 
 #[derive(Debug, Clone)]

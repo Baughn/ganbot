@@ -44,7 +44,7 @@ impl Message<String> for ConfigActor {
         if parts.is_empty() || args.is_empty() {
             // No subcommand - show usage.
             let message =
-                format!("Usage: !config default [settings] or !config alias [name] [settings]");
+                "Usage: !config default [settings] or !config alias [name] [settings]".to_string();
 
             return Ok(ConfigResult { message });
         }
@@ -72,7 +72,7 @@ impl Message<String> for ConfigActor {
                     let new_default = parts[1].trim();
 
                     // Validate the prompt text using the parser
-                    match Generate::from_str(&new_default) {
+                    match Generate::from_str(new_default) {
                         Ok(_) => {
                             // Valid prompt syntax, save it
                             self.user_actor
@@ -148,7 +148,7 @@ impl Message<String> for ConfigActor {
                         let new_settings = alias_parts[1].trim();
 
                         // Validate the prompt text using the parser
-                        match Generate::from_str(&new_settings) {
+                        match Generate::from_str(new_settings) {
                             Ok(_) => {
                                 // Valid prompt syntax, save it
                                 self.user_actor

@@ -126,7 +126,7 @@ impl Actor for Supervisor {
                 match timing {
                     Err(e) => {
                         // Well, that's that then.
-                        error!("Too many failures; shutting down.");
+                        error!("Too many failures; shutting down: {e}");
                         return Ok(ControlFlow::Break(reason));
                     }
                     Ok(timing) => {
@@ -201,7 +201,7 @@ impl Message<ApplyConfig> for Supervisor {
 
     async fn handle(
         &mut self,
-        msg: ApplyConfig,
+        _msg: ApplyConfig,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         // Anything that's running but shouldn't be, we stop.

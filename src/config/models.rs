@@ -32,6 +32,7 @@ pub struct PromptDefaults {
     pub count: Option<u32>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Backend {
     NanoBanana,
@@ -94,6 +95,7 @@ struct LoadingPromptDefaults {
     pub count: Option<u32>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum LoadingBackend {

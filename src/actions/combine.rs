@@ -20,7 +20,6 @@ pub(crate) struct CombineActor {
     redis: redis::aio::ConnectionManager,
 }
 
-pub struct Combine(pub String);
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CombineResult {
     pub result: String,

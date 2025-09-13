@@ -342,9 +342,6 @@ impl IrcActor {
                 "Processing command (user {}): {}",
                 privmsg.user, privmsg.message
             );
-            let (command, args) = stripped_message
-                .split_once(' ')
-                .unwrap_or((stripped_message, ""));
             let user = self
                 .user_manager
                 .ask(user::GetUser(
@@ -734,7 +731,7 @@ impl Message<Connect> for IrcActor {
     #[instrument(skip_all, fields(server = %self.name))]
     async fn handle(
         &mut self,
-        msg: Connect,
+        _msg: Connect,
         ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
         info!("Connecting to IRC server: {}", self.config.server);

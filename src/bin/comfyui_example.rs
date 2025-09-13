@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .server_address("localhost:8188")
         .execution_timeout(Duration::from_secs(600))
         .build();
-    let custom_client = ComfyUIClient::with_config(config);
+    let _custom_client = ComfyUIClient::with_config(config);
     println!("✓ Created ComfyUI client with custom configuration");
 
     // Example 3: Simple text-to-image generation

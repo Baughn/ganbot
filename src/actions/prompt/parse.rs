@@ -298,7 +298,7 @@ fn parse_f32(s: &str, field_name: &str) -> Result<f32> {
         .map_err(|_| anyhow!("Invalid {} value: {}", field_name, s))?;
 
     // Validate denoise range
-    if field_name == "denoise" && (value < 0.0 || value > 1.0) {
+    if field_name == "denoise" && !(0.0..=1.0).contains(&value) {
         bail!("denoise value must be between 0.0 and 1.0, got: {}", value);
     }
 

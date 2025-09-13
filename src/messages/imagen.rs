@@ -45,16 +45,6 @@ pub struct References {
     pub context: Vec<RgbImage>,
 }
 
-/// Represents a response containing the generated image.
-/// This is typically sent back to the user or a channel.
-#[derive(Clone)]
-pub struct GeneratedImage {
-    /// The generated image data.
-    pub image: RgbImage,
-    /// The original request that triggered this generation.
-    pub request: Generate,
-}
-
 impl fmt::Debug for Generate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Generate")
@@ -89,18 +79,6 @@ impl fmt::Debug for References {
                 "context",
                 &format!("[{} context images]", self.context.len()),
             )
-            .finish()
-    }
-}
-
-impl fmt::Debug for GeneratedImage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GeneratedImage")
-            .field(
-                "image",
-                &format!("RgbImage({}x{})", self.image.width(), self.image.height()),
-            )
-            .field("request", &self.request)
             .finish()
     }
 }

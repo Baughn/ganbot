@@ -51,9 +51,7 @@ fn models_config_to_help(config: ModelsConfig) -> ModelsHelp {
 
     // Convert models to ModelInfo structs
     let mut models: Vec<ModelInfo> = config
-        .models
-        .into_iter()
-        .map(|(key, model)| {
+        .models.into_values().map(|model| {
             let backend_info = match model.backend {
                 Backend::NanoBanana => BackendInfo::NanoBanana,
                 Backend::ComfyUI {
@@ -67,9 +65,11 @@ fn models_config_to_help(config: ModelsConfig) -> ModelsHelp {
                 } => BackendInfo::ComfyUI {
                     checkpoint: match &checkpoint {
                         crate::config::models::Checkpoint::Combined(name) => name.clone(),
-                        crate::config::models::Checkpoint::Split { unet, clip, vae } => {
-                            unet.clone()
-                        }
+                        crate::config::models::Checkpoint::Split {
+                            unet,
+                            clip: _,
+                            vae: _,
+                        } => unet.clone(),
                     },
                     sampler,
                     steps,

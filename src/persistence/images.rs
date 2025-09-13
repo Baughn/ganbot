@@ -110,9 +110,9 @@ impl ImageUploader {
         let filename = format!("{}.jpg", uuid);
 
         // Store generation data if provided
-        if let Some(ref generation_request) = msg.generation_request {
-            if let Some(ref backend) = msg.backend {
-                if let Err(e) = Self::store_generation_data(
+        if let Some(ref generation_request) = msg.generation_request
+            && let Some(ref backend) = msg.backend
+                && let Err(e) = Self::store_generation_data(
                     &uuid.to_string(),
                     generation_request,
                     backend,
@@ -123,8 +123,6 @@ impl ImageUploader {
                     error!("Failed to store generation data: {}", e);
                     // Continue with upload even if generation data storage fails
                 }
-            }
-        }
 
         // Convert image to JPEG with high quality
         let jpeg_bytes =
@@ -143,9 +141,9 @@ impl ImageUploader {
         let base_uuid = Uuid::now_v7();
 
         // Store generation data if requested
-        if let Some(ref generation_request) = msg.generation_request {
-            if let Some(ref backend) = msg.backend {
-                if let Err(e) = Self::store_generation_data(
+        if let Some(ref generation_request) = msg.generation_request
+            && let Some(ref backend) = msg.backend
+                && let Err(e) = Self::store_generation_data(
                     &base_uuid.to_string(),
                     generation_request,
                     backend,
@@ -156,8 +154,6 @@ impl ImageUploader {
                     error!("Failed to store generation data for gallery image: {}", e);
                     // Continue with upload even if generation data storage fails
                 }
-            }
-        }
 
         // Create gallery image using existing function
         let gallery_input = GalleryInput {
@@ -403,26 +399,26 @@ impl ImageUploader {
     }
 }
 
-/// Retrieve image generation data from Redis by UUID
-pub async fn get_image_generation(uuid: &str) -> Result<Option<ImageGenerationRequest>> {
-    let mut conn = Supervisor::redis().await;
+// /// Retrieve image generation data from Redis by UUID. Currently unused.
+// pub async fn get_image_generation(uuid: &str) -> Result<Option<ImageGenerationRequest>> {
+//     let mut conn = Supervisor::redis().await;
 
-    let result: Option<String> = redis::cmd("HGET")
-        .arg("image:generations")
-        .arg(uuid)
-        .query_async(&mut conn)
-        .await
-        .context("Failed to retrieve generation data from Redis")?;
+//     let result: Option<String> = redis::cmd("HGET")
+//         .arg("image:generations")
+//         .arg(uuid)
+//         .query_async(&mut conn)
+//         .await
+//         .context("Failed to retrieve generation data from Redis")?;
 
-    match result {
-        Some(json_data) => {
-            let generation_data = serde_json::from_str(&json_data)
-                .context("Failed to deserialize generation data")?;
-            Ok(Some(generation_data))
-        }
-        None => Ok(None),
-    }
-}
+//     match result {
+//         Some(json_data) => {
+//             let generation_data = serde_json::from_str(&json_data)
+//                 .context("Failed to deserialize generation data")?;
+//             Ok(Some(generation_data))
+//         }
+//         None => Ok(None),
+//     }
+// }
 
 /// Result of a delete operation
 #[derive(Debug)]
@@ -786,21 +782,12 @@ fn calculate_optimal_grid(image_count: usize, img_width: u32, img_height: u32) -
     }
 
     let target_aspect = 16.0 / 10.0;
-    let img_aspect = img_width as f64 / img_height as f64;
-
-    let mut best_cols = 1u32;
+    let mut best_cols = 1;
     let mut best_rows = image_count as u32;
     let mut best_diff = f64::INFINITY;
-
-    // Try different grid configurations
     for cols in 1..=image_count as u32 {
         let rows = ((image_count as f64) / (cols as f64)).ceil() as u32;
-
-        // Calculate total aspect ratio of the grid
-        let total_width = cols as f64 * img_width as f64;
-        let total_height = rows as f64 * img_height as f64;
-        let grid_aspect = total_width / total_height;
-
+        let grid_aspect = (cols as f64 * img_width as f64) / (rows as f64 * img_height as f64);
         let diff = (grid_aspect - target_aspect).abs();
         if diff < best_diff {
             best_diff = diff;

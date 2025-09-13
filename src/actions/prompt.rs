@@ -21,11 +21,9 @@ pub mod parse;
 
 /// Image generation actor for the !prompt command
 #[derive(Actor)]
-pub(crate) struct PromptActor {
+pub struct PromptActor {
     user_actor: kameo::actor::ActorRef<UserActor>,
 }
-
-pub struct Prompt(pub String);
 
 #[derive(Debug)]
 pub struct PromptResult {
@@ -262,10 +260,6 @@ impl PromptActor {
                 input_image.width(),
                 input_image.height()
             );
-
-            // For img2img, use the input image dimensions instead of specified dimensions
-            let img_width = input_image.width();
-            let img_height = input_image.height();
 
             // Confirm that denoise strength is set
             if let Some(strength) = params.prompt.references.img2img_strength {

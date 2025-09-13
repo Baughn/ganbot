@@ -139,7 +139,7 @@ impl Actor for UserManager {
 impl Message<GetUser> for UserManager {
     type Reply = Result<ActorRef<UserActor>>;
 
-    async fn handle(&mut self, msg: GetUser, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, msg: GetUser, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let user = self.loaded_users.get(&msg.0).cloned();
         if let Some(user) = user {
             return Ok(user);
@@ -187,7 +187,7 @@ impl Actor for UserActor {
 
     async fn on_start(
         args: Self::Args,
-        actor_ref: kameo::prelude::ActorRef<Self>,
+        _actor_ref: kameo::prelude::ActorRef<Self>,
     ) -> Result<Self, Self::Error> {
         Ok(args)
     }
@@ -199,7 +199,7 @@ impl Message<UpdateUsername> for UserActor {
     async fn handle(
         &mut self,
         msg: UpdateUsername,
-        ctx: &mut Context<Self, Self::Reply>,
+        _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         if self.user.username != msg.0 {
             self.user.username = msg.0;
@@ -215,7 +215,7 @@ impl Message<AddGeneratedImage> for UserActor {
     async fn handle(
         &mut self,
         msg: AddGeneratedImage,
-        ctx: &mut Context<Self, Self::Reply>,
+        _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let generated_image = GeneratedImage {
             url: msg.url,
@@ -251,7 +251,7 @@ impl Message<SetSelectedImage> for UserActor {
     async fn handle(
         &mut self,
         msg: SetSelectedImage,
-        ctx: &mut Context<Self, Self::Reply>,
+        _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.user.selected_image_url = Some(msg.0);
         self.persist().await?;
@@ -265,7 +265,7 @@ impl Message<GetSelectedImage> for UserActor {
     async fn handle(
         &mut self,
         _msg: GetSelectedImage,
-        ctx: &mut Context<Self, Self::Reply>,
+        _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         Ok(self.user.selected_image_url.clone())
     }
@@ -277,7 +277,7 @@ impl Message<SetDefaultPrompt> for UserActor {
     async fn handle(
         &mut self,
         msg: SetDefaultPrompt,
-        ctx: &mut Context<Self, Self::Reply>,
+        _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.user.default_prompt = msg.0;
         self.persist().await?;
@@ -291,7 +291,7 @@ impl Message<GetDefaultPrompt> for UserActor {
     async fn handle(
         &mut self,
         _msg: GetDefaultPrompt,
-        ctx: &mut Context<Self, Self::Reply>,
+        _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         Ok(self.user.default_prompt.clone())
     }
@@ -300,7 +300,11 @@ impl Message<GetDefaultPrompt> for UserActor {
 impl Message<SetAlias> for UserActor {
     type Reply = Result<()>;
 
-    async fn handle(&mut self, msg: SetAlias, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        msg: SetAlias,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if let Some(settings) = msg.settings {
             // Validate that the settings are valid prompt syntax
             if let Err(e) = crate::messages::imagen::Generate::from_str(&settings) {
@@ -319,7 +323,11 @@ impl Message<SetAlias> for UserActor {
 impl Message<GetAlias> for UserActor {
     type Reply = Result<Option<String>>;
 
-    async fn handle(&mut self, msg: GetAlias, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        msg: GetAlias,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         Ok(self.user.aliases.get(&msg.0).cloned())
     }
 }
@@ -330,7 +338,7 @@ impl Message<GetAllAliases> for UserActor {
     async fn handle(
         &mut self,
         _msg: GetAllAliases,
-        ctx: &mut Context<Self, Self::Reply>,
+        _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         Ok(self.user.aliases.clone())
     }
