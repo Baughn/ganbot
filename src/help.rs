@@ -51,7 +51,9 @@ fn models_config_to_help(config: ModelsConfig) -> ModelsHelp {
 
     // Convert models to ModelInfo structs
     let mut models: Vec<ModelInfo> = config
-        .models.into_values().map(|model| {
+        .models
+        .into_values()
+        .map(|model| {
             let backend_info = match model.backend {
                 Backend::NanoBanana => BackendInfo::NanoBanana,
                 Backend::ComfyUI {

@@ -11,6 +11,7 @@ pub struct Config {
     pub image_host: ImageHostConfig,
     // Client configurations
     pub irc: Vec<IrcConfig>,
+    pub discord: Vec<DiscordConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
@@ -50,6 +51,13 @@ pub struct IrcConfig {
     pub nickserv_password: Option<String>,
     #[serde(default = "default_bang")]
     pub command_prefix: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DiscordConfig {
+    pub token: String,
+    pub application_id: u64,
 }
 
 fn default_true() -> bool {

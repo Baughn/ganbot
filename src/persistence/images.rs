@@ -112,17 +112,17 @@ impl ImageUploader {
         // Store generation data if provided
         if let Some(ref generation_request) = msg.generation_request
             && let Some(ref backend) = msg.backend
-                && let Err(e) = Self::store_generation_data(
-                    &uuid.to_string(),
-                    generation_request,
-                    backend,
-                    msg.workflow.as_ref(),
-                )
-                .await
-                {
-                    error!("Failed to store generation data: {}", e);
-                    // Continue with upload even if generation data storage fails
-                }
+            && let Err(e) = Self::store_generation_data(
+                &uuid.to_string(),
+                generation_request,
+                backend,
+                msg.workflow.as_ref(),
+            )
+            .await
+        {
+            error!("Failed to store generation data: {}", e);
+            // Continue with upload even if generation data storage fails
+        }
 
         // Convert image to JPEG with high quality
         let jpeg_bytes =
@@ -143,17 +143,17 @@ impl ImageUploader {
         // Store generation data if requested
         if let Some(ref generation_request) = msg.generation_request
             && let Some(ref backend) = msg.backend
-                && let Err(e) = Self::store_generation_data(
-                    &base_uuid.to_string(),
-                    generation_request,
-                    backend,
-                    msg.workflow.as_ref(),
-                )
-                .await
-                {
-                    error!("Failed to store generation data for gallery image: {}", e);
-                    // Continue with upload even if generation data storage fails
-                }
+            && let Err(e) = Self::store_generation_data(
+                &base_uuid.to_string(),
+                generation_request,
+                backend,
+                msg.workflow.as_ref(),
+            )
+            .await
+        {
+            error!("Failed to store generation data for gallery image: {}", e);
+            // Continue with upload even if generation data storage fails
+        }
 
         // Create gallery image using existing function
         let gallery_input = GalleryInput {

@@ -92,7 +92,7 @@ src/
 ├── persistence/     # Redis-backed persistence layer
 │   ├── user.rs      # User management and state tracking
 │   └── images.rs    # Image storage and URL management
-├── messages/        # Message types for actor communication
+├── messages/        # Message types for actor communication. Partially deprecated; most messages are defined with their actor.
 │   ├── chat.rs      # Chat message types and structured responses
 │   └── imagen.rs    # Image generation message types
 └── config/          # Configuration management

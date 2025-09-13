@@ -18,9 +18,10 @@ use tracing::{error, info, instrument};
 
 use crate::config::{
     Config,
-    global::{ImageHostConfig, IrcConfig, OpenrouterConfig},
+    global::{DiscordConfig, ImageHostConfig, IrcConfig, OpenrouterConfig},
     models::{ModelsConfig, load_models_config},
 };
+use crate::network::discord::DiscordActor;
 use crate::network::irc::IrcActor;
 use crate::network::openrouter::OpenRouter;
 use crate::persistence::user::UserManager;
@@ -58,6 +59,7 @@ struct RestartInfo {
 enum SomeActor {
     Irc((IrcConfig, ActorRef<IrcActor>)),
     OpenRouter((OpenrouterConfig, ActorRef<OpenRouter>)),
+    Discord((DiscordConfig, ActorRef<DiscordActor>)),
 }
 
 struct Supervised {
@@ -207,6 +209,11 @@ impl Message<ApplyConfig> for Supervisor {
         // Anything that's running but shouldn't be, we stop.
         let mut expected_actors: HashSet<ConfigHash> = self.config.irc.iter().map(hash).collect();
 
+        // Add Discord to expected actors
+        for discord_config in &self.config.discord {
+            expected_actors.insert(hash(discord_config));
+        }
+
         // Add OpenRouter to expected actors if token is configured
         if !self.config.openrouter.token.is_empty() {
             expected_actors.insert(hash(&self.config.openrouter));
@@ -245,6 +252,27 @@ impl Message<ApplyConfig> for Supervisor {
                     },
                 );
             }
+        }
+
+        // Start Discord actors
+        for discord_config in &self.config.discord {
+            let h = hash(discord_config);
+            if running.contains(&h) {
+                continue;
+            }
+            let discord_actor = DiscordActor::spawn_link(&self_ref, discord_config.clone()).await;
+            self.actors.insert(
+                h,
+                Supervised {
+                    restart_info: RestartInfo {
+                        failure_count: 0,
+                        last_failure: now,
+                        first_failure: now,
+                        sleep: Duration::from_secs(0),
+                    },
+                    actor: SomeActor::Discord((discord_config.clone(), discord_actor)),
+                },
+            );
         }
 
         for irc_config in &self.config.irc {
@@ -368,6 +396,10 @@ impl SomeActor {
                 let _ = reference.stop_gracefully().await;
                 reference.wait_for_shutdown().await;
             }
+            Self::Discord((_, reference)) => {
+                let _ = reference.stop_gracefully().await;
+                reference.wait_for_shutdown().await;
+            }
         }
     }
 
@@ -375,6 +407,7 @@ impl SomeActor {
         match self {
             Self::Irc((_, reference)) => reference.is_alive(),
             Self::OpenRouter((_, reference)) => reference.is_alive(),
+            Self::Discord((_, reference)) => reference.is_alive(),
         }
     }
 
@@ -392,6 +425,11 @@ impl SomeActor {
                 reference.kill();
                 let new_reference = OpenRouter::spawn_link(link, config.clone()).await;
                 *self = Self::OpenRouter((config.clone(), new_reference))
+            }
+            Self::Discord((config, reference)) => {
+                reference.kill();
+                let new_reference = DiscordActor::spawn_link(link, config.clone()).await;
+                *self = Self::Discord((config.clone(), new_reference))
             }
         }
     }
