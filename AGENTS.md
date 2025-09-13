@@ -76,16 +76,19 @@ The actual codebase structure:
 src/
 ├── main.rs          # Entry point and application initialization
 ├── supervisor.rs    # Root supervision tree and actor lifecycle management
+├── network.rs       # Modern equivalent of network/mod.rs
 ├── network/         # Network clients and external service integrations
 │   ├── irc.rs       # IRC client actor with command handling
 │   ├── openrouter.rs # OpenRouter AI API integration
 │   └── comfyui/     # ComfyUI image generation integration
 │       ├── api.rs   # ComfyUI API types and models
 │       └── net.rs   # ComfyUI network client implementation
+├── actions.rs       # Like network.rs
 ├── actions/         # Command implementations (game logic, AI interactions)
 │   ├── ask.rs       # AI question/answer command
 │   ├── combine.rs   # Word combination game with image generation
 │   └── prompt.rs    # Direct AI prompting command
+├── persistence.rs   # etc.
 ├── persistence/     # Redis-backed persistence layer
 │   ├── user.rs      # User management and state tracking
 │   └── images.rs    # Image storage and URL management
