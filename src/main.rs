@@ -8,6 +8,7 @@ use crate::supervisor::Supervisor;
 
 mod actions;
 mod config;
+mod fuzzy;
 mod help;
 mod messages;
 mod network;

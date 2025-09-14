@@ -8,8 +8,12 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::{
-    messages::chat::Structured, network::openrouter::OpenRouter, persistence::images::upload_image,
-    supervisor::Supervisor, util,
+    fuzzy::{FuzzyResult, find_fuzzy_match},
+    messages::chat::Structured,
+    network::openrouter::OpenRouter,
+    persistence::images::upload_image,
+    supervisor::Supervisor,
+    util,
 };
 
 /// Combination game actor.
@@ -25,6 +29,7 @@ pub struct CombineResult {
     pub result: String,
     pub reasoning: String,
     pub image_url: String,
+    pub correction_message: Option<String>,
 }
 
 #[derive(Deserialize, Reply)]
@@ -72,21 +77,38 @@ impl Message<String> for CombineActor {
         debug!("CombineActor received message: {}", msg);
         let words = split_words(&msg)?;
         info!("Combining words: {} + {}", words.0, words.1);
-        // Confirm that both words have been unlocked.
-        for word in [&words.0, &words.1] {
-            if !ELEMENTS.contains(&word.as_str()) && self.check_basis(word).await?.is_none() {
-                bail!(
-                    "The word '{}' has not been unlocked yet. Please use the basic elements: air, earth, fire, water.",
-                    word
-                );
-            }
+
+        // Validate both words with fuzzy matching
+        let mut correction_messages = Vec::new();
+        let (word1_corrected, word1_message) = self.validate_word_fuzzy(&words.0).await?;
+        let (word2_corrected, word2_message) = self.validate_word_fuzzy(&words.1).await?;
+
+        if let Some(msg) = word1_message {
+            correction_messages.push(msg);
         }
-        // Check cache.
-        if let Some(cached) = self.get_from_cache(&words.0, &words.1).await? {
+        if let Some(msg) = word2_message {
+            correction_messages.push(msg);
+        }
+
+        let combined_correction_message = if correction_messages.is_empty() {
+            None
+        } else {
+            Some(correction_messages.join("; "))
+        };
+
+        // Check cache using corrected words
+        if let Some(mut cached) = self
+            .get_from_cache(&word1_corrected, &word2_corrected)
+            .await?
+        {
+            cached.correction_message = combined_correction_message;
             return Ok(cached);
         }
-        let result = self.combine(&words.0, &words.1).await?;
-        self.set_cache(&words.0, &words.1, &result).await?;
+
+        let mut result = self.combine(&word1_corrected, &word2_corrected).await?;
+        result.correction_message = combined_correction_message;
+        self.set_cache(&word1_corrected, &word2_corrected, &result)
+            .await?;
         Ok(result)
     }
 }
@@ -160,6 +182,7 @@ impl CombineActor {
             result: response.result,
             reasoning: response.reasoning,
             image_url,
+            correction_message: None,
         })
     }
 
@@ -238,6 +261,73 @@ impl CombineActor {
         })
         .await?;
         Ok(source)
+    }
+
+    /// Get all unlocked words (basis elements + basic elements)
+    async fn get_all_unlocked_words(&mut self) -> Result<Vec<String>> {
+        let key = Self::cache_key_basis("");
+        let all_basis = util::retry(|| async {
+            let mut conn = self.redis.clone();
+            let fields: Vec<String> = conn.hkeys(&key).await.context("Redis hkeys failed")?;
+            Ok(fields)
+        })
+        .await?;
+
+        let mut unlocked_words: Vec<String> = ELEMENTS.iter().map(|&s| s.to_string()).collect();
+        unlocked_words.extend(all_basis);
+        unlocked_words.sort();
+        unlocked_words.dedup();
+        Ok(unlocked_words)
+    }
+
+    /// Validate a word with fuzzy matching, returning corrected word and optional correction message
+    async fn validate_word_fuzzy(&mut self, word: &str) -> Result<(String, Option<String>)> {
+        // First check exact match with basic elements
+        if ELEMENTS.contains(&word) {
+            return Ok((word.to_string(), None));
+        }
+
+        // Check exact match with unlocked words
+        if self.check_basis(word).await?.is_some() {
+            return Ok((word.to_string(), None));
+        }
+
+        // No exact match, try fuzzy matching
+        let unlocked_words = self.get_all_unlocked_words().await?;
+        let candidates: Vec<(&str, String)> = unlocked_words
+            .iter()
+            .map(|w| (w.as_str(), w.clone()))
+            .collect();
+
+        let fuzzy_result = find_fuzzy_match(word, candidates);
+
+        match fuzzy_result {
+            FuzzyResult::Exact(corrected_word) => Ok((corrected_word, None)),
+            FuzzyResult::Corrected {
+                corrected,
+                original,
+            } => {
+                let message = format!("Corrected '{}' to '{}'", original, corrected);
+                Ok((corrected, Some(message)))
+            }
+            FuzzyResult::Suggestions {
+                candidates,
+                original,
+            } => {
+                let suggestions = candidates.join(", ");
+                bail!(
+                    "The word '{}' has not been unlocked yet. Did you mean: {}?",
+                    original,
+                    suggestions
+                )
+            }
+            FuzzyResult::NotFound { original } => {
+                bail!(
+                    "The word '{}' has not been unlocked yet. Please use the basic elements: air, earth, fire, water.",
+                    original
+                )
+            }
+        }
     }
 
     async fn set_cache(

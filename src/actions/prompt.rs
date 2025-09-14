@@ -5,6 +5,7 @@ use tracing::{debug, info, trace};
 
 use crate::{
     config::models::{self, Model, ModelsConfig},
+    fuzzy::{FuzzyResult, find_fuzzy_match},
     messages::{chat::NanoBanana, imagen::Generate},
     network::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
@@ -29,6 +30,7 @@ pub struct PromptActor {
 pub struct PromptResult {
     pub text: String,
     pub image_url: Option<String>,
+    pub correction_message: Option<String>,
 }
 
 impl Message<String> for PromptActor {
@@ -129,7 +131,8 @@ impl PromptActor {
     async fn process_generate(&mut self, mut prompt: Generate) -> Result<PromptResult, Error> {
         // Get models config and look up the model
         let models_config = Supervisor::models_config().await;
-        let model = self.resolve_model(&prompt.prompt, &models_config, prompt.model.as_deref())?;
+        let (model, correction_message) =
+            self.resolve_model(&prompt.prompt, &models_config, prompt.model.as_deref())?;
         info!("Using model: {:?}", model);
 
         // Extend the prompt with information from the model defaults.
@@ -154,7 +157,7 @@ impl PromptActor {
             ));
         }
 
-        let prompt_result = match &model.backend {
+        let mut prompt_result = match &model.backend {
             models::Backend::NanoBanana => self.nanobanana(prompt).await,
             models::Backend::ComfyUI {
                 checkpoint,
@@ -193,6 +196,9 @@ impl PromptActor {
                 .await
             }
         }?;
+
+        // Add correction message if there was one
+        prompt_result.correction_message = correction_message;
         Ok(prompt_result)
     }
 
@@ -377,6 +383,7 @@ impl PromptActor {
         Ok(PromptResult {
             text: "".to_string(),
             image_url: Some(gallery.0),
+            correction_message: None,
         })
     }
 
@@ -451,6 +458,7 @@ impl PromptActor {
         Ok(PromptResult {
             text: response.text,
             image_url,
+            correction_message: None,
         })
     }
 }
@@ -508,13 +516,13 @@ impl PromptActor {
         prompt
     }
 
-    /// Resolve model name to Model, handling aliases and defaults
+    /// Resolve model name to Model, handling aliases and defaults with fuzzy matching
     fn resolve_model<'a>(
         &self,
         prompt: &str,
         config: &'a ModelsConfig,
         model_name: Option<&str>,
-    ) -> Result<&'a Model> {
+    ) -> Result<(&'a Model, Option<String>)> {
         // Use default model if none specified
         let mut model_name = model_name.unwrap_or(&config.default);
         if model_name == "auto" {
@@ -532,16 +540,63 @@ impl PromptActor {
         }
 
         // Resolve alias if it exists
-        let model_name = config
+        let resolved_model_name = config
             .aliases
             .get(model_name)
             .map(String::as_str)
             .unwrap_or(model_name);
-        // Look up the model in the config
-        config
+
+        // First try exact match
+        if let Some(model) = config.models.get(resolved_model_name) {
+            return Ok((model, None));
+        }
+
+        // If no exact match, try fuzzy matching on all model names and aliases
+        let mut candidates: Vec<(&str, &Model)> = config
             .models
-            .get(model_name)
-            .with_context(|| format!("model '{}' not found in configuration", model_name))
+            .iter()
+            .map(|(name, model)| (name.as_str(), model))
+            .collect();
+
+        // Add aliases to candidates
+        for (alias, target) in &config.aliases {
+            if let Some(model) = config.models.get(target) {
+                candidates.push((alias.as_str(), model));
+            }
+        }
+
+        let fuzzy_result = find_fuzzy_match(resolved_model_name, candidates);
+
+        match fuzzy_result {
+            FuzzyResult::Exact(model) => Ok((model, None)),
+            FuzzyResult::Corrected {
+                corrected,
+                original,
+            } => {
+                let message = format!(
+                    "Corrected model name '{}' to '{}'",
+                    original, corrected.name
+                );
+                Ok((corrected, Some(message)))
+            }
+            FuzzyResult::Suggestions {
+                candidates,
+                original,
+            } => {
+                let suggestions: Vec<String> = candidates
+                    .into_iter()
+                    .map(|model| model.name.clone())
+                    .collect();
+                bail!(
+                    "Model '{}' not found. Did you mean: {}?",
+                    original,
+                    suggestions.join(", ")
+                )
+            }
+            FuzzyResult::NotFound { original } => {
+                bail!("Model '{}' not found in configuration", original)
+            }
+        }
     }
 }
 

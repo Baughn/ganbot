@@ -957,6 +957,7 @@ dependencies = [
  "kamadak-exif",
  "kameo",
  "lazy_static",
+ "levenshtein",
  "openrouter_api",
  "rand 0.9.2",
  "redis",

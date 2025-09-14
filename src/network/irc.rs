@@ -23,6 +23,8 @@ pub struct IrcActor {
     user_manager: ActorRef<UserManager>,
     /// Rate limiter for outgoing messages (250ms between messages, burst of 4)
     token_bucket: TokenBucket,
+    /// Rate limiter to prevent reordering (100ms between messages, no burst)
+    token_bucket_fast: TokenBucket,
     /// Cache for user identification status
     /// Maps nickname -> (is_identified, cache_time)
     identification_cache: HashMap<String, (bool, Instant)>,
@@ -139,6 +141,7 @@ impl Actor for IrcActor {
             message_buffer: HashMap::new(),
             user_manager: UserManager::get().context("while getting UserManager")?,
             token_bucket: TokenBucket::new(4.0, 2.0), // 4 tokens max, 2 tokens/sec
+            token_bucket_fast: TokenBucket::new(1.0, 10.0),
             identification_cache: HashMap::new(),
             pending_whois: HashMap::new(),
         })
@@ -262,6 +265,7 @@ impl IrcActor {
             }
 
             // Consume a token before sending each message
+            self.token_bucket_fast.consume_token().await;
             self.token_bucket.consume_token().await;
 
             client
@@ -546,11 +550,17 @@ impl Message<ProcessCommand> for ReplyActor {
                 let combine_result = combine_actor.ask(args.to_string()).await;
                 match combine_result {
                     Ok(result) => {
-                        // Format the result nicely with image URL
-                        let response = format!(
+                        // Format the result nicely with image URL and correction message
+                        let mut response = format!(
                             "{}\n**{}**\n{}",
                             result.image_url, result.result, result.reasoning,
                         );
+
+                        // Add correction message if present
+                        if let Some(correction_msg) = result.correction_message {
+                            response = format!("{}\n({})", response, correction_msg);
+                        }
+
                         Some(response)
                     }
                     Err(e) => Some(format!("Error: {e:#}")),
@@ -566,14 +576,23 @@ impl Message<ProcessCommand> for ReplyActor {
                 let prompt_result = prompt_actor.ask(args.to_string()).await;
                 match prompt_result {
                     Ok(result) => {
-                        // Return text and optional image URL
-                        match result.image_url {
-                            Some(image_url) => Some(format!(
-                                "{}: {} {}",
-                                msg.privmsg.user, result.text, image_url
-                            )),
-                            None => Some(format!("{}\n(No image)", result.text)),
-                        }
+                        // Return text and optional image URL with correction message
+                        let base_response = match result.image_url {
+                            Some(image_url) => {
+                                format!("{}: {} {}", msg.privmsg.user, result.text, image_url)
+                            }
+                            None => format!("{}\n(No image)", result.text),
+                        };
+
+                        // Add correction message if present
+                        let final_response = if let Some(correction_msg) = result.correction_message
+                        {
+                            format!("{}\n({})", base_response, correction_msg)
+                        } else {
+                            base_response
+                        };
+
+                        Some(final_response)
                     }
                     Err(e) => Some(format!("Error: {e:#}")),
                 }
@@ -650,14 +669,23 @@ impl Message<ProcessCommand> for ReplyActor {
                 let edit_result = edit_actor.ask(args.to_string()).await;
                 match edit_result {
                     Ok(result) => {
-                        // Return text and optional image URL
-                        match result.image_url {
-                            Some(image_url) => Some(format!(
-                                "{}: {} {}",
-                                msg.privmsg.user, result.text, image_url
-                            )),
-                            None => Some(format!("{}\n(No image)", result.text)),
-                        }
+                        // Return text and optional image URL with correction message
+                        let base_response = match result.image_url {
+                            Some(image_url) => {
+                                format!("{}: {} {}", msg.privmsg.user, result.text, image_url)
+                            }
+                            None => format!("{}\n(No image)", result.text),
+                        };
+
+                        // Add correction message if present
+                        let final_response = if let Some(correction_msg) = result.correction_message
+                        {
+                            format!("{}\n({})", base_response, correction_msg)
+                        } else {
+                            base_response
+                        };
+
+                        Some(final_response)
                     }
                     Err(e) => Some(format!("Error: {e:#}")),
                 }
