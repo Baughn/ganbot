@@ -118,6 +118,7 @@ struct ComfyParams<'a> {
     scheduler: &'a str,
     steps: u32,
     resolution: (u32, u32),
+    resolutions: Option<&'a Vec<(u32, u32)>>,
     use_torch_compile: bool,
     two_stage: bool,
     upscale_factor: f32,
@@ -166,6 +167,7 @@ impl PromptActor {
                 scheduler,
                 steps,
                 resolution,
+                resolutions,
                 use_torch_compile,
                 two_stage,
                 upscale_factor,
@@ -186,6 +188,7 @@ impl PromptActor {
                     scheduler: scheduler.as_str(),
                     steps: *steps,
                     resolution: *resolution,
+                    resolutions: resolutions.as_ref(),
                     use_torch_compile: use_torch_compile.unwrap_or(false),
                     two_stage: two_stage.unwrap_or(false),
                     upscale_factor: upscale_factor.unwrap_or(1.5),
@@ -215,19 +218,43 @@ impl PromptActor {
         let num_images = params.count;
         let mut width = params.resolution.0;
         let mut height = params.resolution.1;
-        if let Some(aspect) = params.prompt.aspect {
-            trace!("Calculating dimensions for aspect ratio {:?}", aspect);
-            (width, height) = calculate_dimensions(aspect, width, height);
-            trace!("Calculated dimensions: {}x{}", width, height);
-        }
+
+        // Resolution selection logic based on user input
         if let Some(w) = params.prompt.width {
             width = w;
         }
         if let Some(h) = params.prompt.height {
             height = h;
         }
-        let width = width.clamp(256, 2048);
-        let height = height.clamp(256, 2048);
+
+        // If user specified exact dimensions, use them as-is (no snapping)
+        if params.prompt.width.is_some() || params.prompt.height.is_some() {
+            // User provided explicit dimensions - use them directly
+            width = width.clamp(256, 2048);
+            height = height.clamp(256, 2048);
+            trace!("Using user-specified dimensions: {}x{}", width, height);
+        } else {
+            // User didn't specify dimensions - use aspect ratio logic or default to 1:1
+            let aspect = params.prompt.aspect.unwrap_or((1, 1)); // Default to 1:1 if no aspect specified
+
+            if let Some(resolutions) = params.resolutions {
+                // Model has specific allowed resolutions - find the best match
+                let (selected_width, selected_height) = find_best_resolution(aspect, resolutions);
+                trace!(
+                    "Selected resolution {}x{} from allowed set for aspect ratio {:?}",
+                    selected_width, selected_height, aspect
+                );
+                width = selected_width;
+                height = selected_height;
+            } else {
+                // No specific resolutions - calculate dimensions normally
+                trace!("Calculating dimensions for aspect ratio {:?}", aspect);
+                (width, height) = calculate_dimensions(aspect, width, height);
+                width = width.clamp(256, 2048);
+                height = height.clamp(256, 2048);
+                trace!("Calculated dimensions: {}x{}", width, height);
+            }
+        }
         let steps = params.prompt.steps.unwrap_or(params.steps).clamp(1, 150);
 
         // Load model, CLIP, and VAE
@@ -611,4 +638,32 @@ fn calculate_dimensions(aspect: (u32, u32), base_width: u32, base_height: u32) -
     let width = (width / 64) * 64;
     let height = (height / 64) * 64;
     (width, height)
+}
+
+/// Find the best resolution from the allowed set that matches the desired aspect ratio.
+fn find_best_resolution(
+    desired_aspect: (u32, u32),
+    allowed_resolutions: &Vec<(u32, u32)>,
+) -> (u32, u32) {
+    let desired_ratio = desired_aspect.0 as f32 / desired_aspect.1 as f32;
+
+    let mut best_resolution = allowed_resolutions[0];
+    let mut best_score = f32::INFINITY;
+
+    for &(width, height) in allowed_resolutions {
+        let resolution_ratio = width as f32 / height as f32;
+
+        // Score based on how close the aspect ratio is
+        let aspect_diff = (resolution_ratio - desired_ratio).abs();
+
+        // Prefer resolutions with aspect ratios closer to the desired one
+        let score = aspect_diff;
+
+        if score < best_score {
+            best_score = score;
+            best_resolution = (width, height);
+        }
+    }
+
+    best_resolution
 }

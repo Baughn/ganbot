@@ -43,6 +43,7 @@ pub enum Backend {
         scheduler: String,
         steps: u32,
         resolution: (u32, u32),
+        resolutions: Option<Vec<(u32, u32)>>,
         use_torch_compile: Option<bool>,
         two_stage: Option<bool>,
         upscale_factor: Option<f32>,
@@ -110,6 +111,7 @@ enum LoadingBackend {
         scheduler: Option<String>,
         steps: Option<u32>,
         resolution: Option<(u32, u32)>,
+        resolutions: Option<Vec<String>>,
         use_torch_compile: Option<bool>,
         two_stage: Option<bool>,
         upscale_factor: Option<f32>,
@@ -176,6 +178,7 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                         scheduler: p_scheduler,
                         steps: p_steps,
                         resolution: p_resolution,
+                        resolutions: p_resolutions,
                         use_torch_compile: p_use_torch_compile,
                         two_stage: p_two_stage,
                         upscale_factor: p_upscale_factor,
@@ -193,6 +196,7 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                         scheduler: c_scheduler,
                         steps: c_steps,
                         resolution: c_resolution,
+                        resolutions: c_resolutions,
                         use_torch_compile: c_use_torch_compile,
                         two_stage: c_two_stage,
                         upscale_factor: c_upscale_factor,
@@ -227,6 +231,9 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
                     }
                     if c_resolution.is_none() {
                         *c_resolution = *p_resolution;
+                    }
+                    if c_resolutions.is_none() {
+                        *c_resolutions = p_resolutions.clone();
                     }
                     if c_use_torch_compile.is_none() {
                         *c_use_torch_compile = *p_use_torch_compile;
@@ -339,6 +346,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     scheduler,
                     steps,
                     resolution,
+                    resolutions,
                     use_torch_compile,
                     two_stage,
                     upscale_factor,
@@ -396,6 +404,32 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                             name
                         )
                     })?,
+                    resolutions: if let Some(res_strings) = resolutions {
+                        let parsed_resolutions: Result<Vec<(u32, u32)>, _> = res_strings
+                            .iter()
+                            .map(|res_str| {
+                                let parts: Vec<&str> = res_str.split('x').collect();
+                                if parts.len() != 2 {
+                                    return Err(anyhow::anyhow!(
+                                        "Invalid resolution format '{}', expected 'WIDTHxHEIGHT'",
+                                        res_str
+                                    ));
+                                }
+                                let width: u32 = parts[0].parse().with_context(|| {
+                                    format!("Invalid width in resolution '{}'", res_str)
+                                })?;
+                                let height: u32 = parts[1].parse().with_context(|| {
+                                    format!("Invalid height in resolution '{}'", res_str)
+                                })?;
+                                Ok((width, height))
+                            })
+                            .collect();
+                        Some(parsed_resolutions.with_context(|| {
+                            format!("Failed to parse resolutions for model '{}'", name)
+                        })?)
+                    } else {
+                        None
+                    },
                     use_torch_compile: *use_torch_compile,
                     two_stage: *two_stage,
                     upscale_factor: *upscale_factor,
@@ -536,6 +570,7 @@ ComfyUI = { checkpoint = "child.safetensors" }
             scheduler,
             steps,
             resolution,
+            resolutions: _,
             use_torch_compile,
             two_stage,
             upscale_factor,
@@ -658,5 +693,15 @@ NanoBanana = {}
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("missing required field 'name'"));
+    }
+
+    #[test]
+    fn test_actual_models_toml_parses() {
+        let result = load_models_config();
+        assert!(
+            result.is_ok(),
+            "Failed to parse actual models.toml: {:?}",
+            result.unwrap_err()
+        );
     }
 }
