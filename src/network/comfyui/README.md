@@ -17,7 +17,7 @@ This module provides a fully async Rust client for interacting with ComfyUI's RE
 ### Simple Text-to-Image Generation
 
 ```rust
-use ganbot3::network::comfyui::ComfyUIClient;
+use ganbot::network::comfyui::ComfyUIClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Using the Graph API
 
 ```rust
-use ganbot3::network::comfyui::{ComfyUIClient, Graph, KSamplerParams};
+use ganbot::network::comfyui::{ComfyUIClient, Graph, KSamplerParams};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Custom Configuration
 
 ```rust
-use ganbot3::network::comfyui::create_client;
+use ganbot::network::comfyui::create_client;
 use std::time::Duration;
 
 let config = create_client()

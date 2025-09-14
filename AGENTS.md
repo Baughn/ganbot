@@ -53,7 +53,7 @@ cargo run
 RUST_LOG=debug cargo run
 
 # Run with module-specific logging
-RUST_LOG=ganbot3=trace,irc=warn,kameo=info cargo run
+RUST_LOG=ganbot=trace,irc=warn,kameo=info cargo run
 
 # Check for compilation errors
 cargo check

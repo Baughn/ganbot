@@ -190,7 +190,7 @@ where
         let client = OpenRouterClient::production(
             self.config.token.clone(),
             "GANBot".to_string(),
-            "https://github.com/Baughn/ganbot3-rs".to_string(),
+            "https://github.com/Baughn/ganbot-rs".to_string(),
         )
         .context("while creating OpenRouter client")?;
 
@@ -277,7 +277,7 @@ impl Message<chat::Oneshot> for ConversationActor {
         let client = OpenRouterClient::production(
             self.config.token.clone(),
             "GANBot".to_string(),
-            "https://github.com/Baughn/ganbot3-rs".to_string(),
+            "https://github.com/Baughn/ganbot-rs".to_string(),
         )
         .context("while creating OpenRouter client")?;
 

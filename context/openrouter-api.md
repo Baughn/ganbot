@@ -686,7 +686,7 @@ impl OpenRouterService {
     pub async fn new(config: OpenRouterConfig) -> Result<Self, openrouter_api::error::OpenRouterError> {
         let client = OpenRouterClient::new()
             .api_key(&config.api_key)
-            .site_url(&config.site_url.unwrap_or_else(|| "https://ganbot3.local".to_string()))
+            .site_url(&config.site_url.unwrap_or_else(|| "https://ganbot.local".to_string()))
             .app_name("Ganbot3")
             .build()?;
 

@@ -19,7 +19,7 @@ mod util;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing with environment-based configuration
-    // RUST_LOG env var controls log levels (e.g., RUST_LOG=debug or RUST_LOG=ganbot3=trace,warn)
+    // RUST_LOG env var controls log levels (e.g., RUST_LOG=debug or RUST_LOG=ganbot=trace,warn)
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt()
@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
         .with_level(true)
         .init();
 
-    info!("Starting ganbot3");
+    info!("Starting ganbot");
     debug!("Debug logging enabled");
     trace!("Trace logging enabled");
 

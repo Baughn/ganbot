@@ -167,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Ganbot3 Topic Convention
 
-For your ganbot3 project, consider this topic hierarchy:
+For your ganbot project, consider this topic hierarchy:
 
 ```rust
 // Platform events
@@ -602,4 +602,4 @@ image_bus.tell(Publish(GenerateMemeCommand {
 })).await?;
 ```
 
-This comprehensive documentation should provide you with everything needed to effectively use the kameo_actors crate in your ganbot3 project, with practical examples tailored to your multi-platform bot architecture.
+This comprehensive documentation should provide you with everything needed to effectively use the kameo_actors crate in your ganbot project, with practical examples tailored to your multi-platform bot architecture.

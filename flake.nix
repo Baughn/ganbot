@@ -1,5 +1,5 @@
 {
-  description = "Ganbot3 - Multi-platform bot (Discord & IRC) built in Rust";
+  description = "Ganbot - Multi-platform bot (Discord & IRC) built in Rust";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -54,10 +54,10 @@
           
           # Rust environment variables
           RUST_BACKTRACE = 1;
-          RUST_LOG = "ganbot3=debug";
+          RUST_LOG = "ganbot=debug";
 
           shellHook = ''
-            echo "Ganbot3 Rust development environment"
+            echo "Ganbot Rust development environment"
             echo "Rust version: $(rustc --version)"
             echo ""
             echo "Available commands:"
@@ -75,7 +75,7 @@
 
         # Package definition (for building the bot)
         packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "ganbot3";
+          pname = "ganbot";
           version = "0.1.0";
 
           src = ./.;

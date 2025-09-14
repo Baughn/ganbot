@@ -861,4 +861,4 @@ async fn test_connection(config: &Config) -> Result<(), Box<dyn std::error::Erro
 - [irc crate documentation](https://docs.rs/irc/)
 - [irc crate GitHub repository](https://github.com/aatxe/irc)
 
-This documentation covers the essential aspects of using the `irc` crate v1.1.0 in the context of the ganbot3 project. The examples show how to integrate IRC functionality with Kameo actors for building a robust, fault-tolerant IRC bot.
+This documentation covers the essential aspects of using the `irc` crate v1.1.0 in the context of the ganbot project. The examples show how to integrate IRC functionality with Kameo actors for building a robust, fault-tolerant IRC bot.

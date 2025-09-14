@@ -1302,4 +1302,4 @@ async fn test_user_manager() {
 }
 ```
 
-This comprehensive guide should provide you with everything needed to effectively use Kameo v0.17.2 in your ganbot3 project, from basic concepts to advanced patterns for building fault-tolerant, scalable multi-platform bot systems.
+This comprehensive guide should provide you with everything needed to effectively use Kameo v0.17.2 in your ganbot project, from basic concepts to advanced patterns for building fault-tolerant, scalable multi-platform bot systems.

@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Added VAE decode node");
 
     // Save image
-    graph.save_images(&images, "ganbot3_example");
+    graph.save_images(&images, "ganbot_example");
     println!("✓ Added save image node");
 
     println!("✓ Workflow built successfully with {} nodes", 7);

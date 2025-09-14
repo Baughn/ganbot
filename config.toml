@@ -1,5 +1,5 @@
 # Ganbot3 Configuration File
-# This file contains the main configuration for ganbot3
+# This file contains the main configuration for ganbot
 # Environment variables with GANBOT__ prefix will override these values
 # Example: GANBOT__INVOKEAI_URL=http://localhost:9090 will override invokeai.url
 # Example: GANBOT__OPENROUTER_TOKEN=sk-or... will override openrouter.token
