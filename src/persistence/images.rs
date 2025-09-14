@@ -781,18 +781,26 @@ fn calculate_optimal_grid(image_count: usize, img_width: u32, img_height: u32) -
         return (0, 0);
     }
 
-    let target_aspect = 16.0 / 10.0;
+    let target_aspect = 1.7;
+    let mut have_perfect_grid = false;  // Set if we can make one with no black slots.
     let mut best_cols = 1;
     let mut best_rows = image_count as u32;
     let mut best_diff = f64::INFINITY;
     for cols in 1..=image_count as u32 {
         let rows = ((image_count as f64) / (cols as f64)).ceil() as u32;
+        let is_perfect = rows * cols == image_count as u32 && cols > 1;
         let grid_aspect = (cols as f64 * img_width as f64) / (rows as f64 * img_height as f64);
         let diff = (grid_aspect - target_aspect).abs();
-        if diff < best_diff {
-            best_diff = diff;
+        let best_yet = match (is_perfect, have_perfect_grid) {
+          (true, false) => true,
+          (false, true) => false,
+          _ => diff < best_diff
+        };
+        if best_yet {
+            have_perfect_grid = is_perfect;
             best_cols = cols;
             best_rows = rows;
+            best_diff = diff;
         }
     }
 
@@ -977,11 +985,9 @@ mod tests {
 
     #[test]
     fn test_calculate_optimal_grid_four_images() {
-        // For 4 images, let's check what the algorithm actually chooses
+        // For 4 images, we'll always get 2x2
         let (cols, rows) = calculate_optimal_grid(4, 512, 512);
-        // The algorithm actually prefers 3x2 over 2x2 for better 16:10 aspect ratio
-        assert_eq!((cols, rows), (3, 2));
-        assert!(cols * rows >= 4); // Must accommodate all images
+        assert_eq!((cols, rows), (2, 2));
     }
 
     #[test]
@@ -995,9 +1001,10 @@ mod tests {
     fn test_calculate_optimal_grid_with_wide_images() {
         // With wide images (2:1 ratio), different grid layout might be preferred
         let (cols, rows) = calculate_optimal_grid(4, 1024, 512);
-        // Should still be 2x2 but let's verify the function handles different image ratios
-        assert!(cols > 0 && rows > 0);
-        assert!(cols * rows >= 4); // Must accommodate all images
+        assert!(cols == 2 && rows == 2);
+        // For 1536:1024 (The NoobAI wide ratio), we still want a wide layout.
+        let (cols, rows) = calculate_optimal_grid(6, 1536, 1024);
+        assert_eq!((cols, rows), (3, 2));
     }
 
     #[test]
@@ -1011,9 +1018,8 @@ mod tests {
         let (cols, rows) = calculate_optimal_grid(12, 512, 512);
         assert!(cols > 0 && rows > 0);
         assert!(cols * rows >= 12); // Must accommodate all images
-        // For 12 images, the algorithm chooses 5x3 (15 slots for 12 images)
-        // Let's just verify it accommodates all images and is reasonable
-        assert_eq!((cols, rows), (5, 3));
+        // For 12 images, the algorithm chooses 4x3
+        assert_eq!((cols, rows), (4, 3));
     }
 
     #[test]
@@ -1109,38 +1115,6 @@ mod tests {
         let dark_blue = Rgb([0, 0, 100]); // Luminance ≈ 11, should be white text
         let text_color = calculate_text_color(dark_blue);
         assert_eq!(text_color, Rgb([255, 255, 255]));
-    }
-
-    #[test]
-    fn test_aspect_ratio_calculations() {
-        // Test the aspect ratio math more directly
-        let target_aspect: f64 = 16.0 / 10.0; // 1.6
-
-        // Test 3x2 grid with square images
-        let cols: f64 = 3.0;
-        let rows: f64 = 2.0;
-        let img_width: f64 = 512.0;
-        let img_height: f64 = 512.0;
-
-        let total_width = cols * img_width; // 1536
-        let total_height = rows * img_height; // 1024
-        let grid_aspect = total_width / total_height; // 1.5
-
-        let diff = (grid_aspect - target_aspect).abs(); // |1.5 - 1.6| = 0.1
-        assert!((diff - 0.1_f64).abs() < f64::EPSILON);
-
-        // Test 4x2 grid
-        let cols: f64 = 4.0;
-        let rows: f64 = 2.0;
-        let total_width = cols * img_width; // 2048
-        let total_height = rows * img_height; // 1024
-        let grid_aspect = total_width / total_height; // 2.0
-
-        let diff = (grid_aspect - target_aspect).abs(); // |2.0 - 1.6| = 0.4
-        assert!((diff - 0.4_f64).abs() < f64::EPSILON);
-
-        // 3x2 should be closer to target than 4x2 (0.1 < 0.4)
-        assert!(0.1_f64 < 0.4_f64);
     }
 
     #[test]

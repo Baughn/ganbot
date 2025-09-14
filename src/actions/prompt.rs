@@ -240,7 +240,7 @@ impl PromptActor {
             if let Some(resolutions) = params.resolutions {
                 // Model has specific allowed resolutions - find the best match
                 let (selected_width, selected_height) = find_best_resolution(aspect, resolutions);
-                trace!(
+                debug!(
                     "Selected resolution {}x{} from allowed set for aspect ratio {:?}",
                     selected_width, selected_height, aspect
                 );
