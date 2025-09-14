@@ -1,0 +1,54 @@
+[package]
+name = "openrouter_api"
+version = "0.1.6"
+edition = "2021"
+authors = ["James Ray<openrouter.aea1p@passmail.net>"]
+description = "A Rust client library for the OpenRouter API"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/socrates8300/openrouter_api"
+documentation = "https://docs.rs/openrouter_api"
+readme = "README.md"
+keywords = ["openrouter", "ai", "api-client"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+reqwest = { version = "0.11", default_features = false, features = [
+  "json",
+  "rustls-tls",
+  "stream",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+thiserror = "1.0"
+url = "2.3"
+futures = "0.3"
+async-stream = "0.3"
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+uuid = "1.16.0"
+zeroize = { version = "1.8", features = ["derive"] }
+regex = "1.11"
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.5"
+test-case = "3.3"
+serial_test = "3.0"
+
+[features]
+default = ["rustls"]
+rustls = ["reqwest/rustls-tls"]
+native-tls = ["reqwest/native-tls"]
+tracing = ["dep:tracing"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "unwind"
+strip = true
