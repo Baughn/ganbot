@@ -103,6 +103,53 @@ impl Message<UploadGallery> for ImageUploader {
     }
 }
 
+/// Truncates EXIF data by replacing large strings and limiting total size
+fn truncate_exif_data(workflow: &serde_json::Value) -> Result<String> {
+    // Helper function to recursively walk JSON and replace large strings
+    fn truncate_large_strings(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::String(s) => {
+                if s.len() > 10 * 1024 {
+                    // 10 KiB
+                    let size_kb = s.len() / 1024;
+                    *s = format!("[{} KiB of data elided]", size_kb);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (_, v) in map.iter_mut() {
+                    truncate_large_strings(v);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for v in arr.iter_mut() {
+                    truncate_large_strings(v);
+                }
+            }
+            _ => {} // Numbers, booleans, null are fine as-is
+        }
+    }
+
+    // Clone the workflow so we don't modify the original
+    let mut truncated_workflow = workflow.clone();
+    truncate_large_strings(&mut truncated_workflow);
+
+    // Serialize to pretty JSON string
+    let json_string = serde_json::to_string_pretty(&truncated_workflow)
+        .context("Failed to serialize truncated workflow to JSON")?;
+
+    // If the final JSON is still larger than 63 KiB, truncate it
+    if json_string.len() > 63 * 1024 {
+        let suffix = "...\n[JSON truncated to 63 KiB limit]";
+        let target_size = 63 * 1024;
+        let mut truncated = json_string;
+        truncated.truncate(target_size - suffix.len()); // Leave exact room for suffix
+        truncated.push_str(suffix);
+        Ok(truncated)
+    } else {
+        Ok(json_string)
+    }
+}
+
 impl ImageUploader {
     async fn upload_impl(&self, msg: UploadImage) -> Result<String> {
         // Generate unique filename using UUID v7 (time-ordered)
@@ -237,9 +284,8 @@ impl ImageUploader {
                 "workflow": workflow
             });
 
-            // Format as pretty JSON
-            let workflow_json = serde_json::to_string(&wrapped_workflow)
-                .context("Failed to serialize workflow to JSON")?;
+            // Truncate EXIF data to prevent oversized metadata
+            let workflow_json = truncate_exif_data(&wrapped_workflow)?;
 
             // Create EXIF writer and add workflow as UserComment
             let mut writer = Writer::new();
@@ -782,7 +828,7 @@ fn calculate_optimal_grid(image_count: usize, img_width: u32, img_height: u32) -
     }
 
     let target_aspect = 1.7;
-    let mut have_perfect_grid = false;  // Set if we can make one with no black slots.
+    let mut have_perfect_grid = false; // Set if we can make one with no black slots.
     let mut best_cols = 1;
     let mut best_rows = image_count as u32;
     let mut best_diff = f64::INFINITY;
@@ -792,9 +838,9 @@ fn calculate_optimal_grid(image_count: usize, img_width: u32, img_height: u32) -
         let grid_aspect = (cols as f64 * img_width as f64) / (rows as f64 * img_height as f64);
         let diff = (grid_aspect - target_aspect).abs();
         let best_yet = match (is_perfect, have_perfect_grid) {
-          (true, false) => true,
-          (false, true) => false,
-          _ => diff < best_diff
+            (true, false) => true,
+            (false, true) => false,
+            _ => diff < best_diff,
         };
         if best_yet {
             have_perfect_grid = is_perfect;
@@ -1349,6 +1395,69 @@ mod tests {
 
         // Even empty text should have minimum height
         assert_eq!(height, 60); // MIN_TEXT_AREA_HEIGHT
+    }
+
+    #[test]
+    fn test_truncate_exif_data_small_json() {
+        let small_workflow = serde_json::json!({
+            "backend": "test",
+            "workflow": {
+                "nodes": ["small", "data"]
+            }
+        });
+
+        let result = truncate_exif_data(&small_workflow).unwrap();
+        assert!(result.len() < 63 * 1024);
+        assert!(result.contains("test"));
+        assert!(result.contains("small"));
+    }
+
+    #[test]
+    fn test_truncate_exif_data_large_strings() {
+        // Create a string larger than 10 KiB
+        let large_string = "x".repeat(15 * 1024); // 15 KiB
+        let workflow = serde_json::json!({
+            "backend": "test",
+            "workflow": {
+                "large_field": large_string,
+                "small_field": "normal text"
+            }
+        });
+
+        let result = truncate_exif_data(&workflow).unwrap();
+        assert!(result.len() < 63 * 1024);
+        assert!(result.contains("15 KiB of data elided"));
+        assert!(result.contains("normal text"));
+        assert!(!result.contains("xxxxxxx")); // Large string should be replaced
+    }
+
+    #[test]
+    fn test_truncate_exif_data_oversized_json() {
+        // Create a very large workflow that exceeds 63 KiB even after string truncation
+        let mut large_workflow = serde_json::json!({
+            "backend": "test",
+            "workflow": {}
+        });
+
+        // Add many fields to make it large
+        if let Some(workflow_obj) = large_workflow
+            .get_mut("workflow")
+            .and_then(|v| v.as_object_mut())
+        {
+            for i in 0..5000 {
+                workflow_obj.insert(
+                    format!("field_{}", i),
+                    serde_json::Value::String(format!(
+                        "some moderately long value for field {}",
+                        i
+                    )),
+                );
+            }
+        }
+
+        let result = truncate_exif_data(&large_workflow).unwrap();
+        assert_eq!(result.len(), 63 * 1024);
+        assert!(result.ends_with("[JSON truncated to 63 KiB limit]"));
     }
 
     #[test]
