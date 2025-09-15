@@ -6,11 +6,8 @@ default_tagged = "fanart"
 qwen = "qwen_image_fp8"
 fanart = "oneobsession"
 fanart-cute = "monody"
-fanart-realistic = "realism-illustrious"
-fanart-photorealistic = "realism-illustrious-1.6-photorealistic"
 pasanctuary = "pasanctuary-5.0"
-sd35 = "sd35-large"
-dream = "chroma"
+dream = "qwen_image_fp8"
 animavivid = "animavividxl"
 
 [templates.sdxl]

@@ -7,10 +7,12 @@ use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
 use openrouter_api::OpenRouterClient;
 use openrouter_api::models::structured::JsonSchemaConfig;
+use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::io::Cursor;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
+use url;
 
 use crate::config::global::OpenrouterConfig;
 use crate::messages::chat::{self, NanoBanana, NanoBananaResponse};
@@ -34,6 +36,34 @@ fn rgb_image_to_base64_data_url(img: &image::RgbImage) -> Result<String> {
     let base64_string = base64::engine::general_purpose::STANDARD.encode(&buffer);
 
     Ok(format!("data:image/jpeg;base64,{}", base64_string))
+}
+
+/// Extract URLs from text using regex and url crate validation
+fn extract_urls(text: &str) -> Vec<String> {
+    let url_regex = Regex::new(r"https?://[^\s]+").expect("Invalid URL regex");
+
+    url_regex
+        .find_iter(text)
+        .filter_map(|m| {
+            let mut candidate = m.as_str();
+
+            // Common trailing punctuation that's likely not part of the URL
+            const TRAILING_PUNCT: &[char] =
+                &[',', '.', ';', '!', '?', ')', ']', '}', '"', '\'', ':', '>'];
+
+            // Always trim trailing punctuation first, even if the URL would parse as-is
+            while !candidate.is_empty() && candidate.ends_with(TRAILING_PUNCT) {
+                candidate = &candidate[..candidate.len() - 1];
+            }
+
+            // Now try parsing the cleaned URL
+            if !candidate.is_empty() && url::Url::parse(candidate).is_ok() {
+                Some(candidate.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Singleton actor that manages OpenRouter API access
@@ -149,6 +179,7 @@ impl Actor for ConversationActor {
 fn select_model(purpose: &chat::Purpose, config: &OpenrouterConfig) -> String {
     match purpose {
         chat::Purpose::Chat => config.chat_model.clone(),
+        chat::Purpose::Dream => config.dream_model.clone(),
     }
 }
 
@@ -260,8 +291,7 @@ impl Message<chat::Oneshot> for ConversationActor {
         info!("Handling oneshot request with purpose: {:?}", msg.purpose);
 
         // Combine all text parts into a single message
-        // TODO: Handle cacheable vs uncacheable parts differently in the future
-        let message_content = msg
+        let combined_text = msg
             .text
             .iter()
             .map(|part| match part {
@@ -273,78 +303,74 @@ impl Message<chat::Oneshot> for ConversationActor {
         let model = select_model(&msg.purpose, &self.config);
         tracing::debug!("Using model: {} for request from {}", model, msg.origin);
 
-        // Initialize the OpenRouter client for this request
-        let client = OpenRouterClient::production(
-            self.config.token.clone(),
-            "GANBot".to_string(),
-            "https://github.com/Baughn/ganbot-rs".to_string(),
-        )
-        .context("while creating OpenRouter client")?;
+        // Extract URLs from the text
+        let urls = extract_urls(&combined_text);
 
-        // Create a schemaless chat completion request
-        let request = openrouter_api::ChatCompletionRequest {
-            model,
-            messages: vec![openrouter_api::Message {
-                role: "user".to_string(),
-                content: message_content,
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-            }],
-            stream: Some(false),
-            response_format: None,
-            tools: None,
-            provider: None,
-            models: None,
-            transforms: None,
-        };
+        // Build message content array
+        let mut message_content = Vec::new();
 
-        // Send the request to OpenRouter API
-        let chat_api = client
-            .chat()
-            .map_err(|e| anyhow::anyhow!("Failed to get chat API: {}", e))?;
+        // Add text content
+        message_content.push(json!({
+            "type": "text",
+            "text": combined_text
+        }));
 
-        let chat_response = chat_api.chat_completion(request).await;
-
-        match chat_response {
-            Ok(response) => {
-                info!("Chat response: {response:?}");
-                // Extract the response text from the first choice
-                if let Some(choice) = response.choices.first() {
-                    Ok(chat::OneshotResponse {
-                        text: choice.message.content.clone(),
-                    })
-                } else {
-                    tracing::error!("No choices in OpenRouter response");
-                    Err(anyhow::anyhow!("No response choices from OpenRouter"))
+        // Add image URLs
+        for url in urls {
+            info!("Including image from URL in chat: {}", url);
+            message_content.push(json!({
+                "type": "image_url",
+                "text": format!("Reference image ({url})"),
+                "image_url": {
+                    "url": url
                 }
-            }
-            Err(e) => {
-                error!("OpenRouter API error response: {:?}", e);
-                // This should be JSON. Attempt the extract $.error.message.
-                match e {
-                    openrouter_api::Error::ApiError {
-                        code: _,
-                        message,
-                        metadata: _,
-                    } => {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&message)
-                            && let Some(msg) = json
-                                .get("error")
-                                .and_then(|err| err.get("message"))
-                                .and_then(|m| m.as_str())
-                        {
-                            bail!("OpenRouter API error: {}", msg);
-                        }
-                    }
-                    other => {
-                        bail!("OpenRouter API error: {:?}", other);
-                    }
-                }
-                // Fallback to logging a generic error.
-                bail!("OpenRouter API request failed");
-            }
+            }));
         }
+        debug!("Sending {message_content:#?}");
+
+        // Use raw reqwest API for multi-part content support
+        let url = "https://openrouter.ai/api/v1/chat/completions";
+        let client = reqwest::Client::new();
+
+        let payload = json!({
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": message_content
+            }]
+        });
+
+        let response = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.config.token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send request to OpenRouter")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            bail!("OpenRouter API error: {} - {}", status, error_text);
+        }
+
+        let response_json: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse OpenRouter response as JSON")?;
+
+        // Extract the text content from the response
+        let text = response_json
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(|content| content.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Unexpected response format from OpenRouter"))?
+            .to_string();
+
+        Ok(chat::OneshotResponse { text })
     }
 }
 
@@ -510,5 +536,135 @@ impl Message<NanoBanana> for ConversationActor {
             }
         }
         bail!("Failed to get response from OpenRouter after retries");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_urls_with_comma() {
+        let text = "Like https://brage.info/GAN/01994f64-92a9-7052-be8d-a1255a127d54.2.jpg, but on the moon";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://brage.info/GAN/01994f64-92a9-7052-be8d-a1255a127d54.2.jpg"]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_with_period() {
+        let text = "Check out this image: https://example.com/image.jpg.";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com/image.jpg"]);
+    }
+
+    #[test]
+    fn test_extract_urls_in_parentheses() {
+        let text = "The image (https://example.com/image.jpg) shows something interesting";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com/image.jpg"]);
+    }
+
+    #[test]
+    fn test_extract_multiple_urls() {
+        let text = "First: https://example.com/1.jpg, second: https://example.com/2.jpg!";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://example.com/1.jpg", "https://example.com/2.jpg"]
+        );
+    }
+
+    #[test]
+    fn test_extract_url_with_query_params() {
+        let text = "API endpoint: https://api.example.com/data?param=value&other=123, works great!";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://api.example.com/data?param=value&other=123"]
+        );
+    }
+
+    #[test]
+    fn test_extract_url_with_fragment() {
+        let text = "Documentation at https://docs.example.com/guide#section-2.";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://docs.example.com/guide#section-2"]);
+    }
+
+    #[test]
+    fn test_no_urls() {
+        let text = "This text has no URLs whatsoever";
+        let urls = extract_urls(text);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_url_at_end_of_sentence() {
+        let text = "Visit https://example.com.";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn test_url_with_exclamation() {
+        let text = "Amazing site: https://example.com!";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn test_url_with_question_mark_outside() {
+        let text = "Have you seen https://example.com?";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn test_url_in_quotes() {
+        let text = r#"He said "check out https://example.com" yesterday"#;
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn test_url_with_trailing_slash() {
+        let text = "Homepage: https://example.com/, pretty cool";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com/"]);
+    }
+
+    #[test]
+    fn test_http_and_https() {
+        let text = "HTTP: http://example.com, HTTPS: https://secure.example.com.";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["http://example.com", "https://secure.example.com"]
+        );
+    }
+
+    #[test]
+    fn test_complex_gan_url() {
+        // Real-world GAN bot URL format
+        let text =
+            "Generated: https://brage.info/GAN/550e8400-e29b-41d4-a716-446655440000.1.jpg, nice!";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://brage.info/GAN/550e8400-e29b-41d4-a716-446655440000.1.jpg"]
+        );
+    }
+
+    #[test]
+    fn test_url_with_semicolon() {
+        let text = "Resources: https://example.com/docs; https://example.com/api";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://example.com/docs", "https://example.com/api"]
+        );
     }
 }

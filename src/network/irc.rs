@@ -597,6 +597,35 @@ impl Message<ProcessCommand> for ReplyActor {
                     Err(e) => Some(format!("Error: {e:#}")),
                 }
             }
+            "dream" => {
+                // Spawn Dream actor to handle this command
+                let dream_actor = actions::dream::DreamActor::spawn_link(
+                    &ctx.actor_ref(),
+                    actions::dream::DreamActor::new(msg.user.clone()).await,
+                )
+                .await;
+                let dream_result = dream_actor.ask(args.to_string()).await;
+                match dream_result {
+                    Ok(result) => {
+                        // Format similar to !prompt command
+                        let base_response = match result.image_url {
+                            Some(image_url) => {
+                                format!("{}: {} {}", msg.privmsg.user, result.text, image_url)
+                            }
+                            None => format!("{}\n(No image)", result.text),
+                        };
+                        // Add correction message if present
+                        let final_response = if let Some(correction_msg) = result.correction_message
+                        {
+                            format!("{}\n({})", base_response, correction_msg)
+                        } else {
+                            base_response
+                        };
+                        Some(final_response)
+                    }
+                    Err(e) => Some(format!("Error: {e:#}")),
+                }
+            }
             "config" => {
                 // Check if user is identified before allowing config command
                 let is_identified = match Self::check_user_identified_with_retry(

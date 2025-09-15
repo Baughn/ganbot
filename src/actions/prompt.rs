@@ -30,6 +30,7 @@ pub struct PromptActor {
 pub struct PromptResult {
     pub text: String,
     pub image_url: Option<String>,
+    pub images: Option<Vec<image::RgbImage>>,
     pub correction_message: Option<String>,
 }
 
@@ -383,7 +384,7 @@ impl PromptActor {
         let gallery = upload_gallery(GalleryInput {
             title,
             subtitle,
-            images,
+            images: images.clone(),
             workflow: Some(workflow),
             backend: Some("StableDiffusion".to_string()),
             generation_request: Some(params.prompt.clone()),
@@ -410,6 +411,7 @@ impl PromptActor {
         Ok(PromptResult {
             text: "".to_string(),
             image_url: Some(gallery.0),
+            images: Some(images),
             correction_message: None,
         })
     }
@@ -485,6 +487,7 @@ impl PromptActor {
         Ok(PromptResult {
             text: response.text,
             image_url,
+            images: None, // NanoBanana doesn't return raw images
             correction_message: None,
         })
     }

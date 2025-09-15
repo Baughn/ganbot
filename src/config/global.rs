@@ -37,6 +37,8 @@ pub struct OpenrouterConfig {
     pub chat_model: String,
     #[serde(default = "default_image_model")]
     pub image_model: String,
+    #[serde(default = "default_dream_model")]
+    pub dream_model: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
@@ -76,12 +78,17 @@ fn default_image_model() -> String {
     "openai/gpt-4o".to_string()
 }
 
+fn default_dream_model() -> String {
+    default_chat_model()
+}
+
 impl Default for OpenrouterConfig {
     fn default() -> Self {
         Self {
             token: String::new(),
             chat_model: default_chat_model(),
             image_model: default_image_model(),
+            dream_model: default_dream_model(),
         }
     }
 }

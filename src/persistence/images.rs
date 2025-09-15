@@ -696,11 +696,48 @@ pub async fn upload_gallery(input: GalleryInput) -> Result<(String, Vec<String>)
     Ok((result.gallery_url, result.image_urls))
 }
 
+/// Upload a gallery with individual prompts above each image
+/// Returns only the gallery URL (no individual images)
+pub async fn upload_gallery_with_individual_prompts(
+    title: String,
+    subtitle: String,
+    input: GalleryWithIndividualPromptsInput,
+) -> Result<String> {
+    // Extract fields we need to keep
+    let workflow = input.workflow.clone();
+    let backend = input.backend.clone();
+    let generation_request = input.generation_request.clone();
+
+    // Render individual prompts on images
+    let images_with_prompts = render_individual_prompts_on_images(input)?;
+
+    // Create gallery input and upload
+    let gallery_input = GalleryInput {
+        title,
+        subtitle,
+        images: images_with_prompts,
+        workflow,
+        backend,
+        generation_request,
+    };
+
+    let (gallery_url, _) = upload_gallery(gallery_input).await?;
+    Ok(gallery_url)
+}
+
 /// Input for creating a gallery image
 pub struct GalleryInput {
     pub title: String,
     pub subtitle: String,
     pub images: Vec<RgbImage>,
+    pub workflow: Option<serde_json::Value>,
+    pub backend: Option<String>,
+    pub generation_request: Option<Generate>,
+}
+
+/// Input for creating a gallery with individual prompts above each image
+pub struct GalleryWithIndividualPromptsInput {
+    pub image_prompts: Vec<(String, RgbImage)>, // (prompt, image) pairs
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
     pub generation_request: Option<Generate>,
@@ -721,9 +758,9 @@ fn calculate_text_area_height(
     // Define font scales and line heights (same as in render_text_on_canvas)
     let title_scale = PxScale::from(32.0);
     let subtitle_scale = PxScale::from(20.0);
-    let title_line_height = 40; // pixels between title lines
-    let subtitle_line_height = 25; // pixels between subtitle lines
-    let title_subtitle_spacing = 15; // pixels between title and subtitle sections
+    let title_line_height = 36; // pixels between title lines
+    let subtitle_line_height = 22; // pixels between subtitle lines
+    let title_subtitle_spacing = 6; // pixels between title and subtitle sections
 
     // Calculate number of lines needed
     let title_lines = wrap_text(title, font, title_scale, max_text_width);
@@ -756,6 +793,33 @@ fn calculate_text_area_height(
     // Ensure minimum height even for very short text
     const MIN_TEXT_AREA_HEIGHT: u32 = 60;
     total_height.max(MIN_TEXT_AREA_HEIGHT)
+}
+
+/// Calculate the required height for a single prompt text
+fn calculate_prompt_text_height(prompt: &str, max_text_width: f32, text_padding: u32) -> u32 {
+    let font = &*GALLERY_FONT;
+
+    // Use smaller font for individual prompts
+    let prompt_scale = PxScale::from(16.0);
+    let prompt_line_height = 20; // pixels between prompt lines
+
+    // Calculate number of lines needed
+    let prompt_lines = wrap_text(prompt, font, prompt_scale, max_text_width);
+
+    // Calculate total height needed
+    let prompt_height = if prompt_lines.is_empty() {
+        0
+    } else {
+        prompt_lines.len() as u32 * prompt_line_height
+    };
+
+    // Add top and bottom padding, plus a small buffer zone
+    let buffer_zone = 10; // Less buffer for individual prompts
+    let total_height = text_padding + prompt_height + text_padding + buffer_zone;
+
+    // Ensure minimum height even for very short text
+    const MIN_PROMPT_TEXT_HEIGHT: u32 = 40;
+    total_height.max(MIN_PROMPT_TEXT_HEIGHT)
 }
 
 /// Creates a gallery image from multiple images with a title and subtitle
@@ -821,6 +885,69 @@ pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
     Ok(canvas)
 }
 
+/// Renders individual prompts above each image and returns a vector of modified images
+pub fn render_individual_prompts_on_images(
+    input: GalleryWithIndividualPromptsInput,
+) -> Result<Vec<RgbImage>> {
+    if input.image_prompts.is_empty() {
+        anyhow::bail!("Cannot render prompts on empty image list");
+    }
+
+    // Get dimensions of first image (assuming all images have same dimensions)
+    let img_width = input.image_prompts[0].1.width();
+    let img_height = input.image_prompts[0].1.height();
+
+    // Extract images for mean color calculation
+    let images: Vec<&RgbImage> = input.image_prompts.iter().map(|(_, img)| img).collect();
+    let border_color = calculate_mean_color(&images);
+    let text_color = calculate_text_color(border_color);
+
+    // Define spacing
+    const TEXT_PADDING: u32 = 10;
+
+    // Calculate maximum text width based on image width
+    let max_text_width = img_width as f32 - (TEXT_PADDING * 2) as f32;
+
+    // Calculate the maximum prompt text height needed across all prompts
+    let max_prompt_height = input
+        .image_prompts
+        .iter()
+        .map(|(prompt, _)| calculate_prompt_text_height(prompt, max_text_width, TEXT_PADDING))
+        .max()
+        .unwrap_or(40); // fallback to minimum
+
+    // Create a new image for each prompt+image pair
+    let mut result_images = Vec::new();
+
+    for (prompt, image) in input.image_prompts.iter() {
+        // Create a new canvas for this image with prompt
+        let single_image_height = img_height + max_prompt_height;
+        let mut canvas = RgbImage::from_pixel(img_width, single_image_height, border_color);
+
+        // Render prompt text at the top
+        render_individual_prompt_text(
+            &mut canvas,
+            prompt,
+            text_color,
+            TEXT_PADDING,
+            TEXT_PADDING,
+            max_text_width,
+        )?;
+
+        // Copy the original image below the prompt text
+        for y in 0..img_height {
+            for x in 0..img_width {
+                let pixel = image.get_pixel(x, y);
+                canvas.put_pixel(x, y + max_prompt_height, *pixel);
+            }
+        }
+
+        result_images.push(canvas);
+    }
+
+    Ok(result_images)
+}
+
 /// Calculate optimal grid layout for given aspect ratio
 fn calculate_optimal_grid(image_count: usize, img_width: u32, img_height: u32) -> (u32, u32) {
     if image_count == 0 {
@@ -854,7 +981,10 @@ fn calculate_optimal_grid(image_count: usize, img_width: u32, img_height: u32) -
 }
 
 /// Calculate mean color across all pixels in all images
-fn calculate_mean_color(images: &[RgbImage]) -> Rgb<u8> {
+fn calculate_mean_color<T>(images: &[T]) -> Rgb<u8>
+where
+    T: std::borrow::Borrow<RgbImage>,
+{
     if images.is_empty() {
         return Rgb([128, 128, 128]); // Default gray
     }
@@ -865,7 +995,7 @@ fn calculate_mean_color(images: &[RgbImage]) -> Rgb<u8> {
     let mut pixel_count = 0u64;
 
     for image in images {
-        for pixel in image.pixels() {
+        for pixel in image.borrow().pixels() {
             total_r += pixel[0] as u64;
             total_g += pixel[1] as u64;
             total_b += pixel[2] as u64;
@@ -1011,6 +1141,43 @@ fn render_text_on_canvas(
     Ok(())
 }
 
+/// Render individual prompt text at specified position
+fn render_individual_prompt_text(
+    canvas: &mut RgbImage,
+    prompt: &str,
+    text_color: Rgb<u8>,
+    x: u32,
+    y: u32,
+    max_text_width: f32,
+) -> Result<()> {
+    // Use the lazy-loaded font
+    let font = &*GALLERY_FONT;
+
+    // Define font scale and line height for individual prompts
+    let prompt_scale = PxScale::from(16.0);
+    let prompt_line_height = 20; // pixels between prompt lines
+
+    // Wrap text to fit within the specified width
+    let prompt_lines = wrap_text(prompt, font, prompt_scale, max_text_width);
+
+    // Render each line
+    let mut current_y = y as i32;
+    for line in prompt_lines {
+        draw_text_mut(
+            canvas,
+            text_color,
+            x as i32,
+            current_y,
+            prompt_scale,
+            font,
+            &line,
+        );
+        current_y += prompt_line_height;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1114,7 +1281,7 @@ mod tests {
 
     #[test]
     fn test_calculate_mean_color_empty() {
-        let images = vec![];
+        let images: Vec<RgbImage> = vec![];
         let mean_color = calculate_mean_color(&images);
         assert_eq!(mean_color, Rgb([128, 128, 128])); // Default gray
     }
