@@ -1,7 +1,7 @@
 // This is an API wrapper; not all code is expected to be used.
 #![allow(dead_code)]
 
-use super::api::Graph;
+use crate::api::Graph;
 use bytes::Bytes;
 use futures::StreamExt;
 use image::RgbImage;
@@ -568,7 +568,7 @@ impl ComfyUIClient {
         width: u32,
         height: u32,
     ) -> Result<RgbImage, ComfyUIError> {
-        use super::api::{Graph, KSamplerParams};
+        use crate::api::{Graph, KSamplerParams};
 
         let mut graph = Graph::new();
 

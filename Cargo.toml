@@ -4,15 +4,14 @@ version = "0.1.0"
 edition = "2024"
 default-run = "ganbot"
 
+[workspace]
+members = ["crates/comfyui-api"]
+
 [profile.dev]
 debug = 0
 strip = "debuginfo"
 [profile.dev.build-override]
 opt-level = 3
-
-[[bin]]
-name = "comfyui_example"
-path = "src/bin/comfyui_example.rs"
 
 [dependencies]
 anyhow = { version = "1.0.98" }
@@ -54,3 +53,4 @@ kamadak-exif = "0.6.1"
 levenshtein = "1.0.5"
 regex = "1.11.2"
 thiserror = "1"
+comfyui-api = { path = "crates/comfyui-api" }

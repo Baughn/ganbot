@@ -1,12 +1,4 @@
-// Include the ComfyUI modules we need
-#[path = "../network/comfyui/api.rs"]
-mod api;
-#[path = "../network/comfyui/net.rs"]
-mod net;
-
-use api::{Graph, KSamplerParams};
-use net::ComfyUIClient;
-use net::create_client;
+use comfyui_api::{create_client, ComfyUIClient, Graph, KSamplerParams};
 use std::time::Duration;
 
 #[tokio::main]
