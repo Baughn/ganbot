@@ -19,6 +19,7 @@ pub struct ModelsConfig {
 pub struct Model {
     pub name: String,
     pub description: Option<String>,
+    pub tags: Vec<String>,
     pub backend: Backend,
     pub prompt_defaults: PromptDefaults,
 }
@@ -82,6 +83,7 @@ struct LoadingModel {
     pub name: Option<String>,
     pub inherit: Option<String>,
     pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
     pub backend: Option<LoadingBackend>,
     pub prompt_defaults: Option<LoadingPromptDefaults>,
 }
@@ -134,6 +136,9 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
     }
     if child.description.is_none() {
         child.description = parent.description.clone();
+    }
+    if child.tags.is_none() {
+        child.tags = parent.tags.clone();
     }
 
     // Merge prompt_defaults
@@ -466,6 +471,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
         let model = Model {
             name: model_name.clone(),
             description: loading_model.description.clone(),
+            tags: loading_model.tags.clone().unwrap_or_default(),
             backend,
             prompt_defaults,
         };
@@ -528,6 +534,7 @@ NanoBanana = {}
         let model = &config.models["simple"];
         assert_eq!(model.name, "simple");
         assert_eq!(model.description, Some("A simple test model".to_string()));
+        assert!(model.tags.is_empty());
         assert!(matches!(model.backend, Backend::NanoBanana));
     }
 
@@ -562,6 +569,7 @@ ComfyUI = { checkpoint = "child.safetensors" }
         let child_model = &config.models["child"];
         assert_eq!(child_model.name, "child_model");
         assert_eq!(child_model.description, Some("Base template".to_string())); // Inherited
+        assert!(child_model.tags.is_empty());
 
         if let Backend::ComfyUI {
             checkpoint,

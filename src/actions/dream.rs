@@ -15,6 +15,7 @@ use crate::{
         images::{GalleryWithIndividualPromptsInput, upload_gallery_with_individual_prompts},
         user::{AddGeneratedImage, UserActor},
     },
+    supervisor::Supervisor,
 };
 
 /// Dream command actor that generates image prompts with hard-boiled detective personality
@@ -38,11 +39,35 @@ impl Message<String> for DreamActor {
     ) -> Self::Reply {
         debug!("DreamActor received message: {}", msg);
 
-        // Parse the user's prompt like !prompt does, but bail if model is set
-        let prompt = Generate::from_str(&msg)?;
-        if prompt.model.is_some() {
-            bail!("Model selection is not supported for !dream command (for now)");
+        // Parse the user's prompt like !prompt does
+        let mut prompt = Generate::from_str(&msg)?;
+
+        // Resolve the requested model (defaulting to the dream alias) and ensure it's supported
+        let models_config = Supervisor::models_config().await;
+        let mut requested_model_token = prompt
+            .model
+            .clone()
+            .unwrap_or_else(|| "dream".to_string());
+        let (selected_model, correction_message) = PromptActor::resolve_model(
+            &prompt.prompt,
+            &models_config,
+            Some(requested_model_token.as_str()),
+        )?;
+
+        let has_english_tag = selected_model.tags.iter().any(|tag| tag == "english");
+        if !has_english_tag {
+            bail!(
+                "Model '{}' is not supported for !dream yet; please pick an English-friendly model.",
+                selected_model.name
+            );
         }
+
+        if correction_message.is_some() {
+            requested_model_token = selected_model.name.clone();
+        }
+
+        let display_model_name = requested_model_token.clone();
+        prompt.model = Some(requested_model_token.clone());
 
         // Get the original user request for later commentary
         let original_request = prompt.prompt.clone();
@@ -85,15 +110,18 @@ impl Message<String> for DreamActor {
         info!("Generated {} unique image prompts", generated_prompts.len());
 
         // Step 2: Generate images for each prompt in parallel
+        let model_for_generation = requested_model_token.clone();
         let image_generation_futures = generated_prompts.iter().map(|image_prompt| {
             let user_actor = self.user_actor.clone();
             let actor_ref = _ctx.actor_ref().clone();
             let image_prompt = image_prompt.clone();
+            let model_for_generation = model_for_generation.clone();
             async move {
                 let prompt_actor =
                     PromptActor::spawn_link(&actor_ref, PromptActor::new(user_actor).await).await;
 
-                let image_prompt_with_model = format!("{} -m dream -c 1", image_prompt);
+                let image_prompt_with_model =
+                    format!("{} -m {} -c 1", image_prompt, model_for_generation);
                 prompt_actor
                     .ask(image_prompt_with_model)
                     .await
@@ -131,7 +159,7 @@ impl Message<String> for DreamActor {
             };
 
             let title = original_request.clone();
-            let subtitle = "Model: dream".to_string();
+            let subtitle = format!("Model: {}", display_model_name);
 
             let url = upload_gallery_with_individual_prompts(title, subtitle, gallery_input)
                 .await
@@ -143,7 +171,7 @@ impl Message<String> for DreamActor {
                 .tell(AddGeneratedImage {
                     url: url.clone(),
                     prompt: original_request.clone(),
-                    model: Some("dream".to_string()),
+                    model: Some(display_model_name.clone()),
                     backend: "StableDiffusion".to_string(),
                 })
                 .send()
@@ -183,7 +211,7 @@ impl Message<String> for DreamActor {
                 text: commentary.text,
                 image_url: Some(gallery_url),
                 images: None, // We've already uploaded them as a gallery
-                correction_message: None,
+                correction_message: correction_message.clone(),
             })
         } else {
             // No images were generated
@@ -208,7 +236,7 @@ impl Message<String> for DreamActor {
                 text: commentary.text,
                 image_url: None,
                 images: None,
-                correction_message: None,
+                correction_message: correction_message.clone(),
             })
         }
     }

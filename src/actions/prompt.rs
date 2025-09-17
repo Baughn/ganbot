@@ -134,7 +134,7 @@ impl PromptActor {
         // Get models config and look up the model
         let models_config = Supervisor::models_config().await;
         let (model, correction_message) =
-            self.resolve_model(&prompt.prompt, &models_config, prompt.model.as_deref())?;
+            Self::resolve_model(&prompt.prompt, &models_config, prompt.model.as_deref())?;
         info!("Using model: {:?}", model);
 
         // Extend the prompt with information from the model defaults.
@@ -445,7 +445,7 @@ impl PromptActor {
             .context("while generating response with NanoBanana")?;
 
         // Upload the image if one was generated
-        let image_url = if let Some(image) = response.image {
+        let image_url = if let Some(ref image) = response.image {
             // Create a workflow object representing the NanoBanana request
             let workflow = serde_json::json!({
                 "model": "gemini-2.5-flash-image-preview",
@@ -456,7 +456,7 @@ impl PromptActor {
             });
 
             let url = upload_image_with_generation(
-                image,
+                image.clone(),
                 Some(workflow),
                 Some("NanoBanana".to_string()),
                 Some(generate_request.clone()),
@@ -484,10 +484,16 @@ impl PromptActor {
                 .await;
         }
 
+        let images = if let Some(image) = response.image {
+            Some(vec![image])
+        } else {
+            None
+        };
+
         Ok(PromptResult {
             text: response.text,
             image_url,
-            images: None, // NanoBanana doesn't return raw images
+            images,
             correction_message: None,
         })
     }
@@ -547,8 +553,7 @@ impl PromptActor {
     }
 
     /// Resolve model name to Model, handling aliases and defaults with fuzzy matching
-    fn resolve_model<'a>(
-        &self,
+    pub(crate) fn resolve_model<'a>(
         prompt: &str,
         config: &'a ModelsConfig,
         model_name: Option<&str>,

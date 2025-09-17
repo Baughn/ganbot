@@ -13,6 +13,7 @@ animavivid = "animavividxl"
 [templates.sdxl]
 name = "sdxl"
 description = "Default SDXL settings"
+tags = ["booru"]
 
 [templates.sdxl.backend.ComfyUI]
 cfg = 4.5
@@ -50,6 +51,7 @@ backend.ComfyUI.checkpoint = "xl-noob/oneObsession_v16Noobai.safetensors"
 [models.qwen_image_fp8]
 name = "qwen_image_fp8"
 description = "Qwen-Image. A general-purpose model; use English, preferably."
+tags = ["english", "booru"]
 [models.qwen_image_fp8.backend.ComfyUI]
 unet = "qwen/qwen_image_fp8_e4m3fn.safetensors"
 clip = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
@@ -242,3 +244,4 @@ ComfyUI.checkpoint = "xl/animavividXL_v10.safetensors"
 name = "nanobanana"
 description = "NanoBanana, aka. Gemini-2.5-flash-image-preview"
 backend = "NanoBanana"
+tags = ["english"]
