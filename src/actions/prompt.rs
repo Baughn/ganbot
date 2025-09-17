@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Error, Result, bail};
+use std::sync::Arc;
 use kameo::{Actor, prelude::Message};
 use rand::RngCore as _;
 use tracing::{debug, info, trace};
@@ -6,7 +7,7 @@ use tracing::{debug, info, trace};
 use crate::{
     config::models::{self, Model, ModelsConfig},
     fuzzy::{FuzzyResult, find_fuzzy_match},
-    messages::{chat::NanoBanana, imagen::Generate},
+    messages::{chat::{NanoBanana, NanoBananaResponse}, imagen::Generate},
     network::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
         openrouter::OpenRouter,
@@ -30,7 +31,7 @@ pub struct PromptActor {
 pub struct PromptResult {
     pub text: String,
     pub image_url: Option<String>,
-    pub images: Option<Vec<image::RgbImage>>,
+    pub images: Option<Vec<Arc<image::RgbImage>>>,
     pub correction_message: Option<String>,
 }
 
@@ -287,7 +288,7 @@ impl PromptActor {
         );
 
         // Handle img2img mode vs text2img mode
-        let latent = if let Some(ref input_image) = params.prompt.references.img2img {
+        let latent = if let Some(input_image) = params.prompt.references.img2img.as_ref() {
             // img2img mode: encode the input image to latent space
             info!(
                 "Using img2img mode with input image: {}x{}",
@@ -381,6 +382,8 @@ impl PromptActor {
         // Make a gallery from the images.
         let title = params.prompt.raw_prompt.clone();
         let subtitle = format!("Model: {}, Seed: {}", params.model_name, seed);
+        let images: Vec<Arc<image::RgbImage>> =
+            images.into_iter().map(Arc::new).collect();
         let gallery = upload_gallery(GalleryInput {
             title,
             subtitle,
@@ -444,8 +447,11 @@ impl PromptActor {
             .await
             .context("while generating response with NanoBanana")?;
 
+        let NanoBananaResponse { text, image } = response;
+        let image = image.map(Arc::new);
+
         // Upload the image if one was generated
-        let image_url = if let Some(ref image) = response.image {
+        let image_url = if let Some(image) = image.as_ref() {
             // Create a workflow object representing the NanoBanana request
             let workflow = serde_json::json!({
                 "model": "gemini-2.5-flash-image-preview",
@@ -456,7 +462,7 @@ impl PromptActor {
             });
 
             let url = upload_image_with_generation(
-                image.clone(),
+                Arc::clone(image),
                 Some(workflow),
                 Some("NanoBanana".to_string()),
                 Some(generate_request.clone()),
@@ -484,14 +490,10 @@ impl PromptActor {
                 .await;
         }
 
-        let images = if let Some(image) = response.image {
-            Some(vec![image])
-        } else {
-            None
-        };
+        let images = image.map(|image| vec![image]);
 
         Ok(PromptResult {
-            text: response.text,
+            text,
             image_url,
             images,
             correction_message: None,

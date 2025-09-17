@@ -1,7 +1,7 @@
 /// Image generation requests & responses.
 use image::RgbImage;
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 /// Represents a user-initiated request to generate an image.
 /// Any unset value will be based on defaults for the model.
@@ -38,11 +38,11 @@ pub struct Generate {
 pub struct References {
     /// A starting-point image for img2img generation.
     #[serde(skip)]
-    pub img2img: Option<RgbImage>,
+    pub img2img: Option<Arc<RgbImage>>,
     pub img2img_strength: Option<f32>,
     /// A reference image for Kontext / Qwen-Image-Edit.
     #[serde(skip)]
-    pub context: Vec<RgbImage>,
+    pub context: Vec<Arc<RgbImage>>,
 }
 
 impl fmt::Debug for Generate {

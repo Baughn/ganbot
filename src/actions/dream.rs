@@ -2,6 +2,7 @@ use anyhow::{Context as _, Error, Result, bail};
 use futures::future;
 use kameo::{Actor, Reply, prelude::Message};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::{
@@ -135,7 +136,7 @@ impl Message<String> for DreamActor {
             .context("while generating images")?;
 
         // Step 3: Create gallery with individual prompts
-        let mut image_prompts: Vec<(String, image::RgbImage)> = Vec::new();
+        let mut image_prompts: Vec<(String, Arc<image::RgbImage>)> = Vec::new();
         let mut has_images = false;
 
         for (prompt_text, result) in &image_results {

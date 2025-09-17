@@ -390,9 +390,9 @@ impl Message<NanoBanana> for ConversationActor {
         let client = reqwest::Client::new();
         let model = "google/gemini-2.5-flash-image-preview";
         // Build the message content based on whether we have an input image
-        let message_content = if let Some(ref input_image) = msg.input_image {
+        let message_content = if let Some(input_image) = msg.input_image.as_ref() {
             // We have an input image - include it in the request
-            let image_data_url = rgb_image_to_base64_data_url(input_image)
+            let image_data_url = rgb_image_to_base64_data_url(input_image.as_ref())
                 .context("Failed to convert input image to base64")?;
 
             json!([

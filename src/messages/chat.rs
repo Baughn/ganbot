@@ -54,7 +54,7 @@ pub struct NanoBanana {
     /// The image prompt.
     pub prompt: String,
     /// Optional input image for editing mode.
-    pub input_image: Option<image::RgbImage>,
+    pub input_image: Option<std::sync::Arc<image::RgbImage>>,
 }
 
 #[derive(Debug, Clone)]

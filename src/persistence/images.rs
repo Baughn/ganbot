@@ -1,4 +1,4 @@
-use std::{io::Cursor, os::unix::fs::PermissionsExt as _};
+use std::{io::Cursor, os::unix::fs::PermissionsExt as _, sync::Arc};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::{Context as _, Result};
@@ -52,7 +52,7 @@ impl ImageUploader {
 
 /// Message to upload an image
 pub struct UploadImage {
-    pub image: RgbImage,
+    pub image: Arc<RgbImage>,
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
     pub generation_request: Option<Generate>,
@@ -60,7 +60,7 @@ pub struct UploadImage {
 
 /// Message to upload a gallery of images with title and subtitle
 pub struct UploadGallery {
-    pub images: Vec<RgbImage>,
+    pub images: Vec<Arc<RgbImage>>,
     pub title: String,
     pub subtitle: String,
     pub workflow: Option<serde_json::Value>,
@@ -172,8 +172,11 @@ impl ImageUploader {
         }
 
         // Convert image to JPEG with high quality
-        let jpeg_bytes =
-            self.encode_image_as_jpeg(&msg.image, msg.workflow.as_ref(), msg.backend.as_deref())?;
+        let jpeg_bytes = self.encode_image_as_jpeg(
+            msg.image.as_ref(),
+            msg.workflow.as_ref(),
+            msg.backend.as_deref(),
+        )?;
 
         // Upload the JPEG data
         self.upload_jpeg(jpeg_bytes, &filename).await
@@ -236,7 +239,7 @@ impl ImageUploader {
             .map(|(index, image)| async move {
                 let filename = format!("{}.{}.jpg", base_uuid, index + 1);
                 let jpeg_bytes = self.encode_image_as_jpeg(
-                    image,
+                    image.as_ref(),
                     workflow_ref.as_ref(),
                     backend_ref.as_deref(),
                 )?;
@@ -643,13 +646,13 @@ pub async fn delete_image(uuid: &str, username: &str) -> Result<DeleteResult> {
 }
 
 /// Upload an image to the configured host
-pub async fn upload_image(image: RgbImage) -> Result<String> {
+pub async fn upload_image(image: impl Into<Arc<RgbImage>>) -> Result<String> {
     upload_image_with_workflow(image, None, None).await
 }
 
 /// Upload an image with optional workflow metadata to the configured host
 pub async fn upload_image_with_workflow(
-    image: RgbImage,
+    image: impl Into<Arc<RgbImage>>,
     workflow: Option<serde_json::Value>,
     backend: Option<String>,
 ) -> Result<String> {
@@ -658,11 +661,12 @@ pub async fn upload_image_with_workflow(
 
 /// Upload an image with complete generation request data to the configured host
 pub async fn upload_image_with_generation(
-    image: RgbImage,
+    image: impl Into<Arc<RgbImage>>,
     workflow: Option<serde_json::Value>,
     backend: Option<String>,
     generation_request: Option<Generate>,
 ) -> Result<String> {
+    let image = image.into();
     let config = Supervisor::image_host().await;
     let uploader = ImageUploader::spawn(ImageUploader::new(config));
     let result = uploader
@@ -729,7 +733,7 @@ pub async fn upload_gallery_with_individual_prompts(
 pub struct GalleryInput {
     pub title: String,
     pub subtitle: String,
-    pub images: Vec<RgbImage>,
+    pub images: Vec<Arc<RgbImage>>,
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
     pub generation_request: Option<Generate>,
@@ -737,7 +741,7 @@ pub struct GalleryInput {
 
 /// Input for creating a gallery with individual prompts above each image
 pub struct GalleryWithIndividualPromptsInput {
-    pub image_prompts: Vec<(String, RgbImage)>, // (prompt, image) pairs
+    pub image_prompts: Vec<(String, Arc<RgbImage>)>, // (prompt, image) pairs
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
     pub generation_request: Option<Generate>,
@@ -888,7 +892,7 @@ pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
 /// Renders individual prompts above each image and returns a vector of modified images
 pub fn render_individual_prompts_on_images(
     input: GalleryWithIndividualPromptsInput,
-) -> Result<Vec<RgbImage>> {
+) -> Result<Vec<Arc<RgbImage>>> {
     if input.image_prompts.is_empty() {
         anyhow::bail!("Cannot render prompts on empty image list");
     }
@@ -898,7 +902,11 @@ pub fn render_individual_prompts_on_images(
     let img_height = input.image_prompts[0].1.height();
 
     // Extract images for mean color calculation
-    let images: Vec<&RgbImage> = input.image_prompts.iter().map(|(_, img)| img).collect();
+    let images: Vec<&RgbImage> = input
+        .image_prompts
+        .iter()
+        .map(|(_, img)| img.as_ref())
+        .collect();
     let border_color = calculate_mean_color(&images);
     let text_color = calculate_text_color(border_color);
 
@@ -917,7 +925,7 @@ pub fn render_individual_prompts_on_images(
         .unwrap_or(40); // fallback to minimum
 
     // Create a new image for each prompt+image pair
-    let mut result_images = Vec::new();
+    let mut result_images = Vec::with_capacity(input.image_prompts.len());
 
     for (prompt, image) in input.image_prompts.iter() {
         // Create a new canvas for this image with prompt
@@ -942,7 +950,7 @@ pub fn render_individual_prompts_on_images(
             }
         }
 
-        result_images.push(canvas);
+        result_images.push(Arc::new(canvas));
     }
 
     Ok(result_images)
@@ -1352,7 +1360,7 @@ mod tests {
         let input = GalleryInput {
             title: "Single Image".to_string(),
             subtitle: "Test".to_string(),
-            images: vec![image],
+            images: vec![Arc::new(image)],
             workflow: None,
             backend: None,
             generation_request: None,
@@ -1377,7 +1385,7 @@ mod tests {
         let input = GalleryInput {
             title: "Two Images".to_string(),
             subtitle: "Test".to_string(),
-            images: vec![image1, image2],
+            images: vec![Arc::new(image1), Arc::new(image2)],
             workflow: None,
             backend: None,
             generation_request: None,
@@ -1636,7 +1644,7 @@ mod tests {
         let input = GalleryInput {
             title: long_title.to_string(),
             subtitle: long_subtitle.to_string(),
-            images: vec![image],
+            images: vec![Arc::new(image)],
             workflow: None,
             backend: None,
             generation_request: None,

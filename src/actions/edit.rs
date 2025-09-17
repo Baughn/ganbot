@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Error, Result, bail};
 use kameo::{Actor, prelude::Message};
+use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::{
@@ -72,7 +73,7 @@ impl Message<String> for EditActor {
 
         // Set the input image in the references
         generate_request.references = References {
-            img2img: Some(rgb_image),
+            img2img: Some(Arc::new(rgb_image)),
             img2img_strength: generate_request.references.img2img_strength,
             context: Vec::new(),
         };
