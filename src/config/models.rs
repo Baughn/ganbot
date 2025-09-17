@@ -131,32 +131,14 @@ pub fn load_models_config() -> Result<ModelsConfig> {
 /// Apply inheritance from parent to child LoadingModel
 fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<()> {
     // Apply parent values to child where child has None
-    if child.name.is_none() {
-        child.name = parent.name.clone();
-    }
-    if child.description.is_none() {
-        child.description = parent.description.clone();
-    }
-    if child.tags.is_none() {
-        child.tags = parent.tags.clone();
-    }
+    inherit_if_none(&mut child.name, &parent.name);
+    inherit_if_none(&mut child.description, &parent.description);
+    inherit_if_none(&mut child.tags, &parent.tags);
 
     // Merge prompt_defaults
     match (&parent.prompt_defaults, &mut child.prompt_defaults) {
         (Some(parent_defaults), Some(child_defaults)) => {
-            // Child has prompt_defaults, merge with parent
-            if child_defaults.positive_prepend.is_none() {
-                child_defaults.positive_prepend = parent_defaults.positive_prepend.clone();
-            }
-            if child_defaults.negative_prepend.is_none() {
-                child_defaults.negative_prepend = parent_defaults.negative_prepend.clone();
-            }
-            if child_defaults.positive_append.is_none() {
-                child_defaults.positive_append = parent_defaults.positive_append.clone();
-            }
-            if child_defaults.negative_append.is_none() {
-                child_defaults.negative_append = parent_defaults.negative_append.clone();
-            }
+            child_defaults.inherit_from(parent_defaults);
         }
         (Some(parent_defaults), None) => {
             // Child has no prompt_defaults, inherit from parent
@@ -170,105 +152,7 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
     // For backend, merge fields
     match (&parent.backend, &mut child.backend) {
         (Some(parent_backend), Some(child_backend)) => {
-            // Both have backends, merge ComfyUI fields
-            match (parent_backend, child_backend) {
-                (
-                    LoadingBackend::ComfyUI {
-                        checkpoint: p_checkpoint,
-                        unet: p_unet,
-                        vae: p_vae,
-                        clip: p_clip,
-                        cfg: p_cfg,
-                        sampler: p_sampler,
-                        scheduler: p_scheduler,
-                        steps: p_steps,
-                        resolution: p_resolution,
-                        resolutions: p_resolutions,
-                        use_torch_compile: p_use_torch_compile,
-                        two_stage: p_two_stage,
-                        upscale_factor: p_upscale_factor,
-                        stage2_denoise: p_stage2_denoise,
-                        stage2_sampler: p_stage2_sampler,
-                        stage2_scheduler: p_stage2_scheduler,
-                    },
-                    LoadingBackend::ComfyUI {
-                        checkpoint: c_checkpoint,
-                        unet: c_unet,
-                        vae: c_vae,
-                        clip: c_clip,
-                        cfg: c_cfg,
-                        sampler: c_sampler,
-                        scheduler: c_scheduler,
-                        steps: c_steps,
-                        resolution: c_resolution,
-                        resolutions: c_resolutions,
-                        use_torch_compile: c_use_torch_compile,
-                        two_stage: c_two_stage,
-                        upscale_factor: c_upscale_factor,
-                        stage2_denoise: c_stage2_denoise,
-                        stage2_sampler: c_stage2_sampler,
-                        stage2_scheduler: c_stage2_scheduler,
-                    },
-                ) => {
-                    if c_checkpoint.is_none() {
-                        *c_checkpoint = p_checkpoint.clone();
-                    }
-                    if c_unet.is_none() {
-                        *c_unet = p_unet.clone();
-                    }
-                    if c_clip.is_none() {
-                        *c_clip = p_clip.clone();
-                    }
-                    if c_vae.is_none() {
-                        *c_vae = p_vae.clone();
-                    }
-                    if c_cfg.is_none() {
-                        *c_cfg = *p_cfg;
-                    }
-                    if c_sampler.is_none() {
-                        *c_sampler = p_sampler.clone();
-                    }
-                    if c_scheduler.is_none() {
-                        *c_scheduler = p_scheduler.clone();
-                    }
-                    if c_steps.is_none() {
-                        *c_steps = *p_steps;
-                    }
-                    if c_resolution.is_none() {
-                        *c_resolution = *p_resolution;
-                    }
-                    if c_resolutions.is_none() {
-                        *c_resolutions = p_resolutions.clone();
-                    }
-                    if c_use_torch_compile.is_none() {
-                        *c_use_torch_compile = *p_use_torch_compile;
-                    }
-                    if c_two_stage.is_none() {
-                        *c_two_stage = *p_two_stage;
-                    }
-                    if c_upscale_factor.is_none() {
-                        *c_upscale_factor = *p_upscale_factor;
-                    }
-                    if c_stage2_denoise.is_none() {
-                        *c_stage2_denoise = *p_stage2_denoise;
-                    }
-                    if c_stage2_sampler.is_none() {
-                        *c_stage2_sampler = p_stage2_sampler.clone();
-                    }
-                    if c_stage2_scheduler.is_none() {
-                        *c_stage2_scheduler = p_stage2_scheduler.clone();
-                    }
-                }
-                (LoadingBackend::NanoBanana, LoadingBackend::ComfyUI { .. }) => {
-                    bail!("Can't inherit from NanoBanana to ComfyUI")
-                }
-                (LoadingBackend::ComfyUI { .. }, LoadingBackend::NanoBanana) => {
-                    bail!("Can't inherit from ComfyUI to NanoBanana")
-                }
-                (LoadingBackend::NanoBanana, LoadingBackend::NanoBanana) => {
-                    // Both are NanoBanana, nothing to inherit
-                }
-            }
+            child_backend.inherit_from(parent_backend)?;
         }
         (Some(parent_backend), None) => {
             // Child has no backend, inherit parent's entirely
@@ -280,6 +164,94 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
     }
 
     Ok(())
+}
+
+fn inherit_if_none<T: Clone>(child: &mut Option<T>, parent: &Option<T>) {
+    if child.is_none() {
+        *child = parent.clone();
+    }
+}
+
+impl LoadingPromptDefaults {
+    fn inherit_from(&mut self, parent: &Self) {
+        inherit_if_none(&mut self.positive_prepend, &parent.positive_prepend);
+        inherit_if_none(&mut self.negative_prepend, &parent.negative_prepend);
+        inherit_if_none(&mut self.positive_append, &parent.positive_append);
+        inherit_if_none(&mut self.negative_append, &parent.negative_append);
+    }
+}
+
+impl LoadingBackend {
+    fn inherit_from(&mut self, parent: &Self) -> Result<()> {
+        match (parent, self) {
+            (
+                LoadingBackend::ComfyUI {
+                    checkpoint: p_checkpoint,
+                    unet: p_unet,
+                    vae: p_vae,
+                    clip: p_clip,
+                    cfg: p_cfg,
+                    sampler: p_sampler,
+                    scheduler: p_scheduler,
+                    steps: p_steps,
+                    resolution: p_resolution,
+                    resolutions: p_resolutions,
+                    use_torch_compile: p_use_torch_compile,
+                    two_stage: p_two_stage,
+                    upscale_factor: p_upscale_factor,
+                    stage2_denoise: p_stage2_denoise,
+                    stage2_sampler: p_stage2_sampler,
+                    stage2_scheduler: p_stage2_scheduler,
+                },
+                LoadingBackend::ComfyUI {
+                    checkpoint: c_checkpoint,
+                    unet: c_unet,
+                    vae: c_vae,
+                    clip: c_clip,
+                    cfg: c_cfg,
+                    sampler: c_sampler,
+                    scheduler: c_scheduler,
+                    steps: c_steps,
+                    resolution: c_resolution,
+                    resolutions: c_resolutions,
+                    use_torch_compile: c_use_torch_compile,
+                    two_stage: c_two_stage,
+                    upscale_factor: c_upscale_factor,
+                    stage2_denoise: c_stage2_denoise,
+                    stage2_sampler: c_stage2_sampler,
+                    stage2_scheduler: c_stage2_scheduler,
+                },
+            ) => {
+                inherit_if_none(c_checkpoint, p_checkpoint);
+                inherit_if_none(c_unet, p_unet);
+                inherit_if_none(c_clip, p_clip);
+                inherit_if_none(c_vae, p_vae);
+                inherit_if_none(c_cfg, p_cfg);
+                inherit_if_none(c_sampler, p_sampler);
+                inherit_if_none(c_scheduler, p_scheduler);
+                inherit_if_none(c_steps, p_steps);
+                inherit_if_none(c_resolution, p_resolution);
+                inherit_if_none(c_resolutions, p_resolutions);
+                inherit_if_none(c_use_torch_compile, p_use_torch_compile);
+                inherit_if_none(c_two_stage, p_two_stage);
+                inherit_if_none(c_upscale_factor, p_upscale_factor);
+                inherit_if_none(c_stage2_denoise, p_stage2_denoise);
+                inherit_if_none(c_stage2_sampler, p_stage2_sampler);
+                inherit_if_none(c_stage2_scheduler, p_stage2_scheduler);
+                Ok(())
+            }
+            (LoadingBackend::NanoBanana, LoadingBackend::ComfyUI { .. }) => {
+                bail!("Can't inherit from NanoBanana to ComfyUI")
+            }
+            (LoadingBackend::ComfyUI { .. }, LoadingBackend::NanoBanana) => {
+                bail!("Can't inherit from ComfyUI to NanoBanana")
+            }
+            (LoadingBackend::NanoBanana, LoadingBackend::NanoBanana) => {
+                // Both are NanoBanana, nothing to inherit
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Load model configuration from a specific path (used for testing)
