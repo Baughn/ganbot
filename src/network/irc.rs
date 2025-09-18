@@ -56,7 +56,6 @@ struct BufferedMessage {
 }
 
 // Internal commands.
-struct Connect;
 struct ProcessBufferedMessages;
 #[derive(Clone)]
 struct ProcessCommand {
@@ -133,8 +132,7 @@ impl Actor for IrcActor {
         actor_ref: ActorRef<Self>,
     ) -> std::result::Result<Self, Self::Error> {
         tracing::info!("Starting IRC actor for server: {}", args.server);
-        actor_ref.tell(Connect).send().await?;
-        Ok(IrcActor {
+        let mut actor = IrcActor {
             name: args.server.clone(),
             config: args,
             client: OnceCell::new(),
@@ -144,7 +142,9 @@ impl Actor for IrcActor {
             token_bucket_fast: TokenBucket::new(1.0, 10.0),
             identification_cache: HashMap::new(),
             pending_whois: HashMap::new(),
-        })
+        };
+        actor.connect(&actor_ref).await?;
+        Ok(actor)
     }
 
     async fn on_stop(
@@ -158,6 +158,51 @@ impl Actor for IrcActor {
 }
 
 impl IrcActor {
+    #[instrument(skip_all, fields(server = %self.name))]
+    async fn connect(&mut self, actor_ref: &ActorRef<IrcActor>) -> Result<()> {
+        info!("Connecting to IRC server: {}", self.config.server);
+        if self.client.get().is_some() {
+            bail!("Already connected to IRC server: {}", self.config.server);
+        }
+
+        let irc_config = Config {
+            server: Some(self.config.server.clone()),
+            port: Some(self.config.port),
+            use_tls: Some(self.config.tls),
+            nickname: Some(self.config.nick.clone()),
+            channels: self.config.channels.clone(),
+            ..Default::default()
+        };
+
+        let mut client = tokio::time::timeout(Duration::from_secs(20), async {
+            Client::from_config(irc_config)
+                .await
+                .context("while creating IRC client")
+        })
+        .await??;
+
+        client
+            .identify()
+            .context("while identifying to IRC server")?;
+
+        let stream = client.stream()?;
+        actor_ref.attach_stream(stream, "start", "end");
+
+        if let Some(password) = &self.config.nickserv_password {
+            tracing::debug!("Authenticating with NickServ");
+            client
+                .send_privmsg("nickserv", format!("IDENTIFY {}", password))
+                .context("while sending NickServ IDENTIFY command")?;
+        }
+
+        self.client
+            .set(client)
+            .context("while setting IRC client")?;
+        tracing::info!("Connected to IRC server: {}", self.config.server);
+
+        Ok(())
+    }
+
     /// Formats a message for IRC PRIVMSG, handling newlines and length limits
     /// Returns a vector of messages that can be sent individually
     fn format_privmsg(target: &str, message: &str) -> Vec<String> {
@@ -796,64 +841,6 @@ impl Message<ProcessCommand> for ReplyActor {
                 .send()
                 .await;
         }
-    }
-}
-
-impl Message<Connect> for IrcActor {
-    type Reply = Result<()>;
-
-    #[instrument(skip_all, fields(server = %self.name))]
-    async fn handle(
-        &mut self,
-        _msg: Connect,
-        ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        info!("Connecting to IRC server: {}", self.config.server);
-        if self.client.get().is_some() {
-            bail!("Already connected to IRC server: {}", self.config.server);
-        }
-
-        // Create IRC client configuration
-        let irc_config = Config {
-            server: Some(self.config.server.clone()),
-            port: Some(self.config.port),
-            use_tls: Some(self.config.tls),
-            nickname: Some(self.config.nick.clone()),
-            channels: self.config.channels.clone(),
-            ..Default::default()
-        };
-
-        // Try to connect
-        let mut client = tokio::time::timeout(Duration::from_secs(20), async {
-            Client::from_config(irc_config)
-                .await
-                .context("while creating IRC client")
-        })
-        .await??;
-
-        // Identify to the server
-        client
-            .identify()
-            .context("while identifying to IRC server")?;
-
-        let stream = client.stream()?;
-        ctx.actor_ref().attach_stream(stream, "start", "end");
-
-        // Identify with NickServ if password is provided
-        if let Some(password) = &self.config.nickserv_password {
-            tracing::debug!("Authenticating with NickServ");
-            client
-                .send_privmsg("nickserv", format!("IDENTIFY {}", password))
-                .context("while sending NickServ IDENTIFY command")?;
-        }
-
-        // Store the client in the actor
-        self.client
-            .set(client)
-            .context("while setting IRC client")?;
-        tracing::info!("Connected to IRC server: {}", self.config.server);
-
-        Ok(())
     }
 }
 

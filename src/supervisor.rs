@@ -12,6 +12,7 @@ use anyhow::{Context as _, Result, bail};
 use futures::future::join_all;
 use kameo::error::Infallible;
 use kameo::prelude::*;
+use kameo::mailbox;
 use kameo::registry::ACTOR_REGISTRY;
 use kameo::{Actor, actor::ActorRef};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -75,7 +76,6 @@ struct Supervised {
 }
 
 struct ReloadConfig;
-struct ApplyConfig;
 struct GetRedis;
 #[derive(Reply)]
 struct GetRedisReply(redis::aio::ConnectionManager);
@@ -95,8 +95,6 @@ impl Actor for Supervisor {
         actor_ref: ActorRef<Self>,
     ) -> std::result::Result<Self, Self::Error> {
         actor_ref.register("supervisor").unwrap();
-        // Queue the config application.
-        actor_ref.tell(ApplyConfig).try_send().unwrap();
         // Connect to Redis
         let client =
             redis::Client::open(args.redis_url.as_str()).expect("Failed to create Redis client");
@@ -119,14 +117,18 @@ impl Actor for Supervisor {
             }
         };
 
-        Ok(Supervisor {
+        let mut supervisor = Supervisor {
             config: args,
             models_config,
             actors: HashMap::new(),
             redis_connection,
             _user_manager: user_manager,
             _config_watcher,
-        })
+        };
+
+        supervisor.apply_config(&actor_ref).await;
+
+        Ok(supervisor)
     }
 
     #[instrument(skip(self, actor_ref, reason))]
@@ -164,6 +166,109 @@ impl Actor for Supervisor {
         }
 
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+impl Supervisor {
+    async fn apply_config(&mut self, actor_ref: &ActorRef<Supervisor>) {
+        let mut expected_actors: HashSet<ConfigHash> = self.config.irc.iter().map(hash).collect();
+
+        for discord_config in &self.config.discord {
+            expected_actors.insert(hash(discord_config));
+        }
+
+        if !self.config.openrouter.token.is_empty() {
+            expected_actors.insert(hash(&self.config.openrouter));
+        }
+
+        let running = self.actors.keys().cloned().collect::<HashSet<ConfigHash>>();
+        let actors_to_stop: Vec<ConfigHash> =
+            running.difference(&expected_actors).cloned().collect();
+
+        let killer = actors_to_stop
+            .iter()
+            .filter_map(|id| self.actors.get(id))
+            .map(|victim| async {
+                victim.actor.stop().await;
+            });
+        join_all(killer).await;
+
+        for actor_id in &actors_to_stop {
+            self.actors.remove(actor_id);
+        }
+
+        let running = self.actors.keys().cloned().collect::<HashSet<ConfigHash>>();
+        let self_ref = actor_ref.clone();
+        let now = Instant::now();
+
+        if !self.config.openrouter.token.is_empty() {
+            let h = hash(&self.config.openrouter);
+            if !running.contains(&h) {
+                let openrouter_actor =
+                    OpenRouter::spawn_link(&self_ref, self.config.openrouter.clone()).await;
+
+                self.actors.insert(
+                    h,
+                    Supervised {
+                        restart_info: RestartInfo {
+                            failure_count: 0,
+                            last_failure: now,
+                            first_failure: now,
+                            sleep: Duration::from_secs(0),
+                        },
+                        actor: SomeActor::OpenRouter((
+                            self.config.openrouter.clone(),
+                            openrouter_actor,
+                        )),
+                    },
+                );
+            }
+        }
+
+        for discord_config in &self.config.discord {
+            let h = hash(discord_config);
+            if running.contains(&h) {
+                continue;
+            }
+            let discord_actor = DiscordActor::spawn_link(&self_ref, discord_config.clone()).await;
+            self.actors.insert(
+                h,
+                Supervised {
+                    restart_info: RestartInfo {
+                        failure_count: 0,
+                        last_failure: now,
+                        first_failure: now,
+                        sleep: Duration::from_secs(0),
+                    },
+                    actor: SomeActor::Discord((discord_config.clone(), discord_actor)),
+                },
+            );
+        }
+
+        for irc_config in &self.config.irc {
+            let h = hash(irc_config);
+            if running.contains(&h) {
+                continue;
+            }
+            let irc_actor = IrcActor::spawn_link_with_mailbox(
+                &self_ref,
+                irc_config.clone(),
+                mailbox::unbounded(),
+            )
+            .await;
+            self.actors.insert(
+                h,
+                Supervised {
+                    restart_info: RestartInfo {
+                        failure_count: 0,
+                        last_failure: now,
+                        first_failure: now,
+                        sleep: Duration::from_secs(0),
+                    },
+                    actor: SomeActor::Irc((irc_config.clone(), irc_actor)),
+                },
+            );
+        }
     }
 }
 
@@ -242,7 +347,8 @@ impl Message<ReloadConfig> for Supervisor {
             info!("Configuration changed, applying new settings");
             self.config = new_config;
             // Apply the new configuration.
-            ctx.actor_ref().tell(ApplyConfig).try_send()?;
+            let actor_ref = ctx.actor_ref();
+            self.apply_config(&actor_ref).await;
         } else {
             info!("Configuration unchanged, no action taken");
         }
@@ -265,120 +371,6 @@ impl Message<ReloadConfig> for Supervisor {
     }
 }
 
-impl Message<ApplyConfig> for Supervisor {
-    type Reply = ();
-
-    async fn handle(
-        &mut self,
-        _msg: ApplyConfig,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        // Anything that's running but shouldn't be, we stop.
-        let mut expected_actors: HashSet<ConfigHash> = self.config.irc.iter().map(hash).collect();
-
-        // Add Discord to expected actors
-        for discord_config in &self.config.discord {
-            expected_actors.insert(hash(discord_config));
-        }
-
-        // Add OpenRouter to expected actors if token is configured
-        if !self.config.openrouter.token.is_empty() {
-            expected_actors.insert(hash(&self.config.openrouter));
-        }
-        let running = self.actors.keys().cloned().collect::<HashSet<ConfigHash>>();
-        let actors_to_stop: Vec<ConfigHash> =
-            running.difference(&expected_actors).cloned().collect();
-
-        let killer = actors_to_stop
-            .iter()
-            .filter_map(|id| self.actors.get(id))
-            .map(|victim| async {
-                victim.actor.stop().await;
-            });
-        join_all(killer).await;
-
-        for actor_id in &actors_to_stop {
-            self.actors.remove(actor_id);
-        }
-
-        let running = self.actors.keys().cloned().collect::<HashSet<ConfigHash>>();
-
-        // Anything that isn't running, but should be, we start.
-        let self_ref = ctx.actor_ref();
-        let now = Instant::now();
-
-        // Start OpenRouter actor if configured and not running
-        if !self.config.openrouter.token.is_empty() {
-            let h = hash(&self.config.openrouter);
-            if !running.contains(&h) {
-                let openrouter_actor =
-                    OpenRouter::spawn_link(&self_ref, self.config.openrouter.clone()).await;
-
-                self.actors.insert(
-                    h,
-                    Supervised {
-                        restart_info: RestartInfo {
-                            failure_count: 0,
-                            last_failure: now,
-                            first_failure: now,
-                            sleep: Duration::from_secs(0),
-                        },
-                        actor: SomeActor::OpenRouter((
-                            self.config.openrouter.clone(),
-                            openrouter_actor,
-                        )),
-                    },
-                );
-            }
-        }
-
-        // Start Discord actors
-        for discord_config in &self.config.discord {
-            let h = hash(discord_config);
-            if running.contains(&h) {
-                continue;
-            }
-            let discord_actor = DiscordActor::spawn_link(&self_ref, discord_config.clone()).await;
-            self.actors.insert(
-                h,
-                Supervised {
-                    restart_info: RestartInfo {
-                        failure_count: 0,
-                        last_failure: now,
-                        first_failure: now,
-                        sleep: Duration::from_secs(0),
-                    },
-                    actor: SomeActor::Discord((discord_config.clone(), discord_actor)),
-                },
-            );
-        }
-
-        for irc_config in &self.config.irc {
-            let h = hash(irc_config);
-            if running.contains(&h) {
-                continue;
-            }
-            let irc_actor = IrcActor::spawn_link_with_mailbox(
-                &self_ref,
-                irc_config.clone(),
-                mailbox::unbounded(),
-            )
-            .await;
-            self.actors.insert(
-                h,
-                Supervised {
-                    restart_info: RestartInfo {
-                        failure_count: 0,
-                        last_failure: now,
-                        first_failure: now,
-                        sleep: Duration::from_secs(0),
-                    },
-                    actor: SomeActor::Irc((irc_config.clone(), irc_actor)),
-                },
-            );
-        }
-    }
-}
 
 impl Message<GetRedis> for Supervisor {
     type Reply = GetRedisReply;
