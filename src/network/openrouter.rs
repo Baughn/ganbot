@@ -1,5 +1,7 @@
 /// OpenRouter API module.
 /// This mostly wraps the openrouter_api crate with some convenience methods, such as a conversation actor.
+#[path = "openrouter/api.rs"]
+pub mod api;
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 use kameo::actor::ActorRef;

@@ -39,6 +39,8 @@ pub struct OpenrouterConfig {
     pub image_model: String,
     #[serde(default = "default_dream_model")]
     pub dream_model: String,
+    #[serde(default = "default_cheap_models")]
+    pub cheap_model: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
@@ -82,6 +84,10 @@ fn default_dream_model() -> String {
     default_chat_model()
 }
 
+fn default_cheap_models() -> Vec<String> {
+    vec![default_chat_model()]
+}
+
 impl Default for OpenrouterConfig {
     fn default() -> Self {
         Self {
@@ -89,6 +95,7 @@ impl Default for OpenrouterConfig {
             chat_model: default_chat_model(),
             image_model: default_image_model(),
             dream_model: default_dream_model(),
+            cheap_model: default_cheap_models(),
         }
     }
 }
