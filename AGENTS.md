@@ -1,6 +1,6 @@
-# CLAUDE.md
+# Overview
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance when working with code in this repository.
 
 ## General Notes
 
@@ -43,28 +43,14 @@ jj diff
 # Commit changes
 jj commit -m "[Message in standard commit format]"
 
-# Build the project
-cargo build
+# Check, build and run the tests
+# This is cheap -- do it often
+cargo test
 
-# Run the bot
-cargo run
-
-# Run with debug logging
-RUST_LOG=debug cargo run
-
-# Run with module-specific logging
-RUST_LOG=ganbot=trace,irc=warn,kameo=info cargo run
-
-# Check for compilation errors
-cargo check
-
-# Generate documentation
-cargo doc
-
-# Format code (when rustfmt.toml is added)
+# Format code
 cargo fmt
 
-# Run clippy linter (when configured)
+# Run clippy linter
 cargo clippy -- -D warnings
 ```
 
