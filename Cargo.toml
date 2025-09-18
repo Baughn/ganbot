@@ -26,9 +26,6 @@ indexmap = "2.6"
 lazy_static = "1.5"
 irc = "1.1.0"
 kameo = "0.18.0"
-openrouter_api = { version = "0.1.6", features = [
-    "tracing",
-], path = "third_party/openrouter_api" }
 rand = "0.9.2"
 redis = { version = "0.32.5", features = [
     "connection-manager",

@@ -1,12 +1,13 @@
 /// OpenRouter API module.
-/// This mostly wraps the openrouter_api crate with some convenience methods, such as a conversation actor.
-#[path = "openrouter/api.rs"]
+/// Provides an actor-based wrapper around the OpenRouter HTTP API with conversation helpers.
 pub mod api;
+pub mod structured;
+
+use self::structured::JsonSchemaConfig;
 use anyhow::{Context as _, Result, anyhow, bail};
 use kameo::actor::ActorRef;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
-use openrouter_api::models::structured::JsonSchemaConfig;
 use serde::de::DeserializeOwned;
 use tracing::{debug, info, instrument};
 

@@ -1,4 +1,4 @@
-use openrouter_api::models::structured::JsonSchemaDefinition;
+use crate::network::openrouter::structured::JsonSchemaDefinition;
 
 /// Message types for chatbot interactions.
 

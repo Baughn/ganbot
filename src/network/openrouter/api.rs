@@ -1,15 +1,13 @@
 //! Minimal OpenRouter API wrapper that models the single-turn flows GANBot currently uses.
-//! This allows us to gradually replace the `openrouter_api` dependency with a home-grown
-//! solution while keeping the rest of the codebase unchanged.
-#![allow(dead_code)]
-
+//! This home-grown client keeps the rest of the codebase unchanged while avoiding external
+//! dependencies.
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine as _;
 use image::{ImageEncoder, RgbImage};
 use kameo::{Actor, actor::ActorRef, prelude::*};
-use openrouter_api::models::structured::JsonSchemaConfig;
+use crate::network::openrouter::structured::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tracing::{debug, instrument, warn};
@@ -563,7 +561,6 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use kameo::Actor;
-    use openrouter_api::models::structured::JsonSchemaDefinition;
     use serde::Deserialize;
     use serde_json::Map;
 
