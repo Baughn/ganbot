@@ -1,4 +1,4 @@
-use comfyui_api::{create_client, ComfyUIClient, Graph, KSamplerParams};
+use comfyui_api::{ComfyUIClient, Graph, KSamplerParams, create_client};
 use std::time::Duration;
 
 #[tokio::main]

@@ -1,13 +1,16 @@
 use anyhow::{Context as _, Error, Result, bail};
-use std::sync::Arc;
 use kameo::{Actor, prelude::Message};
 use rand::RngCore as _;
+use std::sync::Arc;
 use tracing::{debug, info, trace};
 
 use crate::{
     config::models::{self, Model, ModelsConfig},
     fuzzy::{FuzzyResult, find_fuzzy_match},
-    messages::{chat::{NanoBanana, NanoBananaResponse}, imagen::Generate},
+    messages::{
+        chat::{NanoBanana, NanoBananaResponse},
+        imagen::Generate,
+    },
     network::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
         openrouter::OpenRouter,
@@ -382,8 +385,7 @@ impl PromptActor {
         // Make a gallery from the images.
         let title = params.prompt.raw_prompt.clone();
         let subtitle = format!("Model: {}, Seed: {}", params.model_name, seed);
-        let images: Vec<Arc<image::RgbImage>> =
-            images.into_iter().map(Arc::new).collect();
+        let images: Vec<Arc<image::RgbImage>> = images.into_iter().map(Arc::new).collect();
         let gallery = upload_gallery(GalleryInput {
             title,
             subtitle,

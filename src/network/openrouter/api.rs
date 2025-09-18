@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine as _;
 use image::{ImageEncoder, RgbImage};
-use kameo::{actor::ActorRef, prelude::*, Actor};
+use kameo::{Actor, actor::ActorRef, prelude::*};
 use openrouter_api::models::structured::JsonSchemaConfig;
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::{debug, instrument, warn};
 
 const OPENROUTER_CHAT_COMPLETIONS: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -168,21 +168,13 @@ impl Message<CompletionRequest> for OpenRouterApi {
     ) -> Self::Reply {
         msg.validate().context("invalid completion request")?;
 
-        let extracted_urls = msg
-            .text
-            .as_deref()
-            .map(extract_urls)
-            .unwrap_or_default();
+        let extracted_urls = msg.text.as_deref().map(extract_urls).unwrap_or_default();
 
         if !extracted_urls.is_empty() {
             debug!(urls = ?extracted_urls, "Detected image URLs in prompt");
         }
 
-        let content = build_user_content(
-            msg.text.as_deref(),
-            msg.image.as_ref(),
-            &extracted_urls,
-        )?;
+        let content = build_user_content(msg.text.as_deref(), msg.image.as_ref(), &extracted_urls)?;
 
         let mut payload = json!({
             "messages": [
@@ -268,11 +260,8 @@ where
             debug!(urls = ?extracted_urls, "Detected URLs in structured request");
         }
 
-        let content = build_user_content(
-            Some(msg.text.as_str()),
-            msg.image.as_ref(),
-            &extracted_urls,
-        )?;
+        let content =
+            build_user_content(Some(msg.text.as_str()), msg.image.as_ref(), &extracted_urls)?;
 
         let mut payload = json!({
             "messages": [
@@ -400,7 +389,11 @@ fn build_user_content(
                     "name": display_name.clone(),
                 }));
             }
-            RequestImage::Data { name: _, mime, image } => {
+            RequestImage::Data {
+                name: _,
+                mime,
+                image,
+            } => {
                 let data_url = encode_image_to_data_url(image, *mime)?;
                 content.push(json!({
                     "type": "image_url",
@@ -570,7 +563,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use kameo::Actor;
-    use openrouter_api::models::structured::{JsonSchemaDefinition};
+    use openrouter_api::models::structured::JsonSchemaDefinition;
     use serde::Deserialize;
     use serde_json::Map;
 

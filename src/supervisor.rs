@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 use futures::future::join_all;
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use kameo::error::Infallible;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
 use kameo::{Actor, actor::ActorRef};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
@@ -178,8 +178,8 @@ async fn redis_keepalive(redis: redis::aio::ConnectionManager) {
 fn start_config_watcher(actor_ref: ActorRef<Supervisor>) -> notify::Result<RecommendedWatcher> {
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        match res {
+    let mut watcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
             Ok(event) => {
                 let targets_change = event.paths.iter().any(|path| {
                     path.file_name()
@@ -193,8 +193,7 @@ fn start_config_watcher(actor_ref: ActorRef<Supervisor>) -> notify::Result<Recom
                 }
             }
             Err(error) => error!(?error, "Configuration watcher encountered an error"),
-        }
-    })?;
+        })?;
 
     watcher.watch(Path::new("."), RecursiveMode::NonRecursive)?;
 
@@ -290,9 +289,12 @@ impl Message<ApplyConfig> for Supervisor {
         let actors_to_stop: Vec<ConfigHash> =
             running.difference(&expected_actors).cloned().collect();
 
-        let killer = actors_to_stop.iter().filter_map(|id| self.actors.get(id)).map(|victim| async {
-            victim.actor.stop().await;
-        });
+        let killer = actors_to_stop
+            .iter()
+            .filter_map(|id| self.actors.get(id))
+            .map(|victim| async {
+                victim.actor.stop().await;
+            });
         join_all(killer).await;
 
         for actor_id in &actors_to_stop {

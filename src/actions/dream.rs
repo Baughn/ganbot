@@ -45,10 +45,7 @@ impl Message<String> for DreamActor {
 
         // Resolve the requested model (defaulting to the dream alias) and ensure it's supported
         let models_config = Supervisor::models_config().await;
-        let mut requested_model_token = prompt
-            .model
-            .clone()
-            .unwrap_or_else(|| "dream".to_string());
+        let mut requested_model_token = prompt.model.clone().unwrap_or_else(|| "dream".to_string());
         let (selected_model, correction_message) = PromptActor::resolve_model(
             &prompt.prompt,
             &models_config,
