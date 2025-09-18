@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail};
 use futures::future::join_all;
 use kameo::error::Infallible;
-use kameo::prelude::*;
 use kameo::mailbox;
+use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
 use kameo::{Actor, actor::ActorRef};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -370,7 +370,6 @@ impl Message<ReloadConfig> for Supervisor {
         Ok(())
     }
 }
-
 
 impl Message<GetRedis> for Supervisor {
     type Reply = GetRedisReply;

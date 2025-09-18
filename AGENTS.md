@@ -45,7 +45,7 @@ jj commit -m "[Message in standard commit format]"
 
 # Check, build and run the tests
 # This is cheap -- do it often
-cargo test
+cargo test -q
 
 # Format code
 cargo fmt

@@ -1,6 +1,6 @@
+use crate::network::openrouter::structured::JsonSchemaDefinition;
 use anyhow::{Context as _, Error, Result, bail};
 use kameo::{Actor, Reply, prelude::Message};
-use crate::network::openrouter::structured::JsonSchemaDefinition;
 use rand::seq::IndexedRandom as _;
 use redis::AsyncTypedCommands;
 use serde::{Deserialize, Serialize};

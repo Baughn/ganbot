@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use irc::client::prelude::{Client, Command, Config};
+use irc::client::prelude::{Client, Command, Config, Response};
 use kameo::message::StreamMessage;
 use kameo::prelude::*;
 use std::collections::HashMap;
@@ -12,6 +12,9 @@ use crate::actions;
 use crate::config::global::IrcConfig;
 use crate::help;
 use crate::persistence::user::{self, UserActor, UserManager};
+
+mod sasl;
+use self::sasl::SaslManager;
 
 pub struct IrcActor {
     name: String,
@@ -31,6 +34,8 @@ pub struct IrcActor {
     /// Pending WHOIS requests to avoid duplicates
     /// Maps nickname -> timestamp when request was sent
     pending_whois: HashMap<String, Instant>,
+    sasl: SaslManager,
+    joined_channels: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +137,7 @@ impl Actor for IrcActor {
         actor_ref: ActorRef<Self>,
     ) -> std::result::Result<Self, Self::Error> {
         tracing::info!("Starting IRC actor for server: {}", args.server);
+        let sasl = SaslManager::new(&args);
         let mut actor = IrcActor {
             name: args.server.clone(),
             config: args,
@@ -142,6 +148,8 @@ impl Actor for IrcActor {
             token_bucket_fast: TokenBucket::new(1.0, 10.0),
             identification_cache: HashMap::new(),
             pending_whois: HashMap::new(),
+            sasl,
+            joined_channels: false,
         };
         actor.connect(&actor_ref).await?;
         Ok(actor)
@@ -165,12 +173,15 @@ impl IrcActor {
             bail!("Already connected to IRC server: {}", self.config.server);
         }
 
+        self.sasl.configure(&self.config);
+        self.joined_channels = false;
+
         let irc_config = Config {
             server: Some(self.config.server.clone()),
             port: Some(self.config.port),
             use_tls: Some(self.config.tls),
             nickname: Some(self.config.nick.clone()),
-            channels: self.config.channels.clone(),
+            channels: Vec::new(),
             ..Default::default()
         };
 
@@ -181,25 +192,67 @@ impl IrcActor {
         })
         .await??;
 
-        client
-            .identify()
-            .context("while identifying to IRC server")?;
-
         let stream = client.stream()?;
         actor_ref.attach_stream(stream, "start", "end");
-
-        if let Some(password) = &self.config.nickserv_password {
-            tracing::debug!("Authenticating with NickServ");
-            client
-                .send_privmsg("nickserv", format!("IDENTIFY {}", password))
-                .context("while sending NickServ IDENTIFY command")?;
-        }
-
         self.client
             .set(client)
             .context("while setting IRC client")?;
+        let client = self.client.get().expect("client initialized");
+
+        if self.sasl.is_enabled() {
+            self.sasl
+                .begin(client)
+                .context("while initiating SASL negotiation")?;
+            self.send_registration(client)
+                .context("while sending registration commands")?;
+        } else {
+            client
+                .identify()
+                .context("while identifying to IRC server")?;
+
+            if let Some(password) = &self.config.nickserv_password {
+                tracing::debug!("Authenticating with NickServ");
+                client
+                    .send_privmsg("nickserv", format!("IDENTIFY {}", password))
+                    .context("while sending NickServ IDENTIFY command")?;
+            }
+        }
         tracing::info!("Connected to IRC server: {}", self.config.server);
 
+        Ok(())
+    }
+
+    fn send_registration(&self, client: &Client) -> Result<()> {
+        client
+            .send(Command::NICK(self.config.nick.clone()))
+            .context("while sending NICK command")?;
+
+        client
+            .send(Command::USER(
+                self.config.nick.clone(),
+                "0".to_string(),
+                self.config.nick.clone(),
+            ))
+            .context("while sending USER command")?;
+
+        Ok(())
+    }
+
+    fn join_configured_channels(&mut self) -> Result<()> {
+        if self.joined_channels {
+            return Ok(());
+        }
+
+        let client = self.client.get().context("IRC client not connected")?;
+        for channel in &self.config.channels {
+            trace!(channel = %channel, "Joining configured IRC channel");
+            client
+                .send_join(channel)
+                .context("while sending JOIN command")?;
+        }
+
+        self.joined_channels = true;
+        info!(channels = ?self.config.channels, "Joined configured IRC channels");
         Ok(())
     }
 
@@ -891,7 +944,29 @@ async fn handle_irc_message(
 ) -> Result<()> {
     trace!("Handling IRC message: {:?}", message);
 
+    if let Some(client) = actor.client.get() {
+        actor
+            .sasl
+            .handle_message(&message, client)
+            .context("while processing SASL negotiation")?;
+    }
+
     match message.command {
+        Command::Response(Response::RPL_ENDOFMOTD, _)
+        | Command::Response(Response::ERR_NOMOTD, _) => {
+            if actor.sasl.allows_channel_join() {
+                actor
+                    .join_configured_channels()
+                    .context("while joining configured IRC channels")?;
+            } else {
+                let reason = actor
+                    .sasl
+                    .failure_reason()
+                    .unwrap_or("SASL authentication not confirmed");
+                error!(state = ?actor.sasl.state(), reason, "Dying due to SASL state");
+                let _ = ctx.actor_ref().stop_gracefully().await;
+            }
+        }
         Command::PRIVMSG(ref target, ref text) => {
             let channel = if target.starts_with('#') {
                 Some(target.clone())

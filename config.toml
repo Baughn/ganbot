@@ -17,17 +17,3 @@ dream_model = "openrouter/sonoma-sky-alpha"
 ssh_hostname = "direct.brage.info"
 ssh_directory = "/home/svein/web/GAN/"
 base_url = "https://brage.info/GAN/"
-
-[[irc]]
-server = "irc.rizon.net"
-tls = true
-port = 6697
-channels = ["#nanobot", "#nanoha"]
-nick = "GANBot"
-
-[[irc]]
-server = "irc.libera.chat"
-tls = true
-port = 6697
-channels = ["#questionablebotting", "#questionablequesting"]
-nick = "GANBot"

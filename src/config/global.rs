@@ -53,6 +53,8 @@ pub struct IrcConfig {
     pub channels: Vec<String>,
     pub nick: String,
     pub nickserv_password: Option<String>,
+    pub sasl_username: Option<String>,
+    pub sasl_password: Option<String>,
     #[serde(default = "default_bang")]
     pub command_prefix: String,
 }
@@ -109,6 +111,8 @@ impl Default for IrcConfig {
             channels: vec![],
             nick: String::new(),
             nickserv_password: None,
+            sasl_username: None,
+            sasl_password: None,
             command_prefix: "!".to_string(),
         }
     }

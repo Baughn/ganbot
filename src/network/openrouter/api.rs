@@ -3,14 +3,14 @@
 //! dependencies.
 use std::sync::Arc;
 
+use crate::network::openrouter::structured::*;
 use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine as _;
 use image::{ImageEncoder, RgbImage};
 use kameo::{Actor, actor::ActorRef, prelude::*};
-use crate::network::openrouter::structured::*;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, instrument, warn};
 
 const OPENROUTER_CHAT_COMPLETIONS: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -49,10 +49,7 @@ impl Actor for OpenRouterApi {
             ClientWithMiddleware::from(base_client)
         };
 
-        Ok(Self {
-            client,
-            token,
-        })
+        Ok(Self { client, token })
     }
 }
 
