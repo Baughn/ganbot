@@ -54,3 +54,4 @@ levenshtein = "1.0.5"
 regex = "1.11.2"
 thiserror = "1"
 comfyui-api = { path = "crates/comfyui-api" }
+notify = "6.1"

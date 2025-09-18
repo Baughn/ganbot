@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tokio::spawn;
 use tokio::sync::OnceCell;
 use tokio::time::{Duration, Instant};
-use tracing::{error, info, instrument, trace};
+use tracing::{error, info, instrument, trace, warn};
 
 use crate::actions;
 use crate::config::global::IrcConfig;
@@ -146,6 +146,15 @@ impl Actor for IrcActor {
             pending_whois: HashMap::new(),
         })
     }
+
+    async fn on_stop(
+        &mut self,
+        _actor_ref: WeakActorRef<Self>,
+        reason: ActorStopReason,
+    ) -> std::result::Result<(), Self::Error> {
+        self.send_quit(format!("Disconnecting ({reason:?})"));
+        Ok(())
+    }
 }
 
 impl IrcActor {
@@ -249,6 +258,14 @@ impl IrcActor {
         }
 
         result
+    }
+
+    fn send_quit(&self, message: impl AsRef<str>) {
+        if let Some(client) = self.client.get() {
+            if let Err(error) = client.send_quit(message.as_ref()) {
+                warn!(?error, "Failed to send IRC QUIT message");
+            }
+        }
     }
 
     /// Sends a PRIVMSG, handling newlines and IRC message length limits
@@ -866,11 +883,13 @@ impl
             }
             StreamMessage::Next(Err(e)) => {
                 error!("Error in IRC stream: {e:#}");
+                self.send_quit("Stream error, reconnecting");
                 info!("Stopping IRC actor due to stream error, supervisor will restart");
                 let _ = ctx.actor_ref().stop_gracefully().await;
             }
             StreamMessage::Finished(marker) => {
                 info!("IRC stream finished: {}", marker);
+                self.send_quit("Stream finished, reconnecting");
                 info!("Stopping IRC actor for restart");
                 let _ = ctx.actor_ref().stop_gracefully().await;
             }

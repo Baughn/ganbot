@@ -5,14 +5,17 @@ use std::hash::{DefaultHasher, Hash, Hasher as _};
 /// including starting and stopping modules, handling configuration changes,
 /// and managing global state.
 use std::ops::ControlFlow;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 use futures::future::join_all;
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use kameo::error::Infallible;
 use kameo::prelude::*;
 use kameo::registry::ACTOR_REGISTRY;
 use kameo::{Actor, actor::ActorRef};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
@@ -28,6 +31,8 @@ use crate::persistence::user::UserManager;
 
 type ConfigHash = u64;
 
+const WATCHED_CONFIG_FILES: &[&str] = &["config.toml", "config-local.toml", "models.toml"];
+
 pub struct Supervisor {
     /// Currently active configuration.
     config: Config,
@@ -39,6 +44,8 @@ pub struct Supervisor {
     redis_connection: redis::aio::ConnectionManager,
     /// User manager.
     _user_manager: ActorRef<UserManager>,
+    /// Filesystem watcher for configuration changes (kept alive for duration of actor).
+    _config_watcher: Option<RecommendedWatcher>,
 }
 
 /// Tracks restart attempts for a specific actor
@@ -104,12 +111,21 @@ impl Actor for Supervisor {
         // Load models configuration
         let models_config = load_models_config().expect("Failed to load models configuration");
 
+        let _config_watcher = match start_config_watcher(actor_ref.clone()) {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                error!(?error, "Failed to start configuration watcher");
+                None
+            }
+        };
+
         Ok(Supervisor {
             config: args,
             models_config,
             actors: HashMap::new(),
             redis_connection,
             _user_manager: user_manager,
+            _config_watcher,
         })
     }
 
@@ -157,6 +173,58 @@ async fn redis_keepalive(redis: redis::aio::ConnectionManager) {
         let _: Result<String, _> = redis::cmd("PING").query_async(&mut redis.clone()).await;
         sleep(Duration::from_secs(60)).await;
     }
+}
+
+fn start_config_watcher(actor_ref: ActorRef<Supervisor>) -> notify::Result<RecommendedWatcher> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        match res {
+            Ok(event) => {
+                let targets_change = event.paths.iter().any(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| WATCHED_CONFIG_FILES.contains(&name))
+                        .unwrap_or(false)
+                });
+
+                if targets_change && tx.send(event).is_err() {
+                    info!("Configuration watcher receiver dropped; stopping notifications");
+                }
+            }
+            Err(error) => error!(?error, "Configuration watcher encountered an error"),
+        }
+    })?;
+
+    watcher.watch(Path::new("."), RecursiveMode::NonRecursive)?;
+
+    tokio::spawn(async move {
+        let mut last_reload: Option<Instant> = None;
+        while let Some(event) = rx.recv().await {
+            if !matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            ) {
+                continue;
+            }
+
+            let now = Instant::now();
+            if let Some(previous) = last_reload {
+                if now.duration_since(previous) < Duration::from_millis(250) {
+                    continue;
+                }
+            }
+            last_reload = Some(now);
+
+            info!(?event.kind, "Configuration change detected; requesting reload");
+
+            if let Err(error) = actor_ref.tell(ReloadConfig).try_send() {
+                error!(?error, "Failed to send ReloadConfig message");
+            }
+        }
+    });
+
+    Ok(watcher)
 }
 
 impl Message<ReloadConfig> for Supervisor {
@@ -219,11 +287,19 @@ impl Message<ApplyConfig> for Supervisor {
             expected_actors.insert(hash(&self.config.openrouter));
         }
         let running = self.actors.keys().cloned().collect::<HashSet<ConfigHash>>();
-        let killer = running.difference(&expected_actors).map(async |v| {
-            let victim = &self.actors[v];
+        let actors_to_stop: Vec<ConfigHash> =
+            running.difference(&expected_actors).cloned().collect();
+
+        let killer = actors_to_stop.iter().filter_map(|id| self.actors.get(id)).map(|victim| async {
             victim.actor.stop().await;
         });
         join_all(killer).await;
+
+        for actor_id in &actors_to_stop {
+            self.actors.remove(actor_id);
+        }
+
+        let running = self.actors.keys().cloned().collect::<HashSet<ConfigHash>>();
 
         // Anything that isn't running, but should be, we start.
         let self_ref = ctx.actor_ref();

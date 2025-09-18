@@ -22,7 +22,7 @@ base_url = "https://brage.info/GAN/"
 server = "irc.rizon.net"
 tls = true
 port = 6697
-channels = ["#nanobot", "#nanoha", "#dess"]
+channels = ["#nanobot", "#nanoha"]
 nick = "GANBot"
 
 [[irc]]
