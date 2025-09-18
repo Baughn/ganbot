@@ -9,3 +9,4 @@
 # Secrets
 /config-local.toml
 /.envrc.local
+tests/vcr/*.json

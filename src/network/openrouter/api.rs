@@ -10,6 +10,7 @@ use kameo::{Actor, actor::ActorRef, prelude::*};
 use crate::network::openrouter::structured::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, instrument, warn};
 
 const OPENROUTER_CHAT_COMPLETIONS: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -18,11 +19,12 @@ const OPENROUTER_CHAT_COMPLETIONS: &str = "https://openrouter.ai/api/v1/chat/com
 #[derive(Debug, Clone)]
 pub struct OpenRouterApiConfig {
     pub token: String,
+    pub client: Option<ClientWithMiddleware>,
 }
 
 /// Actor that exposes a minimal, single-turn OpenRouter client.
 pub struct OpenRouterApi {
-    client: reqwest::Client,
+    client: ClientWithMiddleware,
     token: String,
 }
 
@@ -31,18 +33,25 @@ impl Actor for OpenRouterApi {
     type Error = anyhow::Error;
 
     async fn on_start(config: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-        if config.token.trim().is_empty() {
+        let OpenRouterApiConfig { token, client } = config;
+
+        if token.trim().is_empty() {
             bail!("OpenRouter token must not be empty");
         }
 
-        let client = reqwest::Client::builder()
-            .user_agent("GANBot/3 (https://github.com/Baughn/ganbot-rs)")
-            .build()
-            .context("while building OpenRouter HTTP client")?;
+        let client = if let Some(client) = client {
+            client
+        } else {
+            let base_client = reqwest::Client::builder()
+                .user_agent("GANBot/3 (https://github.com/Baughn/ganbot-rs)")
+                .build()
+                .context("while building OpenRouter HTTP client")?;
+            ClientWithMiddleware::from(base_client)
+        };
 
         Ok(Self {
             client,
-            token: config.token,
+            token,
         })
     }
 }
@@ -563,6 +572,10 @@ mod tests {
     use kameo::Actor;
     use serde::Deserialize;
     use serde_json::Map;
+    use std::path::PathBuf;
+
+    use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+    use rvcr::{VCRMiddleware, VCRMode};
 
     #[test]
     fn extract_urls_handles_common_trailing_characters() {
@@ -590,6 +603,44 @@ mod tests {
         );
     }
 
+    fn openrouter_vcr_client(name: &str) -> Result<ClientWithMiddleware> {
+        let mut mode = match std::env::var("GANBOT_OPENROUTER_VCR") {
+            Ok(value) if value.eq_ignore_ascii_case("record") => VCRMode::Record,
+            Ok(value) if value.eq_ignore_ascii_case("replay") => VCRMode::Replay,
+            _ => VCRMode::Replay,
+        };
+
+        let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.push("tests");
+        dir.push("vcr");
+
+        let mut cassette_path = dir.clone();
+        cassette_path.push(format!("{name}.vcr.json"));
+
+        if matches!(mode, VCRMode::Replay) && !cassette_path.exists() {
+            eprintln!(
+                "Forcing record mode: cassette '{}' not found (set GANBOT_OPENROUTER_VCR=record to force capture)",
+                cassette_path.display()
+            );
+            mode = VCRMode::Record;
+        }
+
+        std::fs::create_dir_all(&dir)
+            .context("while ensuring directory for OpenRouter VCR cassettes exists")?;
+
+        let middleware = VCRMiddleware::try_from(cassette_path.clone())
+            .map_err(|err| anyhow!(err))?
+            .with_mode(mode);
+
+        let base_client = reqwest::Client::builder()
+            .user_agent("GANBot/3 (https://github.com/Baughn/ganbot-rs)")
+            .build()
+            .context("while building reqwest client for OpenRouter VCR test")?;
+
+        let client = ClientBuilder::new(base_client).with(middleware).build();
+        Ok(client)
+    }
+
     #[tokio::test]
     async fn completion_roundtrip_works_with_urls() -> Result<()> {
         let config = crate::config::load()?;
@@ -597,6 +648,8 @@ mod tests {
             eprintln!("Skipping OpenRouter integration test: token not configured");
             return Ok(());
         }
+
+        let client = openrouter_vcr_client("completion_roundtrip")?;
 
         let models = if config.openrouter.cheap_model.is_empty() {
             vec![config.openrouter.chat_model.clone()]
@@ -606,6 +659,7 @@ mod tests {
 
         let actor = OpenRouterApi::spawn(OpenRouterApiConfig {
             token: config.openrouter.token.clone(),
+            client: Some(client),
         });
 
         let response = actor
@@ -638,6 +692,8 @@ mod tests {
             return Ok(());
         }
 
+        let client = openrouter_vcr_client("structured_roundtrip")?;
+
         let models = if config.openrouter.cheap_model.is_empty() {
             vec![config.openrouter.chat_model.clone()]
         } else {
@@ -667,6 +723,7 @@ mod tests {
 
         let actor = OpenRouterApi::spawn(OpenRouterApiConfig {
             token: config.openrouter.token.clone(),
+            client: Some(client),
         });
 
         let response: CaptionResponse = actor
@@ -690,6 +747,8 @@ mod tests {
             eprintln!("Skipping OpenRouter structured image test: token not configured");
             return Ok(());
         }
+
+        let client = openrouter_vcr_client("structured_roundtrip_image")?;
 
         let models = if config.openrouter.cheap_model.is_empty() {
             vec![config.openrouter.chat_model.clone()]
@@ -720,6 +779,7 @@ mod tests {
 
         let actor = OpenRouterApi::spawn(OpenRouterApiConfig {
             token: config.openrouter.token.clone(),
+            client: Some(client),
         });
 
         let response: CaptionResponse = actor

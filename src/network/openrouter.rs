@@ -128,6 +128,7 @@ impl Actor for ConversationActor {
             &actor_ref,
             OpenRouterApiConfig {
                 token: config.token.clone(),
+                client: None,
             },
         )
         .await;
