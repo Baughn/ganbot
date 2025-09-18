@@ -173,7 +173,7 @@ impl Message<String> for DreamActor {
                     .with_context(|| format!("while generating image for variation {}", variation))?;
                 debug!(variation, %model_token, backend = ?response.backend, image_count = response.images.len(), "Imagen actor responded");
 
-                Ok::<_, Error>((image_prompt, response))
+                Ok::<_, Error>((image_prompt, image_prompt_with_model, response))
             }
         });
 
@@ -186,10 +186,10 @@ impl Message<String> for DreamActor {
         );
 
         // Step 3: Create gallery with individual prompts
-        let mut image_prompts: Vec<(String, Arc<image::RgbImage>)> = Vec::new();
+        let mut image_entries: Vec<(String, String, Arc<image::RgbImage>)> = Vec::new();
         let mut has_images = false;
 
-        for (prompt_text, response) in &image_results {
+        for (display_prompt, command_prompt, response) in &image_results {
             if response.images.len() != 1 {
                 error!(
                     image_count = response.images.len(),
@@ -199,24 +199,30 @@ impl Message<String> for DreamActor {
             }
 
             let first_image = response.images.first().unwrap();
-            image_prompts.push((prompt_text.clone(), first_image.clone()));
+            image_entries.push((
+                display_prompt.clone(),
+                command_prompt.clone(),
+                first_image.clone(),
+            ));
             has_images = true;
         }
 
         // Create and upload the gallery if we have images
-        let gallery_url = if !image_prompts.is_empty() {
-            let gallery_images: Vec<GalleryImageInput> = image_prompts
-                .into_iter()
-                .map(|(prompt_text, image)| GalleryImageInput {
-                    image,
-                    title: Some(prompt_text),
+        let mut gallery_image_urls: Option<Vec<String>> = None;
+
+        let gallery_url = if !image_entries.is_empty() {
+            let gallery_images: Vec<GalleryImageInput> = image_entries
+                .iter()
+                .map(|(prompt_text, _, image)| GalleryImageInput {
+                    image: image.clone(),
+                    title: Some(prompt_text.clone()),
                 })
                 .collect();
 
             let title = original_request.clone();
             let subtitle = format!("Model: {}", display_model_name);
 
-            let (url, _) = upload_gallery(GalleryInput {
+            let (url, image_urls) = upload_gallery(GalleryInput {
                 title: Some(title),
                 subtitle: Some(subtitle),
                 images: gallery_images,
@@ -226,6 +232,8 @@ impl Message<String> for DreamActor {
             })
             .await
             .context("while uploading dream gallery")?;
+
+            gallery_image_urls = Some(image_urls);
 
             // Record the generated gallery in user's history
             let _ = self
@@ -267,10 +275,26 @@ impl Message<String> for DreamActor {
                 .await
                 .context("while generating commentary")?;
 
+            let images_vec: Vec<Arc<image::RgbImage>> = image_entries
+                .iter()
+                .map(|(_, _, image)| image.clone())
+                .collect();
+            let prompts_vec: Vec<String> = image_entries
+                .iter()
+                .map(|(_, command, _)| command.clone())
+                .collect();
+            let display_prompts_vec: Vec<String> = image_entries
+                .iter()
+                .map(|(display, _, _)| display.clone())
+                .collect();
+
             Ok(PromptResult {
                 text: commentary.text,
                 image_url: Some(gallery_url),
-                images: None, // We've already uploaded them as a gallery
+                images: Some(images_vec),
+                image_urls: gallery_image_urls,
+                prompts: Some(prompts_vec),
+                display_prompts: Some(display_prompts_vec),
                 correction_message: correction_message.clone(),
             })
         } else {
@@ -298,6 +322,9 @@ impl Message<String> for DreamActor {
                 text: commentary.text,
                 image_url: gallery_url,
                 images: None,
+                image_urls: None,
+                prompts: None,
+                display_prompts: None,
                 correction_message: correction_message.clone(),
             })
         }

@@ -26,6 +26,9 @@ pub struct PromptResult {
     pub text: String,
     pub image_url: Option<String>,
     pub images: Option<Vec<Arc<image::RgbImage>>>,
+    pub image_urls: Option<Vec<String>>,
+    pub prompts: Option<Vec<String>>,
+    pub display_prompts: Option<Vec<String>>,
     pub correction_message: Option<String>,
 }
 
@@ -68,6 +71,10 @@ impl PromptActor {
         let (model, correction_message) =
             imagen::resolve_model(&prompt.prompt, &models_config, prompt.model.as_deref())?;
 
+        if prompt.model.is_none() {
+            prompt.model = Some(model.name.clone());
+        }
+
         imagen::apply_model_defaults(&mut prompt, &model);
 
         let response = ImagenActor::spawn(ImagenActor::default())
@@ -103,6 +110,9 @@ impl PromptActor {
         } else {
             Some(images.clone())
         };
+        let mut image_urls_opt: Option<Vec<String>> = None;
+        let mut prompts_opt: Option<Vec<String>> = None;
+        let mut display_prompts_opt: Option<Vec<String>> = None;
 
         if !images.is_empty() {
             match backend {
@@ -117,7 +127,7 @@ impl PromptActor {
                         .map(|seed| format!("Model: {}, Seed: {}", model_name, seed))
                         .unwrap_or_else(|| format!("Model: {}", model_name));
 
-                    let (gallery_url, _) = upload_gallery(GalleryInput {
+                    let (gallery_url, gallery_image_urls) = upload_gallery(GalleryInput {
                         title: Some(prompt.raw_prompt.clone()),
                         subtitle: Some(subtitle),
                         images: gallery_images,
@@ -143,6 +153,7 @@ impl PromptActor {
                         .send()
                         .await;
 
+                    image_urls_opt = Some(gallery_image_urls);
                     image_url = Some(gallery_url);
                 }
                 ImagenBackend::NanoBanana => {
@@ -168,6 +179,7 @@ impl PromptActor {
                             .send()
                             .await;
 
+                        image_urls_opt = Some(vec![url.clone()]);
                         image_url = Some(url);
                     } else {
                         info!("No image generated, text-only response");
@@ -179,11 +191,54 @@ impl PromptActor {
             info!("No image generated, text-only response");
         }
 
+        let image_count = if !images.is_empty() {
+            images.len()
+        } else {
+            image_urls_opt.as_ref().map(|urls| urls.len()).unwrap_or(0)
+        };
+
+        if image_count > 0 {
+            let command_string = Self::command_string_for_prompt(&prompt, &model_name);
+            prompts_opt = Some(vec![command_string; image_count]);
+            display_prompts_opt = Some(vec![prompt.raw_prompt.clone(); image_count]);
+        }
+
         Ok(PromptResult {
             text: text.unwrap_or_default(),
             image_url,
             images: images_opt,
+            image_urls: image_urls_opt,
+            prompts: prompts_opt,
+            display_prompts: display_prompts_opt,
             correction_message,
+        })
+    }
+
+    fn command_string_for_prompt(prompt: &Generate, resolved_model: &str) -> String {
+        let mut parts = Vec::new();
+
+        let raw = prompt.raw_prompt.trim();
+        if !raw.is_empty() {
+            parts.push(raw.to_string());
+        }
+
+        if !Self::raw_prompt_has_model_flag(prompt.raw_prompt.as_str()) {
+            let model_token = prompt
+                .model
+                .as_deref()
+                .unwrap_or(resolved_model)
+                .to_string();
+            parts.push(format!("-m {}", model_token));
+        }
+
+        parts.join(" ")
+    }
+
+    fn raw_prompt_has_model_flag(raw: &str) -> bool {
+        raw.split_whitespace().any(|token| {
+            matches!(token, "-m" | "--model")
+                || (token.starts_with("--model=") && token.len() > "--model=".len())
+                || (token.starts_with("-m") && !token.starts_with("--") && token.len() > 2)
         })
     }
 }

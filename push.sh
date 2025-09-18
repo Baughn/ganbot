@@ -7,5 +7,5 @@ cd /home/svein/dev/ganbot/
 sleep 2
 
 cd ~/nixos/
-nix flake update ganbot
+nix flake update ganbot --allow-dirty-locks
 colmena apply-local --sudo

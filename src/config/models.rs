@@ -11,6 +11,7 @@ pub struct ModelsConfig {
     pub default: String,
     pub default_english: String,
     pub default_tagged: String,
+    pub default_edit: String,
     pub aliases: HashMap<String, String>,
     pub models: HashMap<String, Model>,
 }
@@ -72,6 +73,7 @@ struct LoadingModelsConfig {
     pub default: String,
     pub default_english: String,
     pub default_tagged: String,
+    pub default_edit: Option<String>,
     pub aliases: HashMap<String, String>,
     pub templates: HashMap<String, LoadingModel>,
     pub models: HashMap<String, LoadingModel>,
@@ -451,11 +453,20 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
         models.insert(name.clone(), model);
     }
 
+    let default = loading_config.default;
+    let default_english = loading_config.default_english;
+    let default_tagged = loading_config.default_tagged;
+    let default_edit = loading_config
+        .default_edit
+        .unwrap_or_else(|| default.clone());
+    let aliases = loading_config.aliases;
+
     Ok(ModelsConfig {
-        default: loading_config.default,
-        default_english: loading_config.default_english,
-        default_tagged: loading_config.default_tagged,
-        aliases: loading_config.aliases,
+        default,
+        default_english,
+        default_tagged,
+        default_edit,
+        aliases,
         models,
     })
 }
@@ -481,6 +492,7 @@ mod tests {
 default = "simple"
 default_english = "simple"
 default_tagged = "simple"
+default_edit = "simple"
 
 [aliases]
 "alias1" = "simple"
@@ -516,6 +528,7 @@ NanoBanana = {}
 default = "child"
 default_english = "child"
 default_tagged = "child"
+default_edit = "child"
 
 [aliases]
 
@@ -585,6 +598,7 @@ ComfyUI = { checkpoint = "child.safetensors" }
 default = "incomplete"
 default_english = "incomplete"
 default_tagged = "incomplete"
+default_edit = "incomplete"
 
 [aliases]
 
@@ -612,6 +626,7 @@ ComfyUI = { checkpoint = "incomplete.safetensors" }
 default = "orphan"
 default_english = "orphan"
 default_tagged = "orphan"
+default_edit = "orphan"
 
 [aliases]
 
@@ -655,6 +670,7 @@ default = "broken
 default = "nameless"
 default_english = "nameless"
 default_tagged = "nameless"
+default_edit = "nameless"
 
 [aliases]
 

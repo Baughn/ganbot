@@ -1,6 +1,7 @@
 default = "auto"
 default_english = "qwen"
 default_tagged = "fanart"
+#default_edit = "nanobanana"
 
 [aliases]
 qwen = "qwen_image_fp8"
