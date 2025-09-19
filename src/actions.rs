@@ -5,6 +5,7 @@ pub mod config;
 pub mod delete;
 pub mod dream;
 pub mod edit;
+pub mod imagen;
 pub mod prompt;
 pub mod select;
 

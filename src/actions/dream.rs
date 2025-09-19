@@ -6,14 +6,17 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::{
-    actions::prompt::{PromptActor, PromptResult},
+    actions::{
+        imagen::{self, GenerateImages, ImagenActor, ImagenBackend},
+        prompt::PromptResult,
+    },
     messages::{
         chat::{Oneshot, Part, Purpose},
         imagen::Generate,
     },
     network::openrouter::OpenRouter,
     persistence::{
-        images::{GalleryWithIndividualPromptsInput, upload_gallery_with_individual_prompts},
+        images::{GalleryImageInput, GalleryInput, upload_gallery},
         user::{AddGeneratedImage, UserActor},
     },
     supervisor::Supervisor,
@@ -46,7 +49,7 @@ impl Message<String> for DreamActor {
         // Resolve the requested model (defaulting to the dream alias) and ensure it's supported
         let models_config = Supervisor::models_config().await;
         let mut requested_model_token = prompt.model.clone().unwrap_or_else(|| "dream".to_string());
-        let (selected_model, correction_message) = PromptActor::resolve_model(
+        let (selected_model, correction_message) = imagen::resolve_model(
             &prompt.prompt,
             &models_config,
             Some(requested_model_token.as_str()),
@@ -82,12 +85,16 @@ impl Message<String> for DreamActor {
             async move {
                 let detective_prompt = format!(
                     "Transform the following request into a detailed image generation prompt.
-                    Add theme, lighting, and that distinctive story feel. \n\
-                    If there is a picture, copy the style of the picture unless requested otherwise.\n
-                    Create a unique variation - don't repeat exactly the same elements.\n
-                    Output nothing except for the image prompt.\n\n\
+                    Add theme, lighting, and that distinctive story feel. 
+                    If there is a picture, copy the style of the picture unless requested otherwise.
+
+                    Create a unique variation - don't repeat exactly the same elements.
+
+                    Output nothing except for the image prompt.
+
                     Original request: {} (Variation {})",
-                    original_request, i + 1
+                    original_request,
+                    i + 1
                 );
 
                 router
@@ -107,24 +114,35 @@ impl Message<String> for DreamActor {
 
         info!("Generated {} unique image prompts", generated_prompts.len());
 
-        // Step 2: Generate images for each prompt in parallel
+        // Step 2: Generate images for each prompt in parallel using the shared imagen actor
+        let imagen_actor = ImagenActor::spawn(ImagenActor::default());
         let model_for_generation = requested_model_token.clone();
+        let selected_model_clone = selected_model.clone();
+
         let image_generation_futures = generated_prompts.iter().map(|image_prompt| {
             let user_actor = self.user_actor.clone();
-            let actor_ref = _ctx.actor_ref().clone();
+            let imagen_actor = imagen_actor.clone();
             let image_prompt = image_prompt.clone();
-            let model_for_generation = model_for_generation.clone();
+            let model_token = model_for_generation.clone();
+            let model = selected_model_clone.clone();
             async move {
-                let prompt_actor =
-                    PromptActor::spawn_link(&actor_ref, PromptActor::new(user_actor).await).await;
+                let image_prompt_with_model = format!("{} -m {} -c 1", image_prompt, model_token);
+                let mut generate = imagen::hydrate_prompt(
+                    Generate::from_str(&image_prompt_with_model)?,
+                    &user_actor,
+                )
+                .await?;
+                imagen::apply_model_defaults(&mut generate, &model);
 
-                let image_prompt_with_model =
-                    format!("{} -m {} -c 1", image_prompt, model_for_generation);
-                prompt_actor
-                    .ask(image_prompt_with_model)
+                let response = imagen_actor
+                    .ask(GenerateImages {
+                        prompt: generate.clone(),
+                        model,
+                    })
                     .await
-                    .context("while generating image")
-                    .map(|result| (image_prompt, result))
+                    .context("while generating image")?;
+
+                Ok::<_, Error>((image_prompt, response))
             }
         });
 
@@ -136,32 +154,46 @@ impl Message<String> for DreamActor {
         let mut image_prompts: Vec<(String, Arc<image::RgbImage>)> = Vec::new();
         let mut has_images = false;
 
-        for (prompt_text, result) in &image_results {
-            if let Some(images) = &result.images {
-                if images.len() != 1 {
-                    bail!("Expected 1 image per prompt, got {}", images.len());
-                }
-                let first_image = images.first().unwrap();
-                image_prompts.push((prompt_text.clone(), first_image.clone()));
-                has_images = true;
+        for (prompt_text, response) in &image_results {
+            if response.backend != ImagenBackend::StableDiffusion {
+                bail!(
+                    "Dream command expects StableDiffusion backend, got {:?}",
+                    response.backend
+                );
             }
+
+            if response.images.len() != 1 {
+                bail!("Expected 1 image per prompt, got {}", response.images.len());
+            }
+
+            let first_image = response.images.first().unwrap();
+            image_prompts.push((prompt_text.clone(), first_image.clone()));
+            has_images = true;
         }
 
         // Create and upload the gallery if we have images
         let gallery_url = if !image_prompts.is_empty() {
-            let gallery_input = GalleryWithIndividualPromptsInput {
-                image_prompts,
-                workflow: None, // TODO: Grab the workflow from image #1 somehow.
-                backend: Some("ComfyUI".to_string()),
-                generation_request: Some(prompt.clone()),
-            };
+            let gallery_images: Vec<GalleryImageInput> = image_prompts
+                .into_iter()
+                .map(|(prompt_text, image)| GalleryImageInput {
+                    image,
+                    title: Some(prompt_text),
+                })
+                .collect();
 
             let title = original_request.clone();
             let subtitle = format!("Model: {}", display_model_name);
 
-            let url = upload_gallery_with_individual_prompts(title, subtitle, gallery_input)
-                .await
-                .context("while uploading gallery with individual prompts")?;
+            let (url, _) = upload_gallery(GalleryInput {
+                title: Some(title),
+                subtitle: Some(subtitle),
+                images: gallery_images,
+                workflow: None, // TODO: Grab the workflow from image #1 somehow.
+                backend: Some(ImagenBackend::StableDiffusion.as_str().to_string()),
+                generation_request: Some(prompt.clone()),
+            })
+            .await
+            .context("while uploading dream gallery")?;
 
             // Record the generated gallery in user's history
             let _ = self
@@ -170,7 +202,7 @@ impl Message<String> for DreamActor {
                     url: url.clone(),
                     prompt: original_request.clone(),
                     model: Some(display_model_name.clone()),
-                    backend: "StableDiffusion".to_string(),
+                    backend: ImagenBackend::StableDiffusion.as_str().to_string(),
                 })
                 .send()
                 .await;
@@ -188,14 +220,15 @@ impl Message<String> for DreamActor {
         if has_images && gallery_url.is_some() {
             let gallery_url = gallery_url.unwrap();
             let commentary_prompt = format!(
-                "As a hard-boiled detective, provide commentary on this case. \
-                The client requested: '{}'\n\
-                I generated {} unique interpretations, each with its own angle on the case.\n\
-                The evidence has been compiled here: {}\n\n\
+                "As a hard-boiled detective, provide commentary on this case.                 The client requested: '{}'
+                I generated {} unique interpretations, each with its own angle on the case.
+                The evidence has been compiled here: {}
+
                 Give a brief, noir-style commentary on how this multi-faceted investigation turned out.",
                 original_request, num_images, gallery_url
             );
 
+            let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
             let commentary = router
                 .ask(Oneshot {
                     purpose: Purpose::Chat,
@@ -214,13 +247,14 @@ impl Message<String> for DreamActor {
         } else {
             // No images were generated
             let commentary_prompt = format!(
-                "As a hard-boiled detective, provide commentary on this case. \
-                The client requested: '{}'\n\
-                I tried {} different approaches, but all leads went cold - no images were generated.\n\n\
+                "As a hard-boiled detective, provide commentary on this case.                 The client requested: '{}'
+                I tried {} different approaches, but all leads went cold - no images were generated.
+
                 Give a brief, noir-style commentary on this failed investigation.",
                 original_request, num_images
             );
 
+            let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
             let commentary = router
                 .ask(Oneshot {
                     purpose: Purpose::Chat,
@@ -232,7 +266,7 @@ impl Message<String> for DreamActor {
 
             Ok(PromptResult {
                 text: commentary.text,
-                image_url: None,
+                image_url: gallery_url,
                 images: None,
                 correction_message: correction_message.clone(),
             })

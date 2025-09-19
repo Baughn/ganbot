@@ -58,11 +58,11 @@ pub struct UploadImage {
     pub generation_request: Option<Generate>,
 }
 
-/// Message to upload a gallery of images with title and subtitle
+/// Message to create and upload a gallery.
 pub struct UploadGallery {
-    pub images: Vec<Arc<RgbImage>>,
-    pub title: String,
-    pub subtitle: String,
+    pub images: Vec<GalleryImageInput>,
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
     pub generation_request: Option<Generate>,
@@ -207,8 +207,8 @@ impl ImageUploader {
 
         // Create gallery image using existing function
         let gallery_input = GalleryInput {
-            title: msg.title,
-            subtitle: msg.subtitle,
+            title: msg.title.clone(),
+            subtitle: msg.subtitle.clone(),
             images: msg.images.clone(),
             workflow: msg.workflow.clone(),
             backend: msg.backend.clone(),
@@ -239,7 +239,7 @@ impl ImageUploader {
             .map(|(index, image)| async move {
                 let filename = format!("{}.{}.jpg", base_uuid, index + 1);
                 let jpeg_bytes = self.encode_image_as_jpeg(
-                    image.as_ref(),
+                    image.image.as_ref(),
                     workflow_ref.as_ref(),
                     backend_ref.as_deref(),
                 )?;
@@ -700,48 +700,18 @@ pub async fn upload_gallery(input: GalleryInput) -> Result<(String, Vec<String>)
     Ok((result.gallery_url, result.image_urls))
 }
 
-/// Upload a gallery with individual prompts above each image
-/// Returns only the gallery URL (no individual images)
-pub async fn upload_gallery_with_individual_prompts(
-    title: String,
-    subtitle: String,
-    input: GalleryWithIndividualPromptsInput,
-) -> Result<String> {
-    // Extract fields we need to keep
-    let workflow = input.workflow.clone();
-    let backend = input.backend.clone();
-    let generation_request = input.generation_request.clone();
-
-    // Render individual prompts on images
-    let images_with_prompts = render_individual_prompts_on_images(input)?;
-
-    // Create gallery input and upload
-    let gallery_input = GalleryInput {
-        title,
-        subtitle,
-        images: images_with_prompts,
-        workflow,
-        backend,
-        generation_request,
-    };
-
-    let (gallery_url, _) = upload_gallery(gallery_input).await?;
-    Ok(gallery_url)
+/// Input for creating a gallery image
+#[derive(Clone)]
+pub struct GalleryImageInput {
+    pub image: Arc<RgbImage>,
+    pub title: Option<String>,
 }
 
 /// Input for creating a gallery image
 pub struct GalleryInput {
-    pub title: String,
-    pub subtitle: String,
-    pub images: Vec<Arc<RgbImage>>,
-    pub workflow: Option<serde_json::Value>,
-    pub backend: Option<String>,
-    pub generation_request: Option<Generate>,
-}
-
-/// Input for creating a gallery with individual prompts above each image
-pub struct GalleryWithIndividualPromptsInput {
-    pub image_prompts: Vec<(String, Arc<RgbImage>)>, // (prompt, image) pairs
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub images: Vec<GalleryImageInput>,
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
     pub generation_request: Option<Generate>,
@@ -749,12 +719,33 @@ pub struct GalleryWithIndividualPromptsInput {
 
 /// Calculate the required height for the text area based on title and subtitle content
 fn calculate_text_area_height(
-    title: &str,
-    subtitle: &str,
+    title: Option<&str>,
+    subtitle: Option<&str>,
     canvas_width: u32,
     text_padding: u32,
 ) -> u32 {
     let font = &*GALLERY_FONT;
+
+    let title = title.and_then(|t| {
+        let trimmed = t.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let subtitle = subtitle.and_then(|t| {
+        let trimmed = t.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    if title.is_none() && subtitle.is_none() {
+        return 0;
+    }
 
     // Calculate maximum text width (canvas width minus padding on both sides)
     let max_text_width = canvas_width as f32 - (text_padding * 2) as f32;
@@ -766,11 +757,13 @@ fn calculate_text_area_height(
     let subtitle_line_height = 22; // pixels between subtitle lines
     let title_subtitle_spacing = 6; // pixels between title and subtitle sections
 
-    // Calculate number of lines needed
-    let title_lines = wrap_text(title, font, title_scale, max_text_width);
-    let subtitle_lines = wrap_text(subtitle, font, subtitle_scale, max_text_width);
+    let title_lines = title
+        .map(|value| wrap_text(value, font, title_scale, max_text_width))
+        .unwrap_or_default();
+    let subtitle_lines = subtitle
+        .map(|value| wrap_text(value, font, subtitle_scale, max_text_width))
+        .unwrap_or_default();
 
-    // Calculate total height needed
     let title_height = if title_lines.is_empty() {
         0
     } else {
@@ -789,18 +782,16 @@ fn calculate_text_area_height(
         0
     };
 
-    // Add top and bottom padding, plus a small buffer zone
     let buffer_zone = 20; // Extra space to ensure text doesn't touch images
     let total_height =
         text_padding + title_height + spacing + subtitle_height + text_padding + buffer_zone;
 
-    // Ensure minimum height even for very short text
     const MIN_TEXT_AREA_HEIGHT: u32 = 60;
     total_height.max(MIN_TEXT_AREA_HEIGHT)
 }
 
-/// Calculate the required height for a single prompt text
-fn calculate_prompt_text_height(prompt: &str, max_text_width: f32, text_padding: u32) -> u32 {
+/// Calculate the required height for caption text
+fn calculate_caption_text_height(prompt: &str, max_text_width: f32, text_padding: u32) -> u32 {
     let font = &*GALLERY_FONT;
 
     // Use smaller font for individual prompts
@@ -826,134 +817,132 @@ fn calculate_prompt_text_height(prompt: &str, max_text_width: f32, text_padding:
     total_height.max(MIN_PROMPT_TEXT_HEIGHT)
 }
 
-/// Creates a gallery image from multiple images with a title and subtitle
+/// Creates a gallery image from multiple images with optional metadata
 pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
     if input.images.is_empty() {
         anyhow::bail!("Cannot create gallery from empty image list");
     }
 
-    // Get dimensions of first image (assuming all images have same dimensions)
-    let img_width = input.images[0].width();
-    let img_height = input.images[0].height();
-
-    // Calculate optimal grid layout for 16:10 aspect ratio
-    let (grid_cols, grid_rows) = calculate_optimal_grid(input.images.len(), img_width, img_height);
-
-    // Calculate mean color across all images for border
-    let border_color = calculate_mean_color(&input.images);
+    let image_refs: Vec<&RgbImage> = input
+        .images
+        .iter()
+        .map(|entry| entry.image.as_ref())
+        .collect();
+    let border_color = calculate_mean_color(&image_refs);
     let text_color = calculate_text_color(border_color);
 
-    // Define spacing and text area
+    let prepared_images = prepare_gallery_images(&input.images, border_color, text_color)?;
+
+    let img_width = prepared_images[0].width();
+    let img_height = prepared_images[0].height();
+    let (grid_cols, grid_rows) =
+        calculate_optimal_grid(prepared_images.len(), img_width, img_height);
+
     const BORDER_SIZE: u32 = 4;
     const TEXT_PADDING: u32 = 20;
 
-    // Calculate canvas width first (needed for text area height calculation)
     let canvas_width = grid_cols * img_width + (grid_cols + 1) * BORDER_SIZE;
 
-    // Calculate required text area height based on actual content
-    let text_area_height =
-        calculate_text_area_height(&input.title, &input.subtitle, canvas_width, TEXT_PADDING);
+    let title = input.title.as_deref();
+    let subtitle = input.subtitle.as_deref();
+    let text_area_height = calculate_text_area_height(title, subtitle, canvas_width, TEXT_PADDING);
 
-    // Calculate final canvas height
     let canvas_height = grid_rows * img_height + (grid_rows + 1) * BORDER_SIZE + text_area_height;
-
-    // Create canvas with border color
     let mut canvas = RgbImage::from_pixel(canvas_width, canvas_height, border_color);
 
-    // Place images in grid
-    for (i, image) in input.images.iter().enumerate() {
+    for (i, image) in prepared_images.iter().enumerate() {
         let row = (i as u32) / grid_cols;
         let col = (i as u32) % grid_cols;
 
         let x = col * (img_width + BORDER_SIZE) + BORDER_SIZE;
         let y = row * (img_height + BORDER_SIZE) + BORDER_SIZE + text_area_height;
 
-        // Copy image pixels to canvas
-        for img_y in 0..img_height {
-            for img_x in 0..img_width {
-                let pixel = image.get_pixel(img_x, img_y);
-                canvas.put_pixel(x + img_x, y + img_y, *pixel);
-            }
-        }
+        blit_image(&mut canvas, image, x, y);
     }
 
-    // Render title and subtitle text
-    render_text_on_canvas(
-        &mut canvas,
-        &input.title,
-        &input.subtitle,
-        text_color,
-        TEXT_PADDING,
-    )?;
+    if text_area_height > 0 {
+        render_text_on_canvas(&mut canvas, title, subtitle, text_color, TEXT_PADDING)?;
+    }
 
     Ok(canvas)
 }
 
-/// Renders individual prompts above each image and returns a vector of modified images
-pub fn render_individual_prompts_on_images(
-    input: GalleryWithIndividualPromptsInput,
-) -> Result<Vec<Arc<RgbImage>>> {
-    if input.image_prompts.is_empty() {
-        anyhow::bail!("Cannot render prompts on empty image list");
-    }
+fn prepare_gallery_images(
+    entries: &[GalleryImageInput],
+    border_color: Rgb<u8>,
+    text_color: Rgb<u8>,
+) -> Result<Vec<RgbImage>> {
+    let first_image = &entries[0].image;
+    let base_width = first_image.width();
+    let base_height = first_image.height();
 
-    // Get dimensions of first image (assuming all images have same dimensions)
-    let img_width = input.image_prompts[0].1.width();
-    let img_height = input.image_prompts[0].1.height();
-
-    // Extract images for mean color calculation
-    let images: Vec<&RgbImage> = input
-        .image_prompts
-        .iter()
-        .map(|(_, img)| img.as_ref())
-        .collect();
-    let border_color = calculate_mean_color(&images);
-    let text_color = calculate_text_color(border_color);
-
-    // Define spacing
     const TEXT_PADDING: u32 = 10;
+    let max_text_width = base_width as f32 - (TEXT_PADDING * 2) as f32;
 
-    // Calculate maximum text width based on image width
-    let max_text_width = img_width as f32 - (TEXT_PADDING * 2) as f32;
+    let has_titles = entries.iter().any(|entry| {
+        entry
+            .title
+            .as_deref()
+            .map(|title| !title.trim().is_empty())
+            .unwrap_or(false)
+    });
 
-    // Calculate the maximum prompt text height needed across all prompts
-    let max_prompt_height = input
-        .image_prompts
-        .iter()
-        .map(|(prompt, _)| calculate_prompt_text_height(prompt, max_text_width, TEXT_PADDING))
-        .max()
-        .unwrap_or(40); // fallback to minimum
+    let caption_height = if has_titles {
+        entries
+            .iter()
+            .filter_map(|entry| entry.title.as_deref())
+            .map(|title| calculate_caption_text_height(title, max_text_width, TEXT_PADDING))
+            .max()
+            .unwrap_or(40)
+    } else {
+        0
+    };
 
-    // Create a new image for each prompt+image pair
-    let mut result_images = Vec::with_capacity(input.image_prompts.len());
+    let mut prepared = Vec::with_capacity(entries.len());
 
-    for (prompt, image) in input.image_prompts.iter() {
-        // Create a new canvas for this image with prompt
-        let single_image_height = img_height + max_prompt_height;
-        let mut canvas = RgbImage::from_pixel(img_width, single_image_height, border_color);
-
-        // Render prompt text at the top
-        render_individual_prompt_text(
-            &mut canvas,
-            prompt,
-            text_color,
-            TEXT_PADDING,
-            TEXT_PADDING,
-            max_text_width,
-        )?;
-
-        // Copy the original image below the prompt text
-        for y in 0..img_height {
-            for x in 0..img_width {
-                let pixel = image.get_pixel(x, y);
-                canvas.put_pixel(x, y + max_prompt_height, *pixel);
-            }
+    for entry in entries {
+        if entry.image.width() != base_width || entry.image.height() != base_height {
+            anyhow::bail!("All images in a gallery must have the same dimensions");
         }
 
-        result_images.push(Arc::new(canvas));
+        if caption_height == 0 {
+            prepared.push(entry.image.as_ref().clone());
+            continue;
+        }
+
+        let mut canvas =
+            RgbImage::from_pixel(base_width, base_height + caption_height, border_color);
+
+        if let Some(title) = entry
+            .title
+            .as_deref()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+        {
+            render_caption_text(
+                &mut canvas,
+                title,
+                text_color,
+                TEXT_PADDING,
+                TEXT_PADDING,
+                max_text_width,
+            )?;
+        }
+
+        blit_image(&mut canvas, entry.image.as_ref(), 0, caption_height);
+        prepared.push(canvas);
     }
 
-    Ok(result_images)
+    Ok(prepared)
+}
+
+fn blit_image(destination: &mut RgbImage, source: &RgbImage, dest_x: u32, dest_y: u32) {
+    for y in 0..source.height() {
+        for x in 0..source.width() {
+            let pixel = source.get_pixel(x, y);
+            destination.put_pixel(dest_x + x, dest_y + y, *pixel);
+        }
+    }
 }
 
 /// Calculate optimal grid layout for given aspect ratio
@@ -1099,58 +1088,69 @@ fn wrap_text(text: &str, font: &FontRef, scale: PxScale, max_width: f32) -> Vec<
 /// Render title and subtitle text on canvas
 fn render_text_on_canvas(
     canvas: &mut RgbImage,
-    title: &str,
-    subtitle: &str,
+    title: Option<&str>,
+    subtitle: Option<&str>,
     text_color: Rgb<u8>,
     padding: u32,
 ) -> Result<()> {
-    // Use the lazy-loaded font (parsed once at startup)
     let font = &*GALLERY_FONT;
 
-    // Calculate maximum text width (canvas width minus padding on both sides)
-    let max_text_width = canvas.width() as f32 - (padding * 2) as f32;
+    let title = title.and_then(|t| {
+        let trimmed = t.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let subtitle = subtitle.and_then(|t| {
+        let trimmed = t.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
 
-    // Convert coordinates to i32
+    if title.is_none() && subtitle.is_none() {
+        return Ok(());
+    }
+
+    let max_text_width = canvas.width() as f32 - (padding * 2) as f32;
     let x = padding as i32;
     let mut current_y = padding as i32;
 
-    // Define font scales and line heights
     let title_scale = PxScale::from(32.0);
     let subtitle_scale = PxScale::from(20.0);
-    let title_line_height = 40; // pixels between title lines
-    let subtitle_line_height = 25; // pixels between subtitle lines
-    let title_subtitle_spacing = 15; // pixels between title and subtitle sections
+    let title_line_height = 40;
+    let subtitle_line_height = 25;
+    let title_subtitle_spacing = 15;
 
-    // Wrap and draw title
-    let title_lines = wrap_text(title, font, title_scale, max_text_width);
-    for line in title_lines {
-        draw_text_mut(canvas, text_color, x, current_y, title_scale, font, &line);
+    let title_lines = title
+        .map(|value| wrap_text(value, font, title_scale, max_text_width))
+        .unwrap_or_default();
+    for line in &title_lines {
+        draw_text_mut(canvas, text_color, x, current_y, title_scale, font, line);
         current_y += title_line_height;
     }
 
-    // Add spacing between title and subtitle
-    current_y += title_subtitle_spacing;
+    let subtitle_lines = subtitle
+        .map(|value| wrap_text(value, font, subtitle_scale, max_text_width))
+        .unwrap_or_default();
+    if !title_lines.is_empty() && !subtitle_lines.is_empty() {
+        current_y += title_subtitle_spacing;
+    }
 
-    // Wrap and draw subtitle
-    let subtitle_lines = wrap_text(subtitle, font, subtitle_scale, max_text_width);
-    for line in subtitle_lines {
-        draw_text_mut(
-            canvas,
-            text_color,
-            x,
-            current_y,
-            subtitle_scale,
-            font,
-            &line,
-        );
+    for line in &subtitle_lines {
+        draw_text_mut(canvas, text_color, x, current_y, subtitle_scale, font, line);
         current_y += subtitle_line_height;
     }
 
     Ok(())
 }
 
-/// Render individual prompt text at specified position
-fn render_individual_prompt_text(
+/// Render caption text at specified position
+fn render_caption_text(
     canvas: &mut RgbImage,
     prompt: &str,
     text_color: Rgb<u8>,
@@ -1341,8 +1341,8 @@ mod tests {
     #[test]
     fn test_create_gallery_input_validation() {
         let empty_input = GalleryInput {
-            title: "Test".to_string(),
-            subtitle: "Test subtitle".to_string(),
+            title: Some("Test".to_string()),
+            subtitle: Some("Test subtitle".to_string()),
             images: vec![],
             workflow: None,
             backend: None,
@@ -1358,9 +1358,12 @@ mod tests {
     fn test_create_gallery_single_image() {
         let image = RgbImage::from_pixel(100, 100, Rgb([255, 0, 0]));
         let input = GalleryInput {
-            title: "Single Image".to_string(),
-            subtitle: "Test".to_string(),
-            images: vec![Arc::new(image)],
+            title: Some("Single Image".to_string()),
+            subtitle: Some("Test".to_string()),
+            images: vec![GalleryImageInput {
+                image: Arc::new(image),
+                title: None,
+            }],
             workflow: None,
             backend: None,
             generation_request: None,
@@ -1379,13 +1382,53 @@ mod tests {
     }
 
     #[test]
+    fn test_create_gallery_with_per_image_titles() {
+        let base_image = RgbImage::from_pixel(64, 64, Rgb([0, 0, 255]));
+        let inputs = vec![
+            GalleryImageInput {
+                image: Arc::new(base_image.clone()),
+                title: Some("First".to_string()),
+            },
+            GalleryImageInput {
+                image: Arc::new(base_image),
+                title: Some("Second".to_string()),
+            },
+        ];
+
+        let gallery = create_gallery(GalleryInput {
+            title: None,
+            subtitle: None,
+            images: inputs,
+            workflow: None,
+            backend: None,
+            generation_request: None,
+        })
+        .expect("expected gallery to render");
+
+        // With per-image titles the gallery should be taller than just the images and borders.
+        let base_height_with_borders = 64 + 2 * 4;
+        assert!(gallery.height() > base_height_with_borders);
+        // No gallery title/subtitle means width should still match the calculated layout.
+        assert!(gallery.width() >= 64 + 2 * 4);
+    }
+
+    #[test]
     fn test_create_gallery_multiple_images() {
         let image1 = RgbImage::from_pixel(50, 50, Rgb([255, 0, 0]));
         let image2 = RgbImage::from_pixel(50, 50, Rgb([0, 255, 0]));
         let input = GalleryInput {
-            title: "Two Images".to_string(),
-            subtitle: "Test".to_string(),
-            images: vec![Arc::new(image1), Arc::new(image2)],
+            title: Some("Two Images".to_string()),
+            subtitle: Some("Test".to_string()),
+            images: vec![
+                GalleryImageInput {
+                    image: Arc::new(image1),
+                    title: None,
+                },
+                GalleryImageInput {
+                    image: Arc::new(image2),
+                    title: None,
+                },
+            ],
             workflow: None,
             backend: None,
             generation_request: None,
@@ -1415,8 +1458,8 @@ mod tests {
 
         let empty_gallery = UploadGallery {
             images: vec![],
-            title: "Empty".to_string(),
-            subtitle: "Should fail".to_string(),
+            title: Some("Empty".to_string()),
+            subtitle: Some("Should fail".to_string()),
             workflow: None,
             backend: None,
             generation_request: None,
@@ -1533,8 +1576,12 @@ mod tests {
         let canvas_width = 400;
         let text_padding = 20;
 
-        let height =
-            calculate_text_area_height("Short title", "Short subtitle", canvas_width, text_padding);
+        let height = calculate_text_area_height(
+            Some("Short title"),
+            Some("Short subtitle"),
+            canvas_width,
+            text_padding,
+        );
 
         // Should be at least the minimum height
         assert!(height >= 60);
@@ -1550,14 +1597,19 @@ mod tests {
         let long_title = "This is a very long title that should definitely wrap to multiple lines when rendered in a gallery with limited width";
         let long_subtitle = "This is also a very long subtitle that contains lots of detailed information and should also wrap to multiple lines";
 
-        let height =
-            calculate_text_area_height(long_title, long_subtitle, canvas_width, text_padding);
+        let height = calculate_text_area_height(
+            Some(long_title),
+            Some(long_subtitle),
+            canvas_width,
+            text_padding,
+        );
 
         // Long text should require more height
         assert!(height > 100);
 
         // Should accommodate multiple lines
-        let short_height = calculate_text_area_height("Short", "Short", canvas_width, text_padding);
+        let short_height =
+            calculate_text_area_height(Some("Short"), Some("Short"), canvas_width, text_padding);
         assert!(height > short_height);
     }
 
@@ -1566,10 +1618,10 @@ mod tests {
         let canvas_width = 400;
         let text_padding = 20;
 
-        let height = calculate_text_area_height("", "", canvas_width, text_padding);
+        let height = calculate_text_area_height(None, None, canvas_width, text_padding);
 
         // Even empty text should have minimum height
-        assert_eq!(height, 60); // MIN_TEXT_AREA_HEIGHT
+        assert_eq!(height, 0);
     }
 
     #[test]
@@ -1642,9 +1694,12 @@ mod tests {
         let long_subtitle = "And this is also a very long subtitle with lots of descriptive text that provides detailed information about the gallery contents";
 
         let input = GalleryInput {
-            title: long_title.to_string(),
-            subtitle: long_subtitle.to_string(),
-            images: vec![Arc::new(image)],
+            title: Some(long_title.to_string()),
+            subtitle: Some(long_subtitle.to_string()),
+            images: vec![GalleryImageInput {
+                image: Arc::new(image),
+                title: None,
+            }],
             workflow: None,
             backend: None,
             generation_request: None,
