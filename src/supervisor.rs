@@ -8,6 +8,7 @@ use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::actions::broker::ActionBroker;
 use anyhow::{Context as _, Result, bail};
 use futures::future::join_all;
 use kameo::error::Infallible;
@@ -45,6 +46,8 @@ pub struct Supervisor {
     redis_connection: redis::aio::ConnectionManager,
     /// User manager.
     _user_manager: ActorRef<UserManager>,
+    /// Action broker.
+    _action_broker: ActorRef<ActionBroker>,
     /// Filesystem watcher for configuration changes (kept alive for duration of actor).
     _config_watcher: Option<RecommendedWatcher>,
 }
@@ -105,6 +108,7 @@ impl Actor for Supervisor {
         tokio::spawn(redis_keepalive(redis_connection.clone()));
         // Initialize the user manager.
         let user_manager = UserManager::spawn_link(&actor_ref, redis_connection.clone()).await;
+        let action_broker = ActionBroker::spawn_link(&actor_ref, redis_connection.clone()).await;
 
         // Load models configuration
         let models_config = load_models_config().expect("Failed to load models configuration");
@@ -123,6 +127,7 @@ impl Actor for Supervisor {
             actors: HashMap::new(),
             redis_connection,
             _user_manager: user_manager,
+            _action_broker: action_broker,
             _config_watcher,
         };
 

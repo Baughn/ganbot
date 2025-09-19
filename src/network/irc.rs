@@ -9,9 +9,11 @@ use tokio::time::{Duration, Instant};
 use tracing::{error, info, instrument, trace, warn};
 
 use crate::actions;
+use crate::actions::broker::{ActionBroker, RegisterIrc};
+use crate::actions::{ActionId, ActionOrigin, ActionPayload, ActionResponse, SubmitAction};
 use crate::config::global::IrcConfig;
 use crate::help;
-use crate::persistence::user::{self, UserActor, UserManager};
+use crate::persistence::user::{self, GetUserId, UserActor, UserManager};
 
 mod sasl;
 use self::sasl::SaslManager;
@@ -60,10 +62,19 @@ struct BufferedMessage {
     last_updated: Instant,
 }
 
+#[derive(Debug, Clone)]
+pub struct BrokerActionDelivery {
+    pub channel: Option<String>,
+    pub nickname: String,
+    pub response: ActionResponse,
+    pub reply_privately: bool,
+}
+
 // Internal commands.
 struct ProcessBufferedMessages;
 #[derive(Clone)]
 struct ProcessCommand {
+    server: String,
     irc_actor: ActorRef<IrcActor>,
     user: ActorRef<UserActor>,
     privmsg: PrivMsg,
@@ -152,6 +163,22 @@ impl Actor for IrcActor {
             joined_channels: false,
         };
         actor.connect(&actor_ref).await?;
+
+        if let Ok(broker) = ActionBroker::get() {
+            if let Err(err) = broker
+                .tell(RegisterIrc {
+                    server: actor.name.clone(),
+                    actor: actor_ref.clone(),
+                })
+                .send()
+                .await
+            {
+                warn!("Failed to register IRC actor with broker: {err}");
+            }
+        } else {
+            warn!("ActionBroker not available; IRC actions may not be routed");
+        }
+
         Ok(actor)
     }
 
@@ -474,6 +501,7 @@ impl IrcActor {
             ReplyActor::spawn_link(&actor_ref, ReplyActor)
                 .await
                 .tell(ProcessCommand {
+                    server: self.name.clone(),
                     irc_actor: actor_ref,
                     user,
                     privmsg: PrivMsg {
@@ -557,6 +585,34 @@ impl Message<SendReply> for IrcActor {
     }
 }
 
+impl Message<BrokerActionDelivery> for IrcActor {
+    type Reply = ();
+
+    #[instrument(skip_all, fields(server = %self.name))]
+    async fn handle(
+        &mut self,
+        msg: BrokerActionDelivery,
+        _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let BrokerActionDelivery {
+            channel,
+            nickname,
+            response,
+            reply_privately,
+        } = msg;
+        let deliver_privately = reply_privately || response.reply_privately;
+        let target = if deliver_privately {
+            nickname.clone()
+        } else {
+            channel.unwrap_or(nickname.clone())
+        };
+        let message = response.lines.join("\n");
+        if let Err(e) = self.send_privmsg(&target, &message).await {
+            error!("Failed to deliver broker action to {}: {:#}", target, e);
+        }
+    }
+}
+
 impl Message<CheckUserIdentified> for IrcActor {
     type Reply = Result<Option<bool>>;
 
@@ -571,6 +627,25 @@ impl Message<CheckUserIdentified> for IrcActor {
 }
 
 impl ReplyActor {
+    async fn enqueue_action(
+        server: &str,
+        privmsg: &PrivMsg,
+        reply_privately: bool,
+        payload: ActionPayload,
+    ) -> Result<ActionId> {
+        let origin = ActionOrigin::Irc {
+            server: server.to_string(),
+            channel: privmsg.channel.clone(),
+            nickname: privmsg.user.clone(),
+            reply_privately,
+        };
+        let broker = ActionBroker::get().context("while fetching ActionBroker")?;
+        broker
+            .ask(SubmitAction::new(origin, payload))
+            .await
+            .context("while submitting action to broker")
+    }
+
     /// Check if user is identified with NickServ with retry logic
     /// Returns true if identified, false if not identified
     async fn check_user_identified_with_retry(
@@ -642,105 +717,70 @@ impl Message<ProcessCommand> for ReplyActor {
 
         let reply = match command {
             "ping" => Some("Pong!".to_string()),
-            "ask" => {
-                // Spawn AskActor to handle this command
-                let ask_actor = actions::ask::AskActor::spawn_link(
-                    &ctx.actor_ref(),
-                    actions::ask::AskActor::new().await,
-                )
-                .await;
-                let ask_result = ask_actor.ask(args.to_string()).await;
-                match ask_result {
-                    Ok(result) => Some(result.response),
-                    Err(e) => Some(format!("Error: {e:#}")),
-                }
-            }
-            "combine" => {
-                // Spawn Combine actor to handle this command
-                let combine_actor = actions::combine::CombineActor::spawn_link(
-                    &ctx.actor_ref(),
-                    actions::combine::CombineActor::new().await,
-                )
-                .await;
-                let combine_result = combine_actor.ask(args.to_string()).await;
-                match combine_result {
-                    Ok(result) => {
-                        // Format the result nicely with image URL and correction message
-                        let mut response = format!(
-                            "{}\n**{}**\n{}",
-                            result.image_url, result.result, result.reasoning,
-                        );
-
-                        // Add correction message if present
-                        if let Some(correction_msg) = result.correction_message {
-                            response = format!("{}\n({})", response, correction_msg);
-                        }
-
-                        Some(response)
+            "ask" => match Self::enqueue_action(
+                &msg.server,
+                &msg.privmsg,
+                reply_privately,
+                ActionPayload::Ask {
+                    question: args.to_string(),
+                },
+            )
+            .await
+            {
+                Ok(action_id) => Some(format!(
+                    "Queued request ({action_id}). I'll report back soon."
+                )),
+                Err(e) => Some(format!("Error queuing action: {e:#}")),
+            },
+            "combine" => match Self::enqueue_action(
+                &msg.server,
+                &msg.privmsg,
+                reply_privately,
+                ActionPayload::Combine {
+                    request: args.to_string(),
+                },
+            )
+            .await
+            {
+                Ok(action_id) => Some(format!("Queued combination ({action_id}). Hang tight.")),
+                Err(e) => Some(format!("Error queuing action: {e:#}")),
+            },
+            "prompt" => match msg.user.ask(GetUserId).await {
+                Ok(user_id) => {
+                    let payload = ActionPayload::Prompt {
+                        user_id,
+                        user_name: msg.privmsg.user.clone(),
+                        input: args.to_string(),
+                    };
+                    match Self::enqueue_action(&msg.server, &msg.privmsg, reply_privately, payload)
+                        .await
+                    {
+                        Ok(action_id) => Some(format!(
+                            "Queued generation ({action_id}). I'll update with results."
+                        )),
+                        Err(e) => Some(format!("Error queuing action: {e:#}")),
                     }
-                    Err(e) => Some(format!("Error: {e:#}")),
                 }
-            }
-            "prompt" => {
-                // Spawn Prompt actor to handle image generation
-                let prompt_actor = actions::prompt::PromptActor::spawn_link(
-                    &ctx.actor_ref(),
-                    actions::prompt::PromptActor::new(msg.user.clone()).await,
-                )
-                .await;
-                let prompt_result = prompt_actor.ask(args.to_string()).await;
-                match prompt_result {
-                    Ok(result) => {
-                        // Return text and optional image URL with correction message
-                        let base_response = match result.image_url {
-                            Some(image_url) => {
-                                format!("{}: {} {}", msg.privmsg.user, result.text, image_url)
-                            }
-                            None => format!("{}\n(No image)", result.text),
-                        };
-
-                        // Add correction message if present
-                        let final_response = if let Some(correction_msg) = result.correction_message
-                        {
-                            format!("{}\n({})", base_response, correction_msg)
-                        } else {
-                            base_response
-                        };
-
-                        Some(final_response)
+                Err(e) => Some(format!("Error resolving user: {e:#}")),
+            },
+            "dream" => match msg.user.ask(GetUserId).await {
+                Ok(user_id) => {
+                    let payload = ActionPayload::Dream {
+                        user_id,
+                        user_name: msg.privmsg.user.clone(),
+                        input: args.to_string(),
+                    };
+                    match Self::enqueue_action(&msg.server, &msg.privmsg, reply_privately, payload)
+                        .await
+                    {
+                        Ok(action_id) => Some(format!(
+                            "Queued dream sequence ({action_id}). Updates coming soon."
+                        )),
+                        Err(e) => Some(format!("Error queuing action: {e:#}")),
                     }
-                    Err(e) => Some(format!("Error: {e:#}")),
                 }
-            }
-            "dream" => {
-                // Spawn Dream actor to handle this command
-                let dream_actor = actions::dream::DreamActor::spawn_link(
-                    &ctx.actor_ref(),
-                    actions::dream::DreamActor::new(msg.user.clone()).await,
-                )
-                .await;
-                let dream_result = dream_actor.ask(args.to_string()).await;
-                match dream_result {
-                    Ok(result) => {
-                        // Format similar to !prompt command
-                        let base_response = match result.image_url {
-                            Some(image_url) => {
-                                format!("{}: {} {}", msg.privmsg.user, result.text, image_url)
-                            }
-                            None => format!("{}\n(No image)", result.text),
-                        };
-                        // Add correction message if present
-                        let final_response = if let Some(correction_msg) = result.correction_message
-                        {
-                            format!("{}\n({})", base_response, correction_msg)
-                        } else {
-                            base_response
-                        };
-                        Some(final_response)
-                    }
-                    Err(e) => Some(format!("Error: {e:#}")),
-                }
-            }
+                Err(e) => Some(format!("Error resolving user: {e:#}")),
+            },
             "config" => {
                 // Check if user is identified before allowing config command
                 let is_identified = match Self::check_user_identified_with_retry(
