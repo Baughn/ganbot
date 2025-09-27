@@ -190,14 +190,6 @@ impl Message<String> for DreamActor {
         let mut has_images = false;
 
         for (prompt_text, response) in &image_results {
-            if response.backend != ImagenBackend::StableDiffusion {
-                error!(backend = ?response.backend, "Dream command received unexpected backend from imagen");
-                bail!(
-                    "Dream command expects StableDiffusion backend, got {:?}",
-                    response.backend
-                );
-            }
-
             if response.images.len() != 1 {
                 error!(
                     image_count = response.images.len(),
