@@ -42,10 +42,18 @@ pub enum ActionOrigin {
         reply_privately: bool,
     },
     Discord {
+        /// Discord application identifier so the broker can locate the actor instance.
+        application_id: u64,
+        /// Optional guild identifier; absent for direct messages.
         guild_id: Option<u64>,
+        /// Channel that should receive progress and completion updates.
         channel_id: u64,
+        /// Progress message identifier so the broker can update/delete it later.
         message_id: u64,
+        /// Requesting user.
         user_id: u64,
+        /// Static portion of the progress message that should be preserved across updates.
+        progress_message: Option<String>,
     },
 }
 

@@ -17,7 +17,7 @@ use crate::actions::{
     ActionResponse, ActionStatus, ActionUpdate, SubmitAction,
 };
 use crate::network::{
-    discord::DiscordActor,
+    discord::{BrokerActionUpdate, DiscordActor},
     irc::{BrokerActionDelivery, IrcActor},
 };
 use crate::persistence::user::{GetUser, UserManager};
@@ -27,7 +27,7 @@ const ACTIONS_PENDING_KEY: &str = "actions:pending";
 pub struct ActionBroker {
     redis: ConnectionManager,
     irc_targets: HashMap<String, WeakActorRef<IrcActor>>,
-    discord_targets: HashMap<u64, WeakActorRef<DiscordActor>>,
+    discord_target: Option<WeakActorRef<DiscordActor>>,
 }
 
 pub struct RegisterIrc {
@@ -36,7 +36,6 @@ pub struct RegisterIrc {
 }
 
 pub struct RegisterDiscord {
-    pub guild_id: u64,
     pub actor: ActorRef<DiscordActor>,
 }
 
@@ -153,38 +152,35 @@ impl ActionBroker {
     }
 
     async fn forward_update(&mut self, update: ActionUpdate) -> Result<()> {
-        match (&update.origin, &update.status) {
-            (crate::actions::ActionOrigin::Irc { .. }, ActionStatus::Queued)
-            | (crate::actions::ActionOrigin::Irc { .. }, ActionStatus::Started)
-            | (crate::actions::ActionOrigin::Irc { .. }, ActionStatus::Progress(_)) => {
-                // Placeholder: future progress routing.
-                Ok(())
+        if let crate::actions::ActionOrigin::Irc { .. } = &update.origin {
+            match &update.status {
+                ActionStatus::Queued | ActionStatus::Started | ActionStatus::Progress(_) => {
+                    // Placeholder: future progress routing.
+                    Ok(())
+                }
+                ActionStatus::Completed(completed) => {
+                    self.deliver_irc(update.id, &update.origin, &completed.response)
+                        .await
+                }
+                ActionStatus::Failed(failure) => {
+                    let reply_privately = matches!(
+                        update.origin,
+                        crate::actions::ActionOrigin::Irc {
+                            reply_privately: true,
+                            ..
+                        }
+                    );
+                    let response = ActionResponse::single_line(
+                        format!("Error: {}", failure.error),
+                        reply_privately,
+                    );
+                    self.deliver_irc(update.id, &update.origin, &response).await
+                }
             }
-            (crate::actions::ActionOrigin::Irc { .. }, ActionStatus::Completed(completed)) => {
-                self.deliver_irc(update.id, &update.origin, &completed.response)
-                    .await
-            }
-            (crate::actions::ActionOrigin::Irc { .. }, ActionStatus::Failed(failure)) => {
-                let reply_privately = matches!(
-                    update.origin,
-                    crate::actions::ActionOrigin::Irc {
-                        reply_privately: true,
-                        ..
-                    }
-                );
-                let response = ActionResponse::single_line(
-                    format!("Error: {}", failure.error),
-                    reply_privately,
-                );
-                self.deliver_irc(update.id, &update.origin, &response).await
-            }
-            (crate::actions::ActionOrigin::Discord { .. }, ActionStatus::Completed(_))
-            | (crate::actions::ActionOrigin::Discord { .. }, ActionStatus::Failed(_)) => {
-                // TODO: implement Discord routing.
-                warn!("Discord delivery not yet implemented");
-                Ok(())
-            }
-            _ => Ok(()),
+        } else if let crate::actions::ActionOrigin::Discord { .. } = &update.origin {
+            self.deliver_discord(update).await
+        } else {
+            Ok(())
         }
     }
 
@@ -228,6 +224,23 @@ impl ActionBroker {
             .context("while delivering to IRC actor")
     }
 
+    async fn deliver_discord(&mut self, update: ActionUpdate) -> Result<()> {
+        let Some(actor) = self.discord_target.as_ref().and_then(WeakActorRef::upgrade) else {
+            warn!("No Discord actor registered; dropping action {}", update.id);
+            return Ok(());
+        };
+
+        actor
+            .tell(BrokerActionUpdate {
+                id: update.id,
+                origin: update.origin,
+                status: update.status,
+            })
+            .send()
+            .await
+            .context("while delivering action update to Discord actor")
+    }
+
     async fn persist_terminal(&self, request: &ActionRequest, status: &ActionStatus) -> Result<()> {
         let mut conn = self.redis.clone();
         let payload = json!({
@@ -257,7 +270,7 @@ impl Actor for ActionBroker {
         let mut broker = Self {
             redis: args,
             irc_targets: HashMap::new(),
-            discord_targets: HashMap::new(),
+            discord_target: None,
         };
         broker.recover_pending(&actor_ref).await?;
         Ok(broker)
@@ -340,14 +353,13 @@ impl Message<RegisterIrc> for ActionBroker {
 impl Message<RegisterDiscord> for ActionBroker {
     type Reply = ();
 
-    #[instrument(skip_all, fields(guild = msg.guild_id))]
+    #[instrument(skip_all)]
     async fn handle(
         &mut self,
         msg: RegisterDiscord,
         _ctx: &mut ActorContext<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.discord_targets
-            .insert(msg.guild_id, msg.actor.downgrade());
+        self.discord_target = Some(msg.actor.downgrade());
     }
 }
 

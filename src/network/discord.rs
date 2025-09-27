@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context as AnyhowContext, Result};
 use kameo::prelude::*;
@@ -9,19 +6,21 @@ use serenity::{
     Client,
     all::{
         self, ButtonStyle, Command, CommandDataOptionValue, CommandInteraction, CommandOptionType,
-        ComponentInteraction, CreateCommand, CreateCommandOption, EventHandler,
+        ComponentInteraction, CreateAllowedMentions, CreateCommand, CreateCommandOption,
+        CreateInteractionResponseFollowup, CreateMessage, EditMessage, EventHandler,
         GatewayIntents, Http, Interaction, ModalInteraction,
     },
     async_trait,
-    model::{
-        gateway::Ready,
-        id::ApplicationId,
-    },
+    model::{gateway::Ready, id::ApplicationId},
 };
+use tokio::task::JoinHandle;
 use tracing::{error, info, instrument, warn};
 
 use crate::{
-    actions::{broker::ActionBroker, prompt::PromptActor},
+    actions::{
+        ActionId, ActionOrigin, ActionPayload, ActionResponse, ActionStatus, SubmitAction,
+        broker::{ActionBroker, RegisterDiscord},
+    },
     config::global::DiscordConfig,
     persistence::user::{GetUser, UserActor, UserId, UserManager},
 };
@@ -67,6 +66,13 @@ enum DiscordInteraction {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct BrokerActionUpdate {
+    pub id: ActionId,
+    pub origin: ActionOrigin,
+    pub status: ActionStatus,
+}
+
 /// Helper methods for sending error responses mostly.
 impl DiscordInteraction {
     fn ctx(&self) -> &all::Context {
@@ -96,7 +102,8 @@ impl DiscordInteraction {
 
 pub struct DiscordActor {
     config: DiscordConfig,
-    client: Client,
+    http: Arc<Http>,
+    client_task: JoinHandle<()>,
     user_manager: ActorRef<UserManager>,
     broker: ActorRef<ActionBroker>,
 }
@@ -145,40 +152,65 @@ impl Actor for DiscordActor {
     #[instrument(skip_all, fields(app_id = args.application_id))]
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self> {
         info!("Starting Discord actor");
-        let client = connect_discord(actor_ref.clone(), &args).await?;
+        let (http, client_task) = connect_discord(actor_ref.clone(), &args).await?;
         let user_manager =
             UserManager::get().with_context(|| "while retrieving user manager actor")?;
+        let broker = ActionBroker::get().with_context(|| "while retrieving action broker actor")?;
+
+        if let Err(err) = broker
+            .tell(RegisterDiscord {
+                actor: actor_ref.clone(),
+            })
+            .send()
+            .await
+        {
+            warn!("Failed to register Discord actor with broker: {err:#}");
+        }
 
         Ok(Self {
             config: args,
-            client,
+            http,
+            client_task,
             user_manager,
-            broker: ActionBroker::get().with_context(|| "while retrieving action broker actor")?,
+            broker,
         })
+    }
+
+    async fn on_stop(
+        &mut self,
+        _actor_ref: WeakActorRef<Self>,
+        _reason: ActorStopReason,
+    ) -> std::result::Result<(), Self::Error> {
+        self.client_task.abort();
+        Ok(())
     }
 }
 
 async fn connect_discord(
     actor_ref: ActorRef<DiscordActor>,
     config: &DiscordConfig,
-) -> Result<Client> {
+) -> Result<(Arc<Http>, JoinHandle<()>)> {
     info!("Connecting to Discord...");
     let intents = GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
 
-    let mut client = serenity::Client::builder(&config.token, intents)
+    let client = Client::builder(&config.token, intents)
         .event_handler(Handler { actor_ref })
         .application_id(ApplicationId::new(config.application_id))
         .await
         .context("Failed to create Discord client")?;
 
-    client
-        .start()
-        .await
-        .context("Failed to start Discord client")?;
+    let http = client.http.clone();
+    let mut runner = client;
+    let application_id = config.application_id;
+    let handle = tokio::spawn(async move {
+        if let Err(err) = runner.start().await {
+            error!("Discord client {application_id} exited: {err:#}");
+        }
+    });
 
-    Ok(client)
+    Ok((http, handle))
 }
 
 fn build_commands() -> Vec<CreateCommand> {
@@ -223,9 +255,16 @@ impl kameo::prelude::Message<DiscordInteraction> for DiscordActor {
         if let Err(err) = self.handle_interaction(ctx, &event).await {
             error!("Failed to handle Discord interaction: {err:#}");
             // Make an attempt to notify the user about the error.
-            match event.interaction_channel_id().say(&event.ctx().http, 
-                format!("An error occurred while processing your request. Please try again later.\n{err}")
-            ).await {
+            match event
+                .interaction_channel_id()
+                .say(
+                    &event.ctx().http,
+                    format!(
+                        "An error occurred while processing your request. Please try again later.\n{err}"
+                    ),
+                )
+                .await
+            {
                 Ok(_) => {}
                 Err(send_err) => {
                     error!("Failed to send error message to Discord: {send_err:#}");
@@ -235,7 +274,182 @@ impl kameo::prelude::Message<DiscordInteraction> for DiscordActor {
     }
 }
 
+impl kameo::prelude::Message<BrokerActionUpdate> for DiscordActor {
+    type Reply = ();
+
+    #[instrument(skip_all, fields(action = %msg.id))]
+    async fn handle(
+        &mut self,
+        msg: BrokerActionUpdate,
+        _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if let Err(err) = self.handle_broker_update(msg).await {
+            error!("Failed to apply broker update: {err:#}");
+        }
+    }
+}
+
 impl DiscordActor {
+    async fn handle_broker_update(&self, update: BrokerActionUpdate) -> Result<()> {
+        let ActionOrigin::Discord {
+            application_id: _,
+            guild_id: _,
+            channel_id,
+            message_id,
+            user_id,
+            progress_message,
+        } = update.origin
+        else {
+            return Ok(());
+        };
+
+        let preface = progress_message.unwrap_or_else(|| format!("Action `{}`", update.id));
+
+        match update.status {
+            ActionStatus::Queued => {
+                self.update_progress_message(
+                    channel_id,
+                    message_id,
+                    Some(preface.clone()),
+                    format!("Status: queued (`{}`)", update.id),
+                )
+                .await
+            }
+            ActionStatus::Started => {
+                self.update_progress_message(
+                    channel_id,
+                    message_id,
+                    Some(preface.clone()),
+                    "Status: generation started…".to_string(),
+                )
+                .await
+            }
+            ActionStatus::Progress(progress) => {
+                self.update_progress_message(
+                    channel_id,
+                    message_id,
+                    Some(preface.clone()),
+                    format!("Status: {}", progress.message),
+                )
+                .await
+            }
+            ActionStatus::Completed(completed) => {
+                self.delete_progress_message(channel_id, message_id).await;
+                self.send_completion_message(channel_id, user_id, completed.response, Some(preface))
+                    .await
+            }
+            ActionStatus::Failed(failure) => {
+                self.delete_progress_message(channel_id, message_id).await;
+                self.send_failure_message(
+                    channel_id,
+                    user_id,
+                    failure.error,
+                    failure.retry_scheduled,
+                    Some(preface),
+                )
+                .await
+            }
+        }
+    }
+
+    async fn update_progress_message(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+        preface: Option<String>,
+        status_line: String,
+    ) -> Result<()> {
+        let mut lines = Vec::new();
+        if let Some(preface) = preface {
+            lines.push(preface);
+        }
+        lines.push(status_line);
+        let content = lines.join("\n");
+
+        let edit = EditMessage::new().content(content);
+
+        all::ChannelId::new(channel_id)
+            .edit_message(&self.http, message_id, edit)
+            .await
+            .with_context(|| "while updating Discord progress message")?;
+        Ok(())
+    }
+
+    async fn delete_progress_message(&self, channel_id: u64, message_id: u64) {
+        if let Err(err) = all::ChannelId::new(channel_id)
+            .delete_message(&self.http, message_id)
+            .await
+        {
+            warn!(
+                channel_id,
+                message_id, "Failed to delete Discord progress message: {err:#}"
+            );
+        }
+    }
+
+    async fn send_completion_message(
+        &self,
+        channel_id: u64,
+        user_id: u64,
+        response: ActionResponse,
+        preface: Option<String>,
+    ) -> Result<()> {
+        let mut lines = Vec::new();
+        lines.push(format!("<@{}>", user_id));
+        if let Some(preface) = preface {
+            lines.push(preface);
+        }
+        for line in response.lines {
+            lines.push(line);
+        }
+        let content = lines.join("\n");
+
+        let user = all::UserId::new(user_id);
+        let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
+        let builder = CreateMessage::new()
+            .content(content)
+            .allowed_mentions(allowed_mentions);
+
+        // TODO: Attach gallery buttons (U1…Un) when gallery support is wired up.
+        all::ChannelId::new(channel_id)
+            .send_message(&self.http, builder)
+            .await
+            .with_context(|| "while sending Discord completion message")?;
+        Ok(())
+    }
+
+    async fn send_failure_message(
+        &self,
+        channel_id: u64,
+        user_id: u64,
+        error: String,
+        retry_scheduled: bool,
+        preface: Option<String>,
+    ) -> Result<()> {
+        let mut lines = Vec::new();
+        lines.push(format!("<@{}>", user_id));
+        if let Some(preface) = preface {
+            lines.push(preface);
+        }
+        lines.push(format!("Status: failed – {error}"));
+        if retry_scheduled {
+            lines.push("A retry has been scheduled.".to_string());
+        }
+        let content = lines.join("\n");
+
+        let user = all::UserId::new(user_id);
+        let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
+        let builder = CreateMessage::new()
+            .content(content)
+            .allowed_mentions(allowed_mentions);
+
+        all::ChannelId::new(channel_id)
+            .send_message(&self.http, builder)
+            .await
+            .with_context(|| "while sending Discord failure message")?;
+        Ok(())
+    }
+
     async fn handle_interaction(
         &mut self,
         ctx: &mut Context<Self, ()>,
@@ -304,7 +518,7 @@ impl DiscordActor {
 
     async fn handle_prompt_command(
         &mut self,
-        ctx: &mut Context<Self, ()>,
+        _ctx: &mut Context<Self, ()>,
         discord_ctx: &all::Context,
         command: &CommandInteraction,
         input: String,
@@ -314,37 +528,82 @@ impl DiscordActor {
             .await
             .context("while deferring prompt response")?;
 
-        let user_actor = self
+        // Ensure the user actor is instantiated so downstream actions have state ready.
+        let _ = self
             .get_user_actor(command.user.id, &command.user.name)
             .await?;
 
-        let prompt_actor =
-            PromptActor::spawn_link(&ctx.actor_ref(), PromptActor::new(user_actor.clone()).await)
-                .await;
-        let result = prompt_actor
-            .ask(input.clone())
-            .await
-            .context("while executing prompt command")?;
+        let preface = format!("**Prompt**: {}", input);
+        let initial_content = format!("{preface}\nStatus: preparing request…");
 
-        todo!()
+        let followup_builder = CreateInteractionResponseFollowup::new()
+            .content(initial_content.clone())
+            .allowed_mentions(CreateAllowedMentions::new());
+
+        let followup = command
+            .create_followup(&discord_ctx.http, followup_builder)
+            .await
+            .context("while publishing prompt progress message")?;
+
+        let origin = ActionOrigin::Discord {
+            application_id: self.config.application_id,
+            guild_id: command.guild_id.map(|id| id.get()),
+            channel_id: followup.channel_id.get(),
+            message_id: followup.id.get(),
+            user_id: command.user.id.get(),
+            progress_message: Some(preface.clone()),
+        };
+
+        let payload = ActionPayload::Prompt {
+            user_id: UserId::Discord(command.user.id),
+            user_name: command.user.name.clone(),
+            input,
+        };
+
+        match self.broker.ask(SubmitAction::new(origin, payload)).await {
+            Ok(action_id) => {
+                self.update_progress_message(
+                    followup.channel_id.get(),
+                    followup.id.get(),
+                    Some(preface),
+                    format!("Status: queued (`{action_id}`)"),
+                )
+                .await
+                .with_context(|| "while acknowledging queued prompt")?;
+            }
+            Err(err) => {
+                self.delete_progress_message(followup.channel_id.get(), followup.id.get())
+                    .await;
+                self.send_failure_message(
+                    followup.channel_id.get(),
+                    command.user.id.get(),
+                    format!("failed to queue request: {err:#}"),
+                    false,
+                    Some(preface),
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_dream_command(
         &mut self,
-        ctx: &mut Context<Self, ()>,
-        discord_ctx: &all::Context,
-        command: &CommandInteraction,
-        request: String,
+        _ctx: &mut Context<Self, ()>,
+        _discord_ctx: &all::Context,
+        _command: &CommandInteraction,
+        _request: String,
     ) -> Result<()> {
         todo!()
     }
 
     async fn handle_select_command(
         &mut self,
-        ctx: &mut Context<Self, ()>,
-        discord_ctx: &all::Context,
-        command: &CommandInteraction,
-        url: String,
+        _ctx: &mut Context<Self, ()>,
+        _discord_ctx: &all::Context,
+        _command: &CommandInteraction,
+        _url: String,
     ) -> Result<()> {
         todo!()
     }
