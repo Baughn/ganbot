@@ -3,7 +3,7 @@ use futures::future;
 use kameo::{Actor, Reply, prelude::Message};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     actions::{
@@ -36,6 +36,7 @@ struct DreamPromptResponse {
 impl Message<String> for DreamActor {
     type Reply = Result<PromptResult, Error>;
 
+    #[tracing::instrument(skip(self, _ctx, msg), fields(prompt_length = msg.len()))]
     async fn handle(
         &mut self,
         msg: String,
@@ -75,9 +76,14 @@ impl Message<String> for DreamActor {
 
         // Get the number of images to generate (defaults to 2 if not specified)
         let num_images = prompt.num_images.unwrap_or(2).clamp(1, 6) as usize;
+        info!(requested_model = %requested_model_token, num_variations = num_images, "Starting dream image workflow");
 
         // Step 1: Generate multiple unique image prompts in parallel
         let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
+        info!(
+            num_variations = num_images,
+            "Requesting detective prompt variations from OpenRouter"
+        );
 
         let prompt_futures = (0..num_images).map(|i| {
             let router = router.clone();
@@ -112,27 +118,47 @@ impl Message<String> for DreamActor {
             .await
             .context("while generating image prompts")?;
 
-        info!("Generated {} unique image prompts", generated_prompts.len());
+        info!(
+            generated = generated_prompts.len(),
+            "Received detective prompt variations"
+        );
 
         // Step 2: Generate images for each prompt in parallel using the shared imagen actor
         let imagen_actor = ImagenActor::spawn(ImagenActor::default());
         let model_for_generation = requested_model_token.clone();
         let selected_model_clone = selected_model.clone();
 
-        let image_generation_futures = generated_prompts.iter().map(|image_prompt| {
+        let image_generation_futures = generated_prompts.iter().enumerate().map(|(idx, image_prompt)| {
             let user_actor = self.user_actor.clone();
             let imagen_actor = imagen_actor.clone();
             let image_prompt = image_prompt.clone();
             let model_token = model_for_generation.clone();
             let model = selected_model_clone.clone();
+            let variation = idx + 1;
             async move {
                 let image_prompt_with_model = format!("{} -m {} -c 1", image_prompt, model_token);
+                let mut prompt_preview: String = image_prompt.chars().take(160).collect();
+                if image_prompt.len() > prompt_preview.len() {
+                    prompt_preview.push_str("...");
+                }
+                let prompt_preview = prompt_preview.replace('\n', " ");
+                debug!(variation, %model_token, prompt_preview = %prompt_preview, "Preparing imagen request for dream variation");
                 let mut generate = imagen::hydrate_prompt(
-                    Generate::from_str(&image_prompt_with_model)?,
+                    Generate::from_str(&image_prompt_with_model)
+                        .with_context(|| format!("while parsing generated prompt for variation {}", variation))?,
                     &user_actor,
                 )
-                .await?;
+                .await
+                .with_context(|| format!("while hydrating imagen prompt for variation {}", variation))?;
+                debug!(
+                    variation,
+                    %model_token,
+                    steps = ?generate.steps,
+                    alias = ?generate.alias,
+                    "Imagen prompt hydrated"
+                );
                 imagen::apply_model_defaults(&mut generate, &model);
+                debug!(variation, %model_token, "Applied model defaults for imagen request");
 
                 let response = imagen_actor
                     .ask(GenerateImages {
@@ -140,7 +166,12 @@ impl Message<String> for DreamActor {
                         model,
                     })
                     .await
-                    .context("while generating image")?;
+                    .map_err(|err| {
+                        error!(variation, %model_token, error = ?err, "Imagen actor ask failed");
+                        err
+                    })
+                    .with_context(|| format!("while generating image for variation {}", variation))?;
+                debug!(variation, %model_token, backend = ?response.backend, image_count = response.images.len(), "Imagen actor responded");
 
                 Ok::<_, Error>((image_prompt, response))
             }
@@ -149,6 +180,10 @@ impl Message<String> for DreamActor {
         let image_results = future::try_join_all(image_generation_futures)
             .await
             .context("while generating images")?;
+        info!(
+            num_responses = image_results.len(),
+            "Completed dream image generation requests"
+        );
 
         // Step 3: Create gallery with individual prompts
         let mut image_prompts: Vec<(String, Arc<image::RgbImage>)> = Vec::new();
@@ -156,6 +191,7 @@ impl Message<String> for DreamActor {
 
         for (prompt_text, response) in &image_results {
             if response.backend != ImagenBackend::StableDiffusion {
+                error!(backend = ?response.backend, "Dream command received unexpected backend from imagen");
                 bail!(
                     "Dream command expects StableDiffusion backend, got {:?}",
                     response.backend
@@ -163,6 +199,10 @@ impl Message<String> for DreamActor {
             }
 
             if response.images.len() != 1 {
+                error!(
+                    image_count = response.images.len(),
+                    "Dream command expected one image per variation"
+                );
                 bail!("Expected 1 image per prompt, got {}", response.images.len());
             }
 
@@ -207,10 +247,7 @@ impl Message<String> for DreamActor {
                 .send()
                 .await;
 
-            info!(
-                "Successfully created gallery with individual prompts: {}",
-                url
-            );
+            info!(gallery = %url, total_images = image_results.len(), "Successfully created dream gallery");
             Some(url)
         } else {
             None
@@ -246,6 +283,7 @@ impl Message<String> for DreamActor {
             })
         } else {
             // No images were generated
+            warn!("Dream workflow completed without any images");
             let commentary_prompt = format!(
                 "As a hard-boiled detective, provide commentary on this case.                 The client requested: '{}'
                 I tried {} different approaches, but all leads went cold - no images were generated.
