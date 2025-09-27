@@ -124,6 +124,7 @@ pub async fn hydrate_prompt(
         .transpose()
         .context("Failed to parse default prompt")?;
 
+    // Pick an --alias from the prompt, or else from the default prompt if that has one.
     let alias = prompt
         .alias
         .clone()
@@ -154,6 +155,7 @@ pub async fn hydrate_prompt(
         debug!("Merged default settings into prompt");
     }
 
+    debug!("Final prompt: {prompt:?}");
     Ok(prompt)
 }
 
@@ -183,42 +185,190 @@ pub fn apply_model_defaults(prompt: &mut Generate, model: &Model) {
 
 /// Merge prompt settings from `base` into `prompt`, allowing `prompt` to override.
 pub fn merge_prompt_settings(mut prompt: Generate, base: Generate) -> Generate {
-    if !base.prompt.is_empty() {
-        prompt.prompt = format!("{}. {}", prompt.prompt, base.prompt);
-    }
-    if let Some(base_negative) = base.negative_prompt {
-        let combined_negative = match prompt.negative_prompt.take() {
-            Some(existing_negative) if !existing_negative.trim().is_empty() => {
-                format!("{}. {}", existing_negative, base_negative)
-            }
-            _ => base_negative,
-        };
-        prompt.negative_prompt = Some(combined_negative);
+    let Generate {
+        prompt: base_prompt,
+        negative_prompt: base_negative,
+        num_images: base_num_images,
+        aspect: base_aspect,
+        width: base_width,
+        height: base_height,
+        model: base_model,
+        seed: base_seed,
+        steps: base_steps,
+        ..
+    } = base;
+
+    if !base_prompt.trim().is_empty() {
+        prompt.prompt = append_clause(&prompt.prompt, &base_prompt, ". ");
     }
 
-    if let Some(seed) = base.seed {
-        prompt.seed = Some(seed);
+    if let Some(base_negative) = base_negative {
+        if !base_negative.trim().is_empty() {
+            let combined_negative = match prompt.negative_prompt.take() {
+                Some(existing_negative) if !existing_negative.trim().is_empty() => {
+                    append_clause(&existing_negative, &base_negative, ", ")
+                }
+                _ => base_negative.trim().to_string(),
+            };
+            prompt.negative_prompt = Some(combined_negative);
+        }
     }
-    if let Some(width) = base.width {
-        prompt.width = Some(width);
+
+    if prompt.seed.is_none() {
+        prompt.seed = base_seed;
     }
-    if let Some(height) = base.height {
-        prompt.height = Some(height);
+    if prompt.width.is_none() {
+        prompt.width = base_width;
     }
-    if let Some(aspect) = base.aspect {
-        prompt.aspect = Some(aspect);
+    if prompt.height.is_none() {
+        prompt.height = base_height;
     }
-    if let Some(steps) = base.steps {
-        prompt.steps = Some(steps);
+    if prompt.aspect.is_none() {
+        prompt.aspect = base_aspect;
     }
-    if let Some(model) = base.model {
-        prompt.model = Some(model);
+    if prompt.steps.is_none() {
+        prompt.steps = base_steps;
     }
-    if let Some(count) = base.num_images {
-        prompt.num_images = Some(count);
+    if prompt.model.is_none() {
+        prompt.model = base_model;
+    }
+    if prompt.num_images.is_none() {
+        prompt.num_images = base_num_images;
     }
 
     prompt
+}
+
+fn append_clause(existing: &str, addition: &str, default_separator: &str) -> String {
+    let existing_trimmed = existing.trim();
+    let addition_trimmed = addition.trim();
+
+    if existing_trimmed.is_empty() {
+        return addition_trimmed.to_string();
+    }
+    if addition_trimmed.is_empty() {
+        return existing_trimmed.to_string();
+    }
+
+    let separator = match existing_trimmed.chars().rev().find(|c| !c.is_whitespace()) {
+        Some('.') | Some('!') | Some('?') | Some(',') => " ",
+        _ => default_separator,
+    };
+
+    let mut combined = existing_trimmed.to_string();
+    combined.push_str(separator);
+    combined.push_str(addition_trimmed);
+    combined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_prompt_settings;
+    use crate::messages::imagen::{Generate, References};
+
+    fn generate_with_prompt(prompt: &str) -> Generate {
+        Generate {
+            raw_prompt: prompt.to_string(),
+            prompt: prompt.to_string(),
+            negative_prompt: None,
+            num_images: None,
+            aspect: None,
+            width: None,
+            height: None,
+            model: None,
+            seed: None,
+            steps: None,
+            references: References {
+                img2img: None,
+                img2img_strength: None,
+                context: Vec::new(),
+            },
+            alias: None,
+        }
+    }
+
+    #[test]
+    fn defaults_trail_user_prompt() {
+        let prompt = generate_with_prompt("A wizard reading");
+        let base = generate_with_prompt("best quality, trending on artstation");
+
+        let merged = merge_prompt_settings(prompt, base);
+
+        assert_eq!(
+            merged.prompt,
+            "A wizard reading. best quality, trending on artstation"
+        );
+    }
+
+    #[test]
+    fn base_prompt_replaces_when_user_prompt_empty() {
+        let prompt = generate_with_prompt("");
+        let base = generate_with_prompt("photorealistic portrait");
+
+        let merged = merge_prompt_settings(prompt, base);
+
+        assert_eq!(merged.prompt, "photorealistic portrait");
+    }
+
+    #[test]
+    fn negative_prompts_are_concatenated_with_separator() {
+        let mut prompt = generate_with_prompt("A wizard reading");
+        prompt.negative_prompt = Some("nsfw, lowres".to_string());
+
+        let mut base = generate_with_prompt("Defaults");
+        base.negative_prompt = Some("bad anatomy".to_string());
+
+        let merged = merge_prompt_settings(prompt, base);
+
+        assert_eq!(
+            merged.negative_prompt.as_deref(),
+            Some("nsfw, lowres, bad anatomy")
+        );
+    }
+
+    #[test]
+    fn base_negative_prompt_used_when_user_prompt_is_blank() {
+        let mut prompt = generate_with_prompt("User prompt");
+        prompt.negative_prompt = Some("   ".to_string());
+
+        let mut base = generate_with_prompt("Defaults");
+        base.negative_prompt = Some("blurry, watermark".to_string());
+
+        let merged = merge_prompt_settings(prompt, base);
+
+        assert_eq!(merged.negative_prompt.as_deref(), Some("blurry, watermark"));
+    }
+
+    #[test]
+    fn base_values_act_as_fallbacks() {
+        let mut prompt = generate_with_prompt("A wizard reading");
+        prompt.width = Some(1024);
+        prompt.height = None;
+        prompt.steps = None;
+        prompt.model = Some("user-model".to_string());
+        prompt.num_images = None;
+        prompt.seed = Some(1234);
+        prompt.aspect = Some((16, 9));
+
+        let mut base = generate_with_prompt("Defaults");
+        base.width = Some(512);
+        base.height = Some(768);
+        base.steps = Some(25);
+        base.model = Some("base-model".to_string());
+        base.num_images = Some(3);
+        base.seed = Some(9999);
+        base.aspect = Some((1, 1));
+
+        let merged = merge_prompt_settings(prompt, base);
+
+        assert_eq!(merged.width, Some(1024));
+        assert_eq!(merged.height, Some(768));
+        assert_eq!(merged.steps, Some(25));
+        assert_eq!(merged.model.as_deref(), Some("user-model"));
+        assert_eq!(merged.num_images, Some(3));
+        assert_eq!(merged.seed, Some(1234));
+        assert_eq!(merged.aspect, Some((16, 9)));
+    }
 }
 
 /// Resolve the requested model token to actual configuration, with fuzzy matching support.
