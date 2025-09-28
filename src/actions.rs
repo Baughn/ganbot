@@ -146,6 +146,7 @@ pub struct ActionFailure {
 pub struct ActionResponse {
     pub lines: Vec<String>,
     pub reply_privately: bool,
+    pub gallery: Option<GalleryReference>,
 }
 
 impl ActionResponse {
@@ -153,8 +154,14 @@ impl ActionResponse {
         Self {
             lines: vec![message],
             reply_privately,
+            gallery: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct GalleryReference {
+    pub id: String,
 }
 
 /// Message emitted when a network actor wants to queue an action.

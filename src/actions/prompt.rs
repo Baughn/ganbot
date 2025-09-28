@@ -7,7 +7,10 @@ use crate::{
     actions::imagen::{self, GenerateImages, ImagenActor, ImagenBackend, ImagenResponse},
     messages::imagen::Generate,
     persistence::{
-        images::{GalleryImageInput, GalleryInput, upload_gallery, upload_image_with_generation},
+        images::{
+            GalleryImageInput, GalleryInput, GalleryLayout, upload_gallery,
+            upload_image_with_generation,
+        },
         user::{AddGeneratedImage, UserActor},
     },
     supervisor::Supervisor,
@@ -30,6 +33,8 @@ pub struct PromptResult {
     pub image_urls: Option<Vec<String>>,
     pub prompts: Option<Vec<String>>,
     pub display_prompts: Option<Vec<String>>,
+    pub gallery_id: Option<String>,
+    pub gallery_layout: Option<GalleryLayout>,
     pub correction_message: Option<String>,
 }
 
@@ -121,6 +126,8 @@ impl PromptActor {
         let mut image_urls_opt: Option<Vec<String>> = None;
         let mut prompts_opt: Option<Vec<String>> = None;
         let mut display_prompts_opt: Option<Vec<String>> = None;
+        let mut gallery_id = None;
+        let mut gallery_layout: Option<GalleryLayout> = None;
 
         if !images.is_empty() {
             match backend {
@@ -135,7 +142,7 @@ impl PromptActor {
                         .map(|seed| format!("Model: {}, Seed: {}", model_name, seed))
                         .unwrap_or_else(|| format!("Model: {}", model_name));
 
-                    let (gallery_url, gallery_image_urls) = upload_gallery(GalleryInput {
+                    let uploaded = upload_gallery(GalleryInput {
                         title: Some(prompt.raw_prompt.clone()),
                         subtitle: Some(subtitle),
                         images: gallery_images,
@@ -146,14 +153,14 @@ impl PromptActor {
                     .await
                     .context("while uploading image gallery")?;
                     info!(
-                        "Successfully generated and uploaded image gallery: {}",
-                        gallery_url
+                        gallery_url = %uploaded.gallery_url,
+                        "Successfully generated and uploaded image gallery"
                     );
 
                     let _ = self
                         .user_actor
                         .tell(AddGeneratedImage {
-                            url: gallery_url.clone(),
+                            url: uploaded.gallery_url.clone(),
                             prompt: prompt.raw_prompt.clone(),
                             model: Some(model_name.clone()),
                             backend: backend.as_str().to_string(),
@@ -161,8 +168,10 @@ impl PromptActor {
                         .send()
                         .await;
 
-                    image_urls_opt = Some(gallery_image_urls);
-                    image_url = Some(gallery_url);
+                    image_urls_opt = Some(uploaded.image_urls.clone());
+                    image_url = Some(uploaded.gallery_url.clone());
+                    gallery_id = Some(uploaded.id.clone());
+                    gallery_layout = Some(uploaded.layout.clone());
                 }
                 ImagenBackend::NanoBanana => {
                     if let Some(first_image) = images.first() {
@@ -218,6 +227,8 @@ impl PromptActor {
             image_urls: image_urls_opt,
             prompts: prompts_opt,
             display_prompts: display_prompts_opt,
+            gallery_id,
+            gallery_layout,
             correction_message,
         })
     }

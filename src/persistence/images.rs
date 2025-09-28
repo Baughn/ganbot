@@ -6,8 +6,7 @@ use exif::experimental::Writer;
 use exif::{Field, In, Tag, Value};
 use image::{ImageEncoder, Rgb, RgbImage, codecs::jpeg::JpegEncoder};
 use imageproc::drawing::draw_text_mut;
-use kameo::message::Context;
-use kameo::prelude::*;
+use kameo::{Actor, actor::ActorRef, message::Context, prelude::*, registry::ACTOR_REGISTRY};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
@@ -15,7 +14,12 @@ use tokio::process::Command;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::{config::global::ImageHostConfig, messages::imagen::Generate, supervisor::Supervisor};
+use crate::{
+    config::global::ImageHostConfig, messages::imagen::Generate, persistence::user::UserId,
+    supervisor::Supervisor,
+};
+
+use redis::aio::ConnectionManager;
 
 // Lazy-loaded font to avoid re-parsing TTF data on every gallery creation
 lazy_static! {
@@ -23,6 +27,45 @@ lazy_static! {
         let font_data = include_bytes!("../../fonts/gallery.ttf");
         FontRef::try_from_slice(font_data).expect("Failed to load embedded gallery font")
     };
+}
+
+const GALLERY_METADATA_KEY: &str = "image:galleries";
+const GALLERY_MESSAGE_INDEX_KEY: &str = "image:gallery:messages";
+
+/// Layout information for a rendered gallery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GalleryLayout {
+    pub columns: u32,
+    pub rows: u32,
+    pub row_counts: Vec<u32>,
+}
+
+impl GalleryLayout {
+    pub fn new(columns: u32, rows: u32, image_count: usize) -> Self {
+        let mut row_counts = Vec::with_capacity(rows as usize);
+        let mut remaining = image_count as u32;
+        for _ in 0..rows {
+            if remaining == 0 {
+                row_counts.push(0);
+                continue;
+            }
+            let count = remaining.min(columns);
+            row_counts.push(count);
+            remaining = remaining.saturating_sub(count);
+        }
+        Self {
+            columns,
+            rows,
+            row_counts,
+        }
+    }
+}
+
+/// Result of constructing a gallery image.
+#[derive(Debug)]
+pub struct GalleryRender {
+    pub image: RgbImage,
+    pub layout: GalleryLayout,
 }
 
 /// Represents an image generation request for tracking in Redis
@@ -72,11 +115,13 @@ pub struct UploadGallery {
 #[derive(Reply)]
 pub struct UploadedUrl(pub String);
 
-/// Reply containing the uploaded gallery and individual image URLs
-#[derive(Reply, Debug)]
-pub struct UploadedGalleryUrls {
+/// Reply containing the uploaded gallery information
+#[derive(Reply, Debug, Clone)]
+pub struct UploadedGallery {
+    pub id: String,
     pub gallery_url: String,
     pub image_urls: Vec<String>,
+    pub layout: GalleryLayout,
 }
 
 impl Message<UploadImage> for ImageUploader {
@@ -92,7 +137,7 @@ impl Message<UploadImage> for ImageUploader {
 }
 
 impl Message<UploadGallery> for ImageUploader {
-    type Reply = Result<UploadedGalleryUrls>;
+    type Reply = Result<UploadedGallery>;
 
     async fn handle(
         &mut self,
@@ -182,7 +227,7 @@ impl ImageUploader {
         self.upload_jpeg(jpeg_bytes, &filename).await
     }
 
-    async fn upload_gallery_impl(&self, msg: UploadGallery) -> Result<UploadedGalleryUrls> {
+    async fn upload_gallery_impl(&self, msg: UploadGallery) -> Result<UploadedGallery> {
         if msg.images.is_empty() {
             anyhow::bail!("Cannot upload empty gallery");
         }
@@ -214,7 +259,8 @@ impl ImageUploader {
             backend: msg.backend.clone(),
             generation_request: None, // Not used for gallery image creation
         };
-        let gallery_image = create_gallery(gallery_input)?;
+        let gallery_render = create_gallery(gallery_input)?;
+        let layout = gallery_render.layout.clone();
 
         // Generate filenames using the pattern {uuid}.{index}.jpg
         // Gallery image gets index 0
@@ -222,7 +268,7 @@ impl ImageUploader {
 
         // Encode and upload gallery image
         let gallery_jpeg = self.encode_image_as_jpeg(
-            &gallery_image,
+            &gallery_render.image,
             msg.workflow.as_ref(),
             msg.backend.as_deref(),
         )?;
@@ -252,9 +298,11 @@ impl ImageUploader {
         // Collect the URLs, propagating the first error if any occurred
         let image_urls = results.into_iter().collect::<Result<Vec<_>>>()?;
 
-        Ok(UploadedGalleryUrls {
+        Ok(UploadedGallery {
+            id: base_uuid.to_string(),
             gallery_url,
             image_urls,
+            layout,
         })
     }
 
@@ -683,7 +731,7 @@ pub async fn upload_image_with_generation(
 
 /// Upload a gallery of images with title and subtitle to the configured host
 /// Returns (gallery_url, individual_image_urls)
-pub async fn upload_gallery(input: GalleryInput) -> Result<(String, Vec<String>)> {
+pub async fn upload_gallery(input: GalleryInput) -> Result<UploadedGallery> {
     let config = Supervisor::image_host().await;
     let uploader = ImageUploader::spawn(ImageUploader::new(config));
     let result = uploader
@@ -697,7 +745,7 @@ pub async fn upload_gallery(input: GalleryInput) -> Result<(String, Vec<String>)
         })
         .await
         .context("Failed to communicate with uploader")?;
-    Ok((result.gallery_url, result.image_urls))
+    Ok(result)
 }
 
 /// Input for creating a gallery image
@@ -715,6 +763,165 @@ pub struct GalleryInput {
     pub workflow: Option<serde_json::Value>,
     pub backend: Option<String>,
     pub generation_request: Option<Generate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GalleryMetadata {
+    pub id: String,
+    pub owner_id: UserId,
+    pub gallery_url: Option<String>,
+    pub image_urls: Vec<String>,
+    pub prompts: Vec<String>,
+    pub display_prompts: Vec<String>,
+    pub layout: GalleryLayout,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegisterGallery {
+    pub metadata: GalleryMetadata,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssociateMessage {
+    pub gallery_id: String,
+    pub channel_id: u64,
+    pub message_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct GetGallery(pub String);
+
+#[derive(Debug, Clone)]
+pub struct GetGalleryByMessage {
+    pub channel_id: u64,
+    pub message_id: u64,
+}
+
+pub struct GalleryRegistry {
+    redis: ConnectionManager,
+}
+
+impl GalleryRegistry {
+    pub fn get() -> Result<ActorRef<Self>> {
+        ACTOR_REGISTRY
+            .lock()
+            .unwrap()
+            .get::<Self, str>("gallery_registry")
+            .context("while fetching GalleryRegistry")?
+            .context("GalleryRegistry not registered")
+    }
+
+    fn message_field(channel_id: u64, message_id: u64) -> String {
+        format!("{}:{}", channel_id, message_id)
+    }
+}
+
+impl Actor for GalleryRegistry {
+    type Args = ConnectionManager;
+    type Error = anyhow::Error;
+
+    async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        ACTOR_REGISTRY
+            .lock()
+            .unwrap()
+            .insert("gallery_registry", actor_ref);
+        Ok(Self { redis: args })
+    }
+}
+
+impl Message<RegisterGallery> for GalleryRegistry {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        msg: RegisterGallery,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let payload =
+            serde_json::to_string(&msg.metadata).context("while serializing gallery metadata")?;
+        let mut conn = self.redis.clone();
+        redis::cmd("HSET")
+            .arg(GALLERY_METADATA_KEY)
+            .arg(&msg.metadata.id)
+            .arg(payload)
+            .query_async::<()>(&mut conn)
+            .await
+            .context("while storing gallery metadata")?;
+        Ok(())
+    }
+}
+
+impl Message<AssociateMessage> for GalleryRegistry {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        msg: AssociateMessage,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let field = Self::message_field(msg.channel_id, msg.message_id);
+        let mut conn = self.redis.clone();
+        redis::cmd("HSET")
+            .arg(GALLERY_MESSAGE_INDEX_KEY)
+            .arg(field)
+            .arg(msg.gallery_id)
+            .query_async::<()>(&mut conn)
+            .await
+            .context("while storing gallery message association")?;
+        Ok(())
+    }
+}
+
+impl Message<GetGallery> for GalleryRegistry {
+    type Reply = Result<Option<GalleryMetadata>>;
+
+    async fn handle(
+        &mut self,
+        msg: GetGallery,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let mut conn = self.redis.clone();
+        let data: Option<String> = redis::cmd("HGET")
+            .arg(GALLERY_METADATA_KEY)
+            .arg(&msg.0)
+            .query_async(&mut conn)
+            .await
+            .context("while loading gallery metadata")?;
+
+        let gallery = if let Some(json) = data {
+            Some(serde_json::from_str(&json).context("while deserializing gallery metadata")?)
+        } else {
+            None
+        };
+
+        Ok(gallery)
+    }
+}
+
+impl Message<GetGalleryByMessage> for GalleryRegistry {
+    type Reply = Result<Option<GalleryMetadata>>;
+
+    async fn handle(
+        &mut self,
+        msg: GetGalleryByMessage,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let field = Self::message_field(msg.channel_id, msg.message_id);
+        let mut conn = self.redis.clone();
+        let gallery_id: Option<String> = redis::cmd("HGET")
+            .arg(GALLERY_MESSAGE_INDEX_KEY)
+            .arg(&field)
+            .query_async(&mut conn)
+            .await
+            .context("while fetching gallery id for message")?;
+
+        if let Some(id) = gallery_id {
+            self.handle(GetGallery(id), ctx).await
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 /// Calculate the required height for the text area based on title and subtitle content
@@ -818,7 +1025,7 @@ fn calculate_caption_text_height(prompt: &str, max_text_width: f32, text_padding
 }
 
 /// Creates a gallery image from multiple images with optional metadata
-pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
+pub fn create_gallery(input: GalleryInput) -> Result<GalleryRender> {
     if input.images.is_empty() {
         anyhow::bail!("Cannot create gallery from empty image list");
     }
@@ -864,7 +1071,10 @@ pub fn create_gallery(input: GalleryInput) -> Result<RgbImage> {
         render_text_on_canvas(&mut canvas, title, subtitle, text_color, TEXT_PADDING)?;
     }
 
-    Ok(canvas)
+    Ok(GalleryRender {
+        image: canvas,
+        layout: GalleryLayout::new(grid_cols, grid_rows, prepared_images.len()),
+    })
 }
 
 fn prepare_gallery_images(
@@ -1382,12 +1592,17 @@ mod tests {
         assert!(result.is_ok());
 
         let gallery = result.unwrap();
+        assert_eq!(gallery.layout.columns, 1);
+        assert_eq!(gallery.layout.rows, 1);
+        assert_eq!(gallery.layout.row_counts, vec![1]);
+
+        let image = gallery.image;
         // Width should still be: 1*100 + 2*4 = 108
-        assert_eq!(gallery.width(), 108);
+        assert_eq!(image.width(), 108);
         // Height is now dynamic based on text content, but should be at least the image height + borders
         let expected_min_height = 100 + 2 * 4 + 60; // image + borders + min text area
-        assert!(gallery.height() >= expected_min_height);
-        assert!(gallery.height() < 400); // Should be reasonable for short text
+        assert!(image.height() >= expected_min_height);
+        assert!(image.height() < 400); // Should be reasonable for short text
     }
 
     #[test]
@@ -1414,11 +1629,16 @@ mod tests {
         })
         .expect("expected gallery to render");
 
+        assert_eq!(gallery.layout.columns, 2);
+        assert_eq!(gallery.layout.rows, 1);
+        assert_eq!(gallery.layout.row_counts, vec![2]);
+
+        let image = gallery.image;
         // With per-image titles the gallery should be taller than just the images and borders.
         let base_height_with_borders = 64 + 2 * 4;
-        assert!(gallery.height() > base_height_with_borders);
+        assert!(image.height() > base_height_with_borders);
         // No gallery title/subtitle means width should still match the calculated layout.
-        assert!(gallery.width() >= 64 + 2 * 4);
+        assert!(image.width() >= 64 + 2 * 4);
     }
 
     #[test]
@@ -1447,12 +1667,17 @@ mod tests {
         assert!(result.is_ok());
 
         let gallery = result.unwrap();
+        assert_eq!(gallery.layout.columns, 2);
+        assert_eq!(gallery.layout.rows, 1);
+        assert_eq!(gallery.layout.row_counts, vec![2]);
+
+        let image = gallery.image;
         // Width should be 2x1 grid: 2*50 + 3*4 = 112
-        assert_eq!(gallery.width(), 112);
+        assert_eq!(image.width(), 112);
         // Height is now dynamic based on text content, but should be at least the image height + borders
         let expected_min_height = 50 + 2 * 4 + 60; // image + borders + min text area
-        assert!(gallery.height() >= expected_min_height);
-        assert!(gallery.height() < 300); // Should be reasonable for short text
+        assert!(image.height() >= expected_min_height);
+        assert!(image.height() < 300); // Should be reasonable for short text
     }
 
     #[test]
@@ -1718,7 +1943,9 @@ mod tests {
         assert!(result.is_ok());
 
         let gallery = result.unwrap();
+        assert_eq!(gallery.layout.columns, 1);
+        let image = gallery.image;
         // The gallery should be taller than the old fixed height would allow
-        assert!(gallery.height() > 208); // old height was 1*100 + 2*4 + 100 = 208
+        assert!(image.height() > 208); // old height was 1*100 + 2*4 + 100 = 208
     }
 }

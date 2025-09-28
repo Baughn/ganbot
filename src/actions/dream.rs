@@ -16,7 +16,7 @@ use crate::{
     },
     network::openrouter::OpenRouter,
     persistence::{
-        images::{GalleryImageInput, GalleryInput, upload_gallery},
+        images::{GalleryImageInput, GalleryInput, GalleryLayout, upload_gallery},
         user::{AddGeneratedImage, UserActor},
     },
     supervisor::Supervisor,
@@ -210,7 +210,8 @@ impl Message<String> for DreamActor {
 
         // Create and upload the gallery if we have images
         let mut gallery_image_urls: Option<Vec<String>> = None;
-
+        let mut gallery_layout: Option<GalleryLayout> = None;
+        let mut gallery_id: Option<String> = None;
         let gallery_url = if !image_entries.is_empty() {
             let gallery_images: Vec<GalleryImageInput> = image_entries
                 .iter()
@@ -223,7 +224,7 @@ impl Message<String> for DreamActor {
             let title = original_request.clone();
             let subtitle = format!("Model: {}", display_model_name);
 
-            let (url, image_urls) = upload_gallery(GalleryInput {
+            let uploaded = upload_gallery(GalleryInput {
                 title: Some(title),
                 subtitle: Some(subtitle),
                 images: gallery_images,
@@ -234,13 +235,15 @@ impl Message<String> for DreamActor {
             .await
             .context("while uploading dream gallery")?;
 
-            gallery_image_urls = Some(image_urls);
+            gallery_image_urls = Some(uploaded.image_urls.clone());
+            gallery_layout = Some(uploaded.layout.clone());
+            gallery_id = Some(uploaded.id.clone());
 
             // Record the generated gallery in user's history
             let _ = self
                 .user_actor
                 .tell(AddGeneratedImage {
-                    url: url.clone(),
+                    url: uploaded.gallery_url.clone(),
                     prompt: original_request.clone(),
                     model: Some(display_model_name.clone()),
                     backend: ImagenBackend::StableDiffusion.as_str().to_string(),
@@ -248,8 +251,8 @@ impl Message<String> for DreamActor {
                 .send()
                 .await;
 
-            info!(gallery = %url, total_images = image_results.len(), "Successfully created dream gallery");
-            Some(url)
+            info!(gallery = %uploaded.gallery_url, total_images = image_results.len(), "Successfully created dream gallery");
+            Some(uploaded.gallery_url)
         } else {
             None
         };
@@ -296,6 +299,8 @@ impl Message<String> for DreamActor {
                 image_urls: gallery_image_urls,
                 prompts: Some(prompts_vec),
                 display_prompts: Some(display_prompts_vec),
+                gallery_id,
+                gallery_layout,
                 correction_message: correction_message.clone(),
             })
         } else {
@@ -326,6 +331,8 @@ impl Message<String> for DreamActor {
                 image_urls: None,
                 prompts: None,
                 display_prompts: None,
+                gallery_id: None,
+                gallery_layout: None,
                 correction_message: correction_message.clone(),
             })
         }

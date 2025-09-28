@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use kameo::{
     Actor,
     actor::{ActorRef, WeakActorRef},
@@ -20,7 +21,10 @@ use crate::network::{
     discord::{BrokerActionUpdate, DiscordActor},
     irc::{BrokerActionDelivery, IrcActor},
 };
-use crate::persistence::user::{GetUser, UserManager};
+use crate::persistence::{
+    images::{GalleryMetadata, GalleryRegistry, RegisterGallery},
+    user::{GetUser, UserManager},
+};
 
 const ACTIONS_PENDING_KEY: &str = "actions:pending";
 
@@ -366,10 +370,15 @@ fn status_as_json(status: &ActionStatus) -> serde_json::Value {
             }
             serde_json::Value::Object(payload)
         }
-        ActionStatus::Completed(completed) => json!({
-            "state": "completed",
-            "lines": completed.response.lines,
-        }),
+        ActionStatus::Completed(completed) => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("state".to_string(), json!("completed"));
+            payload.insert("lines".to_string(), json!(completed.response.lines));
+            if let Some(gallery) = &completed.response.gallery {
+                payload.insert("gallery_id".to_string(), json!(gallery.id));
+            }
+            serde_json::Value::Object(payload)
+        }
         ActionStatus::Failed(failure) => json!({
             "state": "failed",
             "error": failure.error,
@@ -419,7 +428,7 @@ async fn execute_action(
                 .ask(GetUser(user_id.clone(), user_name.clone()))
                 .await
                 .context("while fetching user actor")?;
-            execute_prompt(user_actor, input.clone(), progress).await
+            execute_prompt(user_actor, user_id.clone(), input.clone(), progress).await
         }
         ActionPayload::Dream {
             user_id,
@@ -431,13 +440,14 @@ async fn execute_action(
                 .ask(GetUser(user_id.clone(), user_name.clone()))
                 .await
                 .context("while fetching user actor")?;
-            execute_dream(user_actor, input.clone(), progress).await
+            execute_dream(user_actor, user_id.clone(), input.clone(), progress).await
         }
     }
 }
 
 async fn execute_prompt(
     user_actor: ActorRef<crate::persistence::user::UserActor>,
+    user_id: crate::persistence::user::UserId,
     input: String,
     progress: &ActionProgressEmitter,
 ) -> Result<ActionResponse> {
@@ -448,23 +458,74 @@ async fn execute_prompt(
         .ask(input)
         .await
         .context("while executing prompt action")?;
+    let crate::actions::prompt::PromptResult {
+        text,
+        image_url,
+        image_urls,
+        prompts,
+        display_prompts,
+        gallery_id,
+        gallery_layout,
+        correction_message,
+        ..
+    } = result;
 
-    let base_response = match result.image_url {
-        Some(image_url) => format!("{} {}", result.text, image_url),
-        None => format!("{}\n(No image)", result.text),
+    let base_response = match image_url.as_ref() {
+        Some(image_url) => format!("{} {}", text, image_url),
+        None => format!("{}\n(No image)", text),
     };
 
-    let response = if let Some(correction) = result.correction_message {
+    let response = if let Some(correction) = correction_message.as_ref() {
         format!("{}\n({})", base_response, correction)
     } else {
         base_response
     };
 
-    Ok(ActionResponse::single_line(response, false))
+    let mut action_response = ActionResponse::single_line(response, false);
+
+    if let (
+        Some(gallery_id),
+        Some(gallery_layout),
+        Some(image_urls),
+        Some(prompts),
+        Some(display_prompts),
+    ) = (
+        gallery_id,
+        gallery_layout,
+        image_urls,
+        prompts,
+        display_prompts,
+    ) {
+        let metadata = GalleryMetadata {
+            id: gallery_id.clone(),
+            owner_id: user_id,
+            gallery_url: image_url,
+            image_urls,
+            prompts,
+            display_prompts,
+            layout: gallery_layout,
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        if let Ok(registry) = GalleryRegistry::get() {
+            if let Err(err) = registry
+                .ask(RegisterGallery { metadata })
+                .await
+                .context("while registering gallery metadata")
+            {
+                error!("Failed to register gallery metadata: {err:?}");
+            }
+        }
+
+        action_response.gallery = Some(crate::actions::GalleryReference { id: gallery_id });
+    }
+
+    Ok(action_response)
 }
 
 async fn execute_dream(
     user_actor: ActorRef<crate::persistence::user::UserActor>,
+    user_id: crate::persistence::user::UserId,
     input: String,
     _progress: &ActionProgressEmitter,
 ) -> Result<ActionResponse> {
@@ -475,17 +536,67 @@ async fn execute_dream(
         .ask(input)
         .await
         .context("while executing dream action")?;
+    let crate::actions::prompt::PromptResult {
+        text,
+        image_url,
+        image_urls,
+        prompts,
+        display_prompts,
+        gallery_id,
+        gallery_layout,
+        correction_message,
+        ..
+    } = result;
 
-    let base_response = match result.image_url {
-        Some(image_url) => format!("{} {}", result.text, image_url),
-        None => format!("{}\n(No image)", result.text),
+    let base_response = match image_url.as_ref() {
+        Some(image_url) => format!("{} {}", text, image_url),
+        None => format!("{}\n(No image)", text),
     };
 
-    let response = if let Some(correction) = result.correction_message {
+    let response = if let Some(correction) = correction_message.as_ref() {
         format!("{}\n({})", base_response, correction)
     } else {
         base_response
     };
 
-    Ok(ActionResponse::single_line(response, false))
+    let mut action_response = ActionResponse::single_line(response, false);
+
+    if let (
+        Some(gallery_id),
+        Some(gallery_layout),
+        Some(image_urls),
+        Some(prompts),
+        Some(display_prompts),
+    ) = (
+        gallery_id,
+        gallery_layout,
+        image_urls,
+        prompts,
+        display_prompts,
+    ) {
+        let metadata = GalleryMetadata {
+            id: gallery_id.clone(),
+            owner_id: user_id,
+            gallery_url: image_url,
+            image_urls,
+            prompts,
+            display_prompts,
+            layout: gallery_layout,
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        if let Ok(registry) = GalleryRegistry::get() {
+            if let Err(err) = registry
+                .ask(RegisterGallery { metadata })
+                .await
+                .context("while registering dream gallery metadata")
+            {
+                error!("Failed to register dream gallery metadata: {err:?}");
+            }
+        }
+
+        action_response.gallery = Some(crate::actions::GalleryReference { id: gallery_id });
+    }
+
+    Ok(action_response)
 }

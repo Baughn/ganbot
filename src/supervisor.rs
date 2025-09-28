@@ -29,7 +29,7 @@ use crate::config::{
 use crate::network::discord::DiscordActor;
 use crate::network::irc::IrcActor;
 use crate::network::openrouter::OpenRouter;
-use crate::persistence::user::UserManager;
+use crate::persistence::{images::GalleryRegistry, user::UserManager};
 
 type ConfigHash = u64;
 
@@ -48,6 +48,8 @@ pub struct Supervisor {
     _user_manager: ActorRef<UserManager>,
     /// Action broker.
     _action_broker: ActorRef<ActionBroker>,
+    /// Gallery registry actor.
+    _gallery_registry: ActorRef<GalleryRegistry>,
     /// Filesystem watcher for configuration changes (kept alive for duration of actor).
     _config_watcher: Option<RecommendedWatcher>,
 }
@@ -109,6 +111,8 @@ impl Actor for Supervisor {
         // Initialize the user manager.
         let user_manager = UserManager::spawn_link(&actor_ref, redis_connection.clone()).await;
         let action_broker = ActionBroker::spawn_link(&actor_ref, redis_connection.clone()).await;
+        let gallery_registry =
+            GalleryRegistry::spawn_link(&actor_ref, redis_connection.clone()).await;
 
         // Load models configuration
         let models_config = load_models_config().expect("Failed to load models configuration");
@@ -128,6 +132,7 @@ impl Actor for Supervisor {
             redis_connection,
             _user_manager: user_manager,
             _action_broker: action_broker,
+            _gallery_registry: gallery_registry,
             _config_watcher,
         };
 

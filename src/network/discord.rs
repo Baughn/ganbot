@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use anyhow::{Context as AnyhowContext, Result};
 use kameo::prelude::*;
@@ -6,11 +6,13 @@ use serenity::{
     Client,
     all::{
         self, ButtonStyle, Command, CommandDataOptionValue, CommandInteraction, CommandOptionType,
-        ComponentInteraction, CreateAllowedMentions, CreateCommand, CreateCommandOption,
-        CreateInteractionResponseFollowup, CreateMessage, EditMessage, EventHandler,
-        GatewayIntents, Http, Interaction, ModalInteraction,
+        ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton, CreateCommand,
+        CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseFollowup,
+        CreateMessage, EditMessage, EventHandler, GatewayIntents, Http, Interaction,
+        InteractionResponseFlags, ModalInteraction,
     },
     async_trait,
+    builder::CreateInteractionResponseMessage,
     model::{gateway::Ready, id::ApplicationId},
 };
 use tokio::task::JoinHandle;
@@ -22,34 +24,15 @@ use crate::{
         broker::{ActionBroker, RegisterDiscord},
     },
     config::global::DiscordConfig,
-    persistence::user::{GetUser, UserActor, UserId, UserManager},
+    persistence::{
+        images::{
+            AssociateMessage, GalleryMetadata, GalleryRegistry, GetGallery, GetGalleryByMessage,
+        },
+        user::{GetUser, UserActor, UserId, UserManager},
+    },
 };
 
-const MAX_GALLERY_STATES: usize = 128;
-const SELECT_BUTTON_PREFIX: &str = "select";
-const EDIT_BUTTON_PREFIX: &str = "edit";
-const RETRY_BUTTON_PREFIX: &str = "retry";
-const EDIT_MODAL_PREFIX: &str = "edit-modal";
-const RETRY_MODAL_PREFIX: &str = "retry-modal";
-
-#[derive(Clone)]
-struct ButtonDescriptor {
-    custom_id: String,
-    label: String,
-    style: ButtonStyle,
-}
-
-type ButtonLayout = Vec<Vec<ButtonDescriptor>>;
-
-struct GalleryState {
-    created_at: Instant,
-    owner_id: all::UserId,
-    owner_name: String,
-    gallery_url: Option<String>,
-    image_urls: Vec<String>,
-    prompts: Vec<String>,
-    display_prompts: Vec<String>,
-}
+const GALLERY_BUTTON_PREFIX: &str = "gallery";
 
 enum DiscordInteraction {
     Command {
@@ -106,6 +89,7 @@ pub struct DiscordActor {
     client_task: JoinHandle<()>,
     user_manager: ActorRef<UserManager>,
     broker: ActorRef<ActionBroker>,
+    gallery_registry: ActorRef<GalleryRegistry>,
 }
 
 struct Handler {
@@ -156,6 +140,8 @@ impl Actor for DiscordActor {
         let user_manager =
             UserManager::get().with_context(|| "while retrieving user manager actor")?;
         let broker = ActionBroker::get().with_context(|| "while retrieving action broker actor")?;
+        let gallery_registry =
+            GalleryRegistry::get().with_context(|| "while retrieving gallery registry actor")?;
 
         if let Err(err) = broker
             .tell(RegisterDiscord {
@@ -173,6 +159,7 @@ impl Actor for DiscordActor {
             client_task,
             user_manager,
             broker,
+            gallery_registry,
         })
     }
 
@@ -400,28 +387,70 @@ impl DiscordActor {
         response: ActionResponse,
         preface: Option<String>,
     ) -> Result<()> {
-        let mut lines = Vec::new();
+        let ActionResponse {
+            lines: response_lines,
+            gallery,
+            ..
+        } = response;
+
+        let mut lines = Vec::with_capacity(response_lines.len() + 1);
         lines.push(format!("<@{}>", user_id));
-        if let Some(preface) = preface {
+        if let Some(_preface) = preface {
             // For now, ignore it!
             // The preface contains the prompt, which is duplicated inside the image.
         }
-        for line in response.lines {
-            lines.push(line);
-        }
+        lines.extend(response_lines);
         let content = lines.join("\n");
 
         let user = all::UserId::new(user_id);
         let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
-        let builder = CreateMessage::new()
+
+        let mut builder = CreateMessage::new()
             .content(content)
             .allowed_mentions(allowed_mentions);
 
-        // TODO: Attach gallery buttons (U1…Un) when gallery support is wired up.
-        all::ChannelId::new(channel_id)
+        let mut gallery_to_associate: Option<String> = None;
+
+        if let Some(gallery_ref) = &gallery {
+            match self
+                .gallery_registry
+                .ask(GetGallery(gallery_ref.id.clone()))
+                .await
+                .context("while loading gallery metadata for completion message")?
+            {
+                Some(metadata) => {
+                    let rows = Self::build_gallery_components(&metadata);
+                    if !rows.is_empty() {
+                        builder = builder.components(rows);
+                    }
+                    gallery_to_associate = Some(metadata.id);
+                }
+                None => {
+                    warn!(gallery_id = %gallery_ref.id, "Gallery metadata missing; omitting buttons");
+                }
+            }
+        }
+
+        let message = all::ChannelId::new(channel_id)
             .send_message(&self.http, builder)
             .await
             .with_context(|| "while sending Discord completion message")?;
+
+        if let Some(gallery_id) = gallery_to_associate {
+            if let Err(err) = self
+                .gallery_registry
+                .ask(AssociateMessage {
+                    gallery_id,
+                    channel_id,
+                    message_id: message.id.get(),
+                })
+                .await
+                .context("while associating gallery with message")
+            {
+                warn!("Failed to associate gallery message: {err:#}");
+            }
+        }
+
         Ok(())
     }
 
@@ -467,15 +496,18 @@ impl DiscordActor {
                 ctx: discord_ctx,
                 command,
             } => self.handle_command(ctx, discord_ctx, command).await,
-            _ => todo!(),
-            // DiscordInteraction::Component {
-            //     ctx: discord_ctx,
-            //     component,
-            // } => self.handle_component(ctx, discord_ctx, component).await,
-            // DiscordInteraction::Modal {
-            //     ctx: discord_ctx,
-            //     modal,
-            // } => self.handle_modal(ctx, discord_ctx, modal).await,
+            DiscordInteraction::Component {
+                ctx: discord_ctx,
+                component,
+            } => self.handle_component(ctx, discord_ctx, component).await,
+            DiscordInteraction::Modal {
+                ctx: _discord_ctx,
+                modal,
+            } => {
+                // Modal support will be added in a future iteration.
+                warn!(custom_id = %modal.data.custom_id, "Unhandled modal submission");
+                Ok(())
+            }
         }
     }
 
@@ -521,6 +553,180 @@ impl DiscordActor {
                 Ok(())
             }
         }
+    }
+
+    async fn handle_component(
+        &mut self,
+        _ctx: &mut Context<Self, ()>,
+        _discord_ctx: &all::Context,
+        component: &ComponentInteraction,
+    ) -> Result<()> {
+        let custom_id = component.data.custom_id.as_str();
+
+        if custom_id.starts_with(GALLERY_BUTTON_PREFIX) {
+            return self.handle_gallery_component(component).await;
+        }
+
+        warn!(custom_id, "Unhandled component interaction");
+        self.respond_component_message(component, "This control is not implemented yet.")
+            .await
+    }
+
+    async fn handle_gallery_component(&self, component: &ComponentInteraction) -> Result<()> {
+        let Some((gallery_id, image_index)) =
+            Self::parse_gallery_custom_id(&component.data.custom_id)
+        else {
+            return self
+                .respond_component_message(component, "Unable to parse gallery control.")
+                .await;
+        };
+
+        let metadata = match self
+            .gallery_registry
+            .ask(GetGallery(gallery_id.clone()))
+            .await
+            .context("while loading gallery metadata")?
+        {
+            Some(metadata) => metadata,
+            None => {
+                return self
+                    .respond_component_message(component, "This gallery is no longer available.")
+                    .await;
+            }
+        };
+
+        let channel_id = component.message.channel_id.get();
+        let message_id = component.message.id.get();
+
+        match self
+            .gallery_registry
+            .ask(GetGalleryByMessage {
+                channel_id,
+                message_id,
+            })
+            .await
+            .context("while validating gallery/message association")?
+        {
+            Some(mapped) if mapped.id == metadata.id => {}
+            Some(_) => {
+                warn!(
+                    custom_id = %component.data.custom_id,
+                    "Gallery/message association mismatch"
+                );
+            }
+            None => {
+                warn!(
+                    message_id,
+                    channel_id, "No gallery association found for component message"
+                );
+            }
+        }
+
+        let owner = UserId::Discord(component.user.id);
+        if metadata.owner_id != owner {
+            return self
+                .respond_component_message(
+                    component,
+                    "Only the original author can extract images from this gallery.",
+                )
+                .await;
+        }
+
+        if image_index >= metadata.image_urls.len() {
+            return self
+                .respond_component_message(component, "That image is no longer available.")
+                .await;
+        }
+
+        let image_url = &metadata.image_urls[image_index];
+        let display_prompt = metadata.display_prompts.get(image_index);
+        let command_prompt = metadata.prompts.get(image_index);
+
+        let mut lines = Vec::new();
+        lines.push(format!("U{} → {}", image_index + 1, image_url));
+
+        if let Some(prompt) = display_prompt.filter(|p| !p.trim().is_empty()) {
+            lines.push(format!("Prompt: {}", prompt));
+        }
+
+        if let Some(command) = command_prompt.filter(|p| !p.trim().is_empty()) {
+            lines.push(format!("Command: {}", command));
+        }
+
+        let content = lines.join("\n");
+        self.respond_component_message(component, &content).await
+    }
+
+    async fn respond_component_message(
+        &self,
+        component: &ComponentInteraction,
+        content: &str,
+    ) -> Result<()> {
+        let response = CreateInteractionResponseMessage::new()
+            .content(content.to_owned())
+            .flags(InteractionResponseFlags::EPHEMERAL);
+
+        component
+            .create_response(&self.http, CreateInteractionResponse::Message(response))
+            .await
+            .with_context(|| "while responding to component interaction")
+    }
+
+    fn parse_gallery_custom_id(custom_id: &str) -> Option<(String, usize)> {
+        let mut parts = custom_id.split(':');
+        let prefix = parts.next()?;
+        if prefix != GALLERY_BUTTON_PREFIX {
+            return None;
+        }
+        let gallery_id = parts.next()?.to_string();
+        let index_str = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        let index = index_str.parse().ok()?;
+        Some((gallery_id, index))
+    }
+
+    fn build_gallery_components(metadata: &GalleryMetadata) -> Vec<CreateActionRow> {
+        let mut rows = Vec::new();
+        let mut image_index = 0usize;
+
+        for &count in &metadata.layout.row_counts {
+            if count == 0 {
+                continue;
+            }
+
+            let mut remaining = count as usize;
+            while remaining > 0 && rows.len() < 5 {
+                let take = remaining.min(5);
+                let mut buttons = Vec::new();
+
+                for _ in 0..take {
+                    image_index += 1;
+                    let label = format!("U{}", image_index);
+                    let custom_id = format!(
+                        "{}:{}:{}",
+                        GALLERY_BUTTON_PREFIX,
+                        metadata.id,
+                        image_index - 1
+                    );
+                    buttons.push(
+                        CreateButton::new(custom_id)
+                            .style(ButtonStyle::Secondary)
+                            .label(label),
+                    );
+                }
+
+                rows.push(CreateActionRow::Buttons(buttons));
+                remaining -= take;
+            }
+
+            if rows.len() >= 5 {
+                break;
+            }
+        }
+
+        rows
     }
 
     async fn handle_prompt_command(
