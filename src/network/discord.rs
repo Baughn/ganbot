@@ -403,7 +403,8 @@ impl DiscordActor {
         let mut lines = Vec::new();
         lines.push(format!("<@{}>", user_id));
         if let Some(preface) = preface {
-            lines.push(preface);
+            // For now, ignore it!
+            // The preface contains the prompt, which is duplicated inside the image.
         }
         for line in response.lines {
             lines.push(line);
