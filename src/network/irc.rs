@@ -14,6 +14,7 @@ use crate::actions::{ActionId, ActionOrigin, ActionPayload, ActionResponse, Subm
 use crate::config::global::IrcConfig;
 use crate::help;
 use crate::persistence::user::{self, GetUserId, UserActor, UserManager};
+use crate::util::token_bucket::TokenBucket;
 
 mod sasl;
 use self::sasl::SaslManager;
@@ -94,49 +95,6 @@ struct CheckUserIdentified {
 // Internal actor for handling command processing and replies.
 #[derive(Actor)]
 struct ReplyActor;
-
-/// Simple token bucket rate limiter
-struct TokenBucket {
-    tokens: f64,
-    last_refill: Instant,
-    refill_rate: f64, // tokens per second
-    max_tokens: f64,
-}
-
-impl TokenBucket {
-    fn new(max_tokens: f64, refill_rate: f64) -> Self {
-        Self {
-            tokens: max_tokens, // Start with full bucket
-            last_refill: Instant::now(),
-            refill_rate,
-            max_tokens,
-        }
-    }
-
-    async fn consume_token(&mut self) {
-        loop {
-            let now = Instant::now();
-            let elapsed = now.duration_since(self.last_refill);
-
-            // Refill tokens based on elapsed time
-            let tokens_to_add = elapsed.as_secs_f64() * self.refill_rate;
-            self.tokens = (self.tokens + tokens_to_add).min(self.max_tokens);
-            self.last_refill = now;
-
-            // If we have a token, consume it and return
-            if self.tokens >= 1.0 {
-                self.tokens -= 1.0;
-                return;
-            }
-
-            // Calculate how long to wait for the next token
-            let tokens_needed = 1.0 - self.tokens;
-            let wait_time = Duration::from_secs_f64(tokens_needed / self.refill_rate);
-
-            tokio::time::sleep(wait_time).await;
-        }
-    }
-}
 
 impl Actor for IrcActor {
     type Args = IrcConfig;

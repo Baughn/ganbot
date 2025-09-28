@@ -14,10 +14,12 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use kameo::actor::WeakActorRef;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::actions::broker::ActionBroker;
-use crate::persistence::user::UserId;
+use crate::{
+    actions::broker::ActionBroker, persistence::user::UserId, util::token_bucket::TokenBucket,
+};
 
 /// Unique identifier for an action invocation persisted in Redis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -179,6 +181,7 @@ pub struct ActionLifecycleResult {
 pub struct ActionProgressEmitter {
     request: Arc<ActionRequest>,
     broker: WeakActorRef<ActionBroker>,
+    throttle: Arc<Mutex<ProgressThrottle>>,
 }
 
 impl ActionProgressEmitter {
@@ -186,6 +189,7 @@ impl ActionProgressEmitter {
         Self {
             request: Arc::new(request.clone()),
             broker,
+            throttle: Arc::new(Mutex::new(ProgressThrottle::new())),
         }
     }
 
@@ -195,7 +199,15 @@ impl ActionProgressEmitter {
 
     pub fn progress(&self, percent: Option<f32>, message: impl Into<String> + Send + 'static) {
         let message = message.into();
-        self.spawn_status(ActionStatus::Progress(ActionProgress { percent, message }));
+        let emitter = self.clone();
+        tokio::spawn(async move {
+            if !emitter.should_emit_progress(percent, &message).await {
+                return;
+            }
+            emitter
+                .send_status(ActionStatus::Progress(ActionProgress { percent, message }))
+                .await;
+        });
     }
 
     async fn send_status(&self, status: ActionStatus) {
@@ -216,5 +228,63 @@ impl ActionProgressEmitter {
         tokio::spawn(async move {
             emitter.send_status(status).await;
         });
+    }
+
+    async fn should_emit_progress(&self, percent: Option<f32>, message: &str) -> bool {
+        // Ensure we always surface completion updates even if they arrive quickly.
+        let force_emit = percent.map(|p| p >= 99.9).unwrap_or(false);
+
+        let mut throttle = self.throttle.lock().await;
+        throttle.allow_emit(percent, force_emit, message)
+    }
+}
+
+struct ProgressThrottle {
+    bucket: TokenBucket,
+    last_snapshot: Option<(Option<f32>, String)>,
+}
+
+impl ProgressThrottle {
+    fn new() -> Self {
+        Self {
+            bucket: TokenBucket::new(1.0, 0.5),
+            last_snapshot: None,
+        }
+    }
+
+    fn allow_emit(&mut self, percent: Option<f32>, force_emit: bool, message: &str) -> bool {
+        if force_emit {
+            self.bucket.force_consume(1.0);
+            self.record(percent, message);
+            return true;
+        }
+
+        if self.is_duplicate(percent, message) {
+            return false;
+        }
+
+        if !self.bucket.try_consume(1.0) {
+            return false;
+        }
+
+        self.record(percent, message);
+        true
+    }
+
+    fn is_duplicate(&self, percent: Option<f32>, message: &str) -> bool {
+        match &self.last_snapshot {
+            Some((last_percent, last_message)) if last_message == message => {
+                match (*last_percent, percent) {
+                    (Some(a), Some(b)) => (a - b).abs() < 0.5,
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn record(&mut self, percent: Option<f32>, message: &str) {
+        self.last_snapshot = Some((percent, message.to_string()));
     }
 }
