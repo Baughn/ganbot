@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use image::RgbImage;
-use kameo::{Actor, Reply, actor::ActorRef, message::Context, prelude::Message};
+use kameo::{actor::ActorRef, message::Context, prelude::Message, Actor, Reply};
 use rand::RngCore as _;
 use tracing::{debug, info, trace};
 
 use crate::{
     config::models::{self, Model, ModelsConfig},
-    fuzzy::{FuzzyResult, find_fuzzy_match},
+    fuzzy::{find_fuzzy_match, FuzzyResult},
     messages::imagen::Generate,
     network::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
@@ -389,6 +389,10 @@ pub fn resolve_model(
         resolved_model_name = alias_target.clone();
     }
 
+    if resolved_model_name == "auto" {
+        resolved_model_name = select_auto_model(prompt_text, config);
+    }
+
     let mut candidates: Vec<(&str, &Model)> = config
         .models
         .iter()
@@ -433,6 +437,25 @@ pub fn resolve_model(
             bail!("Model '{}' not found in configuration", original)
         }
     }
+}
+
+fn select_auto_model(prompt_text: &str, config: &ModelsConfig) -> String {
+    let prompt_len = prompt_text.len().max(1);
+    let comma_count = prompt_text.matches(',').count();
+    let commacity = comma_count as f32 / prompt_len as f32;
+
+    let selected_model = if commacity >= 0.04 {
+        config.default_tagged.clone()
+    } else {
+        config.default_english.clone()
+    };
+
+    info!(
+        "Auto-selected model '{}' based on prompt commacity of {:.3}",
+        selected_model, commacity
+    );
+
+    selected_model
 }
 
 async fn generate_nanobanana(prompt: Generate, model: &Model) -> Result<ImagenResponse> {
