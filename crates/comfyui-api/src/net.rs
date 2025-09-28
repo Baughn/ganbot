@@ -419,6 +419,13 @@ impl ComfyUIClient {
                                         "Queue remaining: {}",
                                         data.status.exec_info.queue_remaining
                                     );
+                                    if let Some(callback) = progress_callback {
+                                        let message = format!(
+                                            "queue_remaining:{}",
+                                            data.status.exec_info.queue_remaining
+                                        );
+                                        callback(0.0, Some(&message));
+                                    }
                                 }
                                 WsMessageType::Other => {
                                     // Ignore unknown message types
@@ -488,6 +495,11 @@ impl ComfyUIClient {
             "Workflow queued with prompt_id: {} (queue position: {})",
             prompt_id, prompt_response.number
         );
+
+        if let Some(callback) = progress_callback.as_ref() {
+            let message = format!("queued:{}", prompt_response.number);
+            callback(0.0, Some(&message));
+        }
 
         // Check if execution completed immediately (cached)
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;

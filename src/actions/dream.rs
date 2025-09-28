@@ -164,6 +164,7 @@ impl Message<String> for DreamActor {
                     .ask(GenerateImages {
                         prompt: generate.clone(),
                         model,
+                        progress: None,
                     })
                     .await
                     .map_err(|err| {

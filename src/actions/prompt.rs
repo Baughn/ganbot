@@ -19,6 +19,7 @@ pub mod parse;
 #[derive(Actor)]
 pub struct PromptActor {
     user_actor: kameo::actor::ActorRef<UserActor>,
+    progress: Option<crate::actions::ActionProgressEmitter>,
 }
 
 #[derive(Debug)]
@@ -62,8 +63,14 @@ impl Message<Generate> for PromptActor {
 }
 
 impl PromptActor {
-    pub async fn new(user_actor: kameo::actor::ActorRef<UserActor>) -> Self {
-        Self { user_actor }
+    pub async fn new(
+        user_actor: kameo::actor::ActorRef<UserActor>,
+        progress: Option<crate::actions::ActionProgressEmitter>,
+    ) -> Self {
+        Self {
+            user_actor,
+            progress,
+        }
     }
 
     async fn process_generate(&mut self, mut prompt: Generate) -> Result<PromptResult, Error> {
@@ -81,6 +88,7 @@ impl PromptActor {
             .ask(GenerateImages {
                 prompt: prompt.clone(),
                 model,
+                progress: self.progress.clone(),
             })
             .await
             .context("while generating images")?;

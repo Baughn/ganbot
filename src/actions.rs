@@ -9,10 +9,14 @@ pub mod imagen;
 pub mod prompt;
 pub mod select;
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
+use kameo::actor::WeakActorRef;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::actions::broker::ActionBroker;
 use crate::persistence::user::UserId;
 
 /// Unique identifier for an action invocation persisted in Redis.
@@ -119,6 +123,9 @@ pub enum ActionStatus {
 
 #[derive(Debug, Clone)]
 pub struct ActionProgress {
+    /// Progress percentage in the range 0.0-100.0 if available.
+    pub percent: Option<f32>,
+    /// Human-readable status text describing the current stage.
     pub message: String,
 }
 
@@ -166,4 +173,48 @@ impl SubmitAction {
 pub struct ActionLifecycleResult {
     pub request: ActionRequest,
     pub status: ActionStatus,
+}
+
+#[derive(Clone)]
+pub struct ActionProgressEmitter {
+    request: Arc<ActionRequest>,
+    broker: WeakActorRef<ActionBroker>,
+}
+
+impl ActionProgressEmitter {
+    pub fn new(request: &ActionRequest, broker: WeakActorRef<ActionBroker>) -> Self {
+        Self {
+            request: Arc::new(request.clone()),
+            broker,
+        }
+    }
+
+    pub fn started(&self) {
+        self.spawn_status(ActionStatus::Started);
+    }
+
+    pub fn progress(&self, percent: Option<f32>, message: impl Into<String> + Send + 'static) {
+        let message = message.into();
+        self.spawn_status(ActionStatus::Progress(ActionProgress { percent, message }));
+    }
+
+    async fn send_status(&self, status: ActionStatus) {
+        if let Some(broker) = self.broker.upgrade() {
+            let request = (*self.request).clone();
+            if let Err(err) = broker
+                .tell(ActionLifecycleResult { request, status })
+                .send()
+                .await
+            {
+                tracing::warn!("Failed to emit action status update: {err:#}");
+            }
+        }
+    }
+
+    fn spawn_status(&self, status: ActionStatus) {
+        let emitter = self.clone();
+        tokio::spawn(async move {
+            emitter.send_status(status).await;
+        });
+    }
 }

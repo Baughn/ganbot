@@ -320,16 +320,22 @@ impl DiscordActor {
                     channel_id,
                     message_id,
                     Some(preface.clone()),
-                    "Status: generation started…".to_string(),
+                    "Status: submitted to generator; waiting for backend scheduling".to_string(),
                 )
                 .await
             }
             ActionStatus::Progress(progress) => {
+                let status_line = if let Some(percent) = progress.percent {
+                    let percent = percent.clamp(0.0, 100.0);
+                    format!("Status: {:.0}% - {}", percent, progress.message)
+                } else {
+                    format!("Status: {}", progress.message)
+                };
                 self.update_progress_message(
                     channel_id,
                     message_id,
                     Some(preface.clone()),
-                    format!("Status: {}", progress.message),
+                    status_line,
                 )
                 .await
             }

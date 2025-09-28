@@ -13,8 +13,8 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, instrument, warn};
 
 use crate::actions::{
-    ActionCompleted, ActionFailure, ActionLifecycleResult, ActionPayload, ActionRequest,
-    ActionResponse, ActionStatus, ActionUpdate, SubmitAction,
+    ActionCompleted, ActionFailure, ActionLifecycleResult, ActionPayload, ActionProgressEmitter,
+    ActionRequest, ActionResponse, ActionStatus, ActionUpdate, SubmitAction,
 };
 use crate::network::{
     discord::{BrokerActionUpdate, DiscordActor},
@@ -65,22 +65,10 @@ impl ActionBroker {
         broker_ref: WeakActorRef<ActionBroker>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            let Some(broker_ref) = broker_ref.upgrade() else {
-                return;
-            };
+            let progress = ActionProgressEmitter::new(&request, broker_ref.clone());
+            progress.started();
 
-            if let Err(err) = broker_ref
-                .tell(ActionLifecycleResult {
-                    request: request.clone(),
-                    status: ActionStatus::Started,
-                })
-                .send()
-                .await
-            {
-                warn!("Failed to report start of action {}: {err}", request.id);
-            }
-
-            let status = match execute_action(&request).await {
+            let status = match execute_action(&request, &progress).await {
                 Ok(response) => ActionStatus::Completed(ActionCompleted { response }),
                 Err(error) => ActionStatus::Failed(ActionFailure {
                     error: format!("{error:#}"),
@@ -88,12 +76,14 @@ impl ActionBroker {
                 }),
             };
 
-            if let Err(err) = broker_ref
-                .tell(ActionLifecycleResult { request, status })
-                .send()
-                .await
-            {
-                warn!("Failed to report completion of action: {err}");
+            if let Some(broker) = broker_ref.upgrade() {
+                if let Err(err) = broker
+                    .tell(ActionLifecycleResult { request, status })
+                    .send()
+                    .await
+                {
+                    warn!("Failed to report completion of action: {err}");
+                }
             }
         })
     }
@@ -368,7 +358,13 @@ fn status_as_json(status: &ActionStatus) -> serde_json::Value {
         ActionStatus::Queued => json!({ "state": "queued" }),
         ActionStatus::Started => json!({ "state": "started" }),
         ActionStatus::Progress(progress) => {
-            json!({ "state": "progress", "message": progress.message })
+            let mut payload = serde_json::Map::new();
+            payload.insert("state".to_string(), json!("progress"));
+            payload.insert("message".to_string(), json!(progress.message));
+            if let Some(percent) = progress.percent {
+                payload.insert("percent".to_string(), json!(percent));
+            }
+            serde_json::Value::Object(payload)
         }
         ActionStatus::Completed(completed) => json!({
             "state": "completed",
@@ -382,7 +378,10 @@ fn status_as_json(status: &ActionStatus) -> serde_json::Value {
     }
 }
 
-async fn execute_action(request: &ActionRequest) -> Result<ActionResponse> {
+async fn execute_action(
+    request: &ActionRequest,
+    progress: &ActionProgressEmitter,
+) -> Result<ActionResponse> {
     match &request.payload {
         ActionPayload::Ask { question } => {
             let actor =
@@ -420,7 +419,7 @@ async fn execute_action(request: &ActionRequest) -> Result<ActionResponse> {
                 .ask(GetUser(user_id.clone(), user_name.clone()))
                 .await
                 .context("while fetching user actor")?;
-            execute_prompt(user_actor, input.clone()).await
+            execute_prompt(user_actor, input.clone(), progress).await
         }
         ActionPayload::Dream {
             user_id,
@@ -432,7 +431,7 @@ async fn execute_action(request: &ActionRequest) -> Result<ActionResponse> {
                 .ask(GetUser(user_id.clone(), user_name.clone()))
                 .await
                 .context("while fetching user actor")?;
-            execute_dream(user_actor, input.clone()).await
+            execute_dream(user_actor, input.clone(), progress).await
         }
     }
 }
@@ -440,9 +439,10 @@ async fn execute_action(request: &ActionRequest) -> Result<ActionResponse> {
 async fn execute_prompt(
     user_actor: ActorRef<crate::persistence::user::UserActor>,
     input: String,
+    progress: &ActionProgressEmitter,
 ) -> Result<ActionResponse> {
     let actor = crate::actions::prompt::PromptActor::spawn(
-        crate::actions::prompt::PromptActor::new(user_actor).await,
+        crate::actions::prompt::PromptActor::new(user_actor, Some(progress.clone())).await,
     );
     let result = actor
         .ask(input)
@@ -466,6 +466,7 @@ async fn execute_prompt(
 async fn execute_dream(
     user_actor: ActorRef<crate::persistence::user::UserActor>,
     input: String,
+    _progress: &ActionProgressEmitter,
 ) -> Result<ActionResponse> {
     let actor = crate::actions::dream::DreamActor::spawn(
         crate::actions::dream::DreamActor::new(user_actor).await,

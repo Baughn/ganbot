@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use image::RgbImage;
-use kameo::{actor::ActorRef, message::Context, prelude::Message, Actor, Reply};
+use kameo::{Actor, Reply, actor::ActorRef, message::Context, prelude::Message};
 use rand::RngCore as _;
 use tracing::{debug, info, trace};
 
 use crate::{
+    actions::ActionProgressEmitter,
     config::models::{self, Model, ModelsConfig},
-    fuzzy::{find_fuzzy_match, FuzzyResult},
+    fuzzy::{FuzzyResult, find_fuzzy_match},
     messages::imagen::Generate,
     network::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
@@ -25,6 +26,7 @@ pub struct ImagenActor;
 pub struct GenerateImages {
     pub prompt: Generate,
     pub model: Model,
+    pub progress: Option<ActionProgressEmitter>,
 }
 
 /// Backend classification for generated images.
@@ -62,7 +64,11 @@ impl Message<GenerateImages> for ImagenActor {
         msg: GenerateImages,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let GenerateImages { prompt, model } = msg;
+        let GenerateImages {
+            prompt,
+            model,
+            progress,
+        } = msg;
 
         match &model.backend {
             models::Backend::NanoBanana => generate_nanobanana(prompt, &model).await,
@@ -105,7 +111,7 @@ impl Message<GenerateImages> for ImagenActor {
                     stage2_scheduler: stage2_scheduler.as_deref().unwrap_or("beta"),
                 };
 
-                generate_comfyui(params).await
+                generate_comfyui(params, progress.as_ref()).await
             }
         }
     }
@@ -524,7 +530,15 @@ struct ComfyParams<'a> {
     stage2_scheduler: &'a str,
 }
 
-async fn generate_comfyui(params: ComfyParams<'_>) -> Result<ImagenResponse> {
+async fn generate_comfyui(
+    params: ComfyParams<'_>,
+    progress: Option<&ActionProgressEmitter>,
+) -> Result<ImagenResponse> {
+    let progress_emitter = progress.cloned();
+    if let Some(emitter) = &progress_emitter {
+        emitter.progress(Some(0.0), "Preparing generation workflow…");
+    }
+
     let client = ComfyUIClient::new();
     let mut graph = comfyui::api::Graph::new();
 
@@ -665,9 +679,16 @@ async fn generate_comfyui(params: ComfyParams<'_>) -> Result<ImagenResponse> {
 
     let workflow = graph.build();
 
+    let progress_callback = progress_emitter.as_ref().map(|emitter| {
+        let emitter = emitter.clone();
+        Box::new(move |fraction: f32, stage: Option<&str>| {
+            handle_comfy_progress(&emitter, fraction, stage);
+        }) as comfyui::net::ProgressCallback
+    });
+
     debug!("Submitting graph to ComfyUI");
     let images = client
-        .execute_workflow(workflow.clone(), None)
+        .execute_workflow(workflow.clone(), progress_callback)
         .await
         .context("while executing graph on ComfyUI")?;
     debug!("Graph execution completed");
@@ -682,6 +703,81 @@ async fn generate_comfyui(params: ComfyParams<'_>) -> Result<ImagenResponse> {
         model_name: params.model_name.to_string(),
         seed: Some(seed),
     })
+}
+
+fn handle_comfy_progress(emitter: &ActionProgressEmitter, fraction: f32, stage: Option<&str>) {
+    let percent = (fraction * 100.0).clamp(0.0, 100.0);
+
+    if let Some(stage) = stage {
+        if let Some(position) = stage.strip_prefix("queued:") {
+            let message = match position.parse::<u32>() {
+                Ok(0) => "Queued on ComfyUI (starting imminently)".to_string(),
+                Ok(pos) => format!("Queued on ComfyUI (approximately {} job(s) ahead)", pos),
+                Err(_) => "Queued on ComfyUI".to_string(),
+            };
+            emitter.progress(Some(0.0), message);
+            return;
+        }
+
+        if let Some(remaining) = stage.strip_prefix("queue_remaining:") {
+            let message = match remaining.parse::<u32>() {
+                Ok(0) => "Backend queue cleared; starting soon".to_string(),
+                Ok(count) => format!("Backend queue now has {} job(s) ahead", count),
+                Err(_) => "Backend queue updated".to_string(),
+            };
+            emitter.progress(None, message);
+            return;
+        }
+
+        match stage {
+            "cached" => {
+                emitter.progress(Some(percent.max(90.0)), "Using cached result from ComfyUI");
+                return;
+            }
+            "completed" => {
+                emitter.progress(Some(100.0), "Generation completed");
+                return;
+            }
+            other if !other.is_empty() => {
+                emitter.progress(
+                    Some(percent),
+                    format!("Executing {}", prettify_node_name(other)),
+                );
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    emitter.progress(Some(percent), format!("Progress {:.0}%", percent));
+}
+
+fn prettify_node_name(raw: &str) -> String {
+    let mut result = String::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '_' {
+            result.push(' ');
+            continue;
+        }
+
+        if ch.is_uppercase() && result.ends_with(|c: char| c.is_lowercase()) {
+            result.push(' ');
+        }
+
+        if result.is_empty() {
+            result.push(ch.to_ascii_uppercase());
+            continue;
+        }
+
+        result.push(ch);
+    }
+
+    if result.is_empty() {
+        raw.to_string()
+    } else {
+        result
+    }
 }
 
 fn calculate_dimensions(aspect: (u32, u32), base_width: u32, base_height: u32) -> (u32, u32) {
