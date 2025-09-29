@@ -38,6 +38,7 @@ const GALLERY_BUTTON_PREFIX: &str = "gallery";
 const PROMPT_RETRY_PREFIX: &str = "prompt_retry";
 const PROMPT_DELETE_PREFIX: &str = "prompt_delete";
 const PROMPT_DELETE_CONFIRM_PREFIX: &str = "prompt_delete_confirm";
+const DISCORD_MESSAGE_LIMIT: usize = 2000;
 
 enum DiscordInteraction {
     Command {
@@ -99,6 +100,30 @@ pub struct DiscordActor {
 
 struct Handler {
     actor_ref: ActorRef<DiscordActor>,
+}
+
+struct ResponseSegment {
+    prefix: &'static str,
+    text: String,
+    truncatable: bool,
+}
+
+impl ResponseSegment {
+    fn new(prefix: &'static str, text: String, truncatable: bool) -> Self {
+        Self {
+            prefix,
+            text,
+            truncatable,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.prefix.len() + self.text.len()
+    }
+
+    fn render(&self) -> String {
+        format!("{}{}", self.prefix, self.text)
+    }
 }
 
 #[async_trait]
@@ -610,6 +635,157 @@ impl DiscordActor {
             .await
     }
 
+    fn build_gallery_response_content(metadata: &GalleryMetadata, image_index: usize) -> String {
+        let base_line = format!(
+            "U{} → {}",
+            image_index + 1,
+            metadata.image_urls[image_index]
+        );
+        let mut segments = vec![ResponseSegment::new("", base_line.clone(), true)];
+
+        if let Some(prompt) = metadata
+            .display_prompts
+            .get(image_index)
+            .filter(|p| !p.trim().is_empty())
+        {
+            segments.push(ResponseSegment::new("Prompt: ", prompt.clone(), true));
+        }
+
+        if let Some(command) = metadata
+            .prompts
+            .get(image_index)
+            .filter(|p| !p.trim().is_empty())
+        {
+            segments.push(ResponseSegment::new("Command: ", command.clone(), true));
+        }
+
+        Self::assemble_segments(segments, base_line)
+    }
+
+    fn assemble_segments(mut segments: Vec<ResponseSegment>, base_line: String) -> String {
+        if segments.is_empty() {
+            return Self::truncate_text(&base_line, DISCORD_MESSAGE_LIMIT);
+        }
+
+        let mut made_progress = true;
+        while Self::segments_total_len(&segments) > DISCORD_MESSAGE_LIMIT && made_progress {
+            made_progress = false;
+
+            for prefix in ["Command: ", "Prompt: ", ""] {
+                if Self::segments_total_len(&segments) <= DISCORD_MESSAGE_LIMIT {
+                    break;
+                }
+
+                if let Some(idx) = segments
+                    .iter()
+                    .position(|segment| segment.truncatable && segment.prefix == prefix)
+                {
+                    let max_total_len =
+                        Self::max_segment_len(&segments, idx, DISCORD_MESSAGE_LIMIT);
+                    if Self::truncate_segment(&mut segments[idx], max_total_len) {
+                        made_progress = true;
+                    }
+                }
+            }
+        }
+
+        segments.retain(|segment| !(segment.prefix != "" && segment.text.is_empty()));
+
+        if Self::segments_total_len(&segments) > DISCORD_MESSAGE_LIMIT {
+            let mut truncated_base = Self::truncate_text(&base_line, DISCORD_MESSAGE_LIMIT);
+            let omission = "Prompt data omitted to fit Discord's 2000 character limit.";
+            if !truncated_base.is_empty()
+                && truncated_base.len() + 1 + omission.len() <= DISCORD_MESSAGE_LIMIT
+            {
+                truncated_base.push('\n');
+                truncated_base.push_str(omission);
+            }
+            return truncated_base;
+        }
+
+        segments
+            .into_iter()
+            .map(|segment| segment.render())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn segments_total_len(segments: &[ResponseSegment]) -> usize {
+        if segments.is_empty() {
+            return 0;
+        }
+        let content_len: usize = segments.iter().map(ResponseSegment::len).sum();
+        content_len + (segments.len() - 1)
+    }
+
+    fn max_segment_len(segments: &[ResponseSegment], idx: usize, limit: usize) -> usize {
+        let current_total = Self::segments_total_len(segments);
+        let segment_len = segments[idx].len();
+        if current_total <= limit {
+            segment_len
+        } else {
+            let others_len = current_total.saturating_sub(segment_len);
+            if others_len >= limit {
+                0
+            } else {
+                limit - others_len
+            }
+        }
+    }
+
+    fn truncate_segment(segment: &mut ResponseSegment, max_total_len: usize) -> bool {
+        let current_len = segment.len();
+        if max_total_len >= current_len {
+            return false;
+        }
+
+        let prefix_len = segment.prefix.len();
+        if max_total_len <= prefix_len {
+            if !segment.text.is_empty() {
+                segment.text.clear();
+                return true;
+            }
+            return false;
+        }
+
+        let max_text_len = max_total_len - prefix_len;
+        if segment.text.len() <= max_text_len {
+            return false;
+        }
+
+        if max_text_len == 0 {
+            segment.text.clear();
+            return true;
+        }
+
+        let ellipsis = "...";
+        if max_text_len <= ellipsis.len() {
+            segment.text = ".".repeat(max_text_len);
+            return true;
+        }
+
+        let allowed = max_text_len - ellipsis.len();
+        let truncated = Self::truncate_text(&segment.text, allowed);
+        segment.text = truncated;
+        segment.text.push_str(ellipsis);
+        true
+    }
+
+    fn truncate_text(text: &str, max_bytes: usize) -> String {
+        if text.len() <= max_bytes {
+            return text.to_string();
+        }
+        if max_bytes == 0 {
+            return String::new();
+        }
+
+        let mut end = max_bytes.min(text.len());
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text[..end].to_string()
+    }
+
     async fn handle_gallery_component(&self, component: &ComponentInteraction) -> Result<()> {
         let Some((gallery_id, image_index)) =
             Self::parse_gallery_custom_id(&component.data.custom_id)
@@ -676,22 +852,7 @@ impl DiscordActor {
                 .await;
         }
 
-        let image_url = &metadata.image_urls[image_index];
-        let display_prompt = metadata.display_prompts.get(image_index);
-        let command_prompt = metadata.prompts.get(image_index);
-
-        let mut lines = Vec::new();
-        lines.push(format!("U{} → {}", image_index + 1, image_url));
-
-        if let Some(prompt) = display_prompt.filter(|p| !p.trim().is_empty()) {
-            lines.push(format!("Prompt: {}", prompt));
-        }
-
-        if let Some(command) = command_prompt.filter(|p| !p.trim().is_empty()) {
-            lines.push(format!("Command: {}", command));
-        }
-
-        let content = lines.join("\n");
+        let content = Self::build_gallery_response_content(&metadata, image_index);
         self.respond_component_message(component, &content).await
     }
 
