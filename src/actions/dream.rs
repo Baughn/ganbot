@@ -1,9 +1,45 @@
 use anyhow::{Context as _, Error, Result, bail};
 use futures::future;
 use kameo::{Actor, Reply, prelude::Message};
+use rand::seq::IndexedRandom as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+
+#[derive(Clone, Copy)]
+struct CommentarySeed {
+    shared_thread: &'static str,
+    clue_image: &'static str,
+    signoff_hint: &'static str,
+}
+
+const COMMENTARY_SEEDS: &[CommentarySeed] = &[
+    CommentarySeed {
+        shared_thread: "the rain-slick promise that started the job",
+        clue_image: "reflections smeared across midnight glass",
+        signoff_hint: "the storm still hanging overhead",
+    },
+    CommentarySeed {
+        shared_thread: "that cigarette ember of hope the client handed over",
+        clue_image: "hazy neon humming outside the office blinds",
+        signoff_hint: "smoke curling toward dawn",
+    },
+    CommentarySeed {
+        shared_thread: "the heartbeat of a jazz trio down the block",
+        clue_image: "shadows stretching long in the club lights",
+        signoff_hint: "the last trumpet wail",
+    },
+    CommentarySeed {
+        shared_thread: "footsteps echoing through the warehouse of memory",
+        clue_image: "dust motes swirling in the projector beam",
+        signoff_hint: "the hush before the reel snaps",
+    },
+    CommentarySeed {
+        shared_thread: "the copper tang of truth hiding in the files",
+        clue_image: "folders spread like tarot on the desk",
+        signoff_hint: "the drawer closing with a click",
+    },
+];
 
 use crate::{
     actions::{
@@ -274,15 +310,29 @@ impl Message<String> for DreamActor {
         };
 
         // Generate commentary based on results
+        let commentary_seed = {
+            let mut rng = rand::rng();
+            *COMMENTARY_SEEDS
+                .choose(&mut rng)
+                .unwrap_or(&COMMENTARY_SEEDS[0])
+        };
+
         if has_images && gallery_url.is_some() {
             let gallery_url = gallery_url.unwrap();
             let commentary_prompt = format!(
-                "As a hard-boiled detective, provide commentary on this case.                 The client requested: '{}'
-                I generated {} unique interpretations, each with its own angle on the case.
-                The evidence has been compiled here: {}
-
-                Give a brief, noir-style commentary on how this multi-faceted investigation turned out.",
-                original_request, num_images, gallery_url
+                "You are a hard-boiled detective closing a case with a smoky, confident monologue.\n\
+Speak in first person and open by naming the shared thread tying every clue together: {shared}.\n\
+The client requested: '{request}'. Call the gallery the evidence locker, but avoid directly mentioning the url ({url}).\n\
+You gathered {count} clues; thread them into one investigation, folding contrasts in naturally as angles glimpsed through {clue}.\n\
+Write 1-3 paragraphs, no bullets or lists, and never use words like variation, version, or attempt.\n\
+Sign off with a punchy one-liner that nods to {signoff}.\n\
+Output only the monologue.",
+                shared = commentary_seed.shared_thread,
+                request = original_request,
+                url = gallery_url,
+                count = num_images,
+                clue = commentary_seed.clue_image,
+                signoff = commentary_seed.signoff_hint,
             );
 
             let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
@@ -323,11 +373,17 @@ impl Message<String> for DreamActor {
             // No images were generated
             warn!("Dream workflow completed without any images");
             let commentary_prompt = format!(
-                "As a hard-boiled detective, provide commentary on this case.                 The client requested: '{}'
-                I tried {} different approaches, but all leads went cold - no images were generated.
-
-                Give a brief, noir-style commentary on this failed investigation.",
-                original_request, num_images
+                "You are a hard-boiled detective reflecting on a case that slipped through your fingers.\n\
+Speak in first person, keep the voice smoky and steady, and anchor everything to the shared thread: {shared}.\n\
+The client requested: '{request}'. You chased {count} leads, but each clue dissolved like {clue}.\n\
+Deliver one tight paragraph with no bullets or lists, and never use words like variation, version, or attempt.\n\
+Lament the empty evidence locker, yet sign off with a wry one-liner that nods to {signoff}.\n\
+Output only the monologue.",
+                shared = commentary_seed.shared_thread,
+                request = original_request,
+                count = num_images,
+                clue = commentary_seed.clue_image,
+                signoff = commentary_seed.signoff_hint,
             );
 
             let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
