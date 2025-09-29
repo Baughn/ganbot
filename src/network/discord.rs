@@ -7,9 +7,10 @@ use serenity::{
     all::{
         self, ButtonStyle, Command, CommandDataOptionValue, CommandInteraction, CommandOptionType,
         ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton, CreateCommand,
-        CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseFollowup,
-        CreateMessage, EditMessage, EventHandler, GatewayIntents, Http, Interaction,
-        InteractionResponseFlags, ModalInteraction,
+        CreateCommandOption, CreateInputText, CreateInteractionResponse,
+        CreateInteractionResponseFollowup, CreateMessage, CreateModal, EditMessage, EventHandler,
+        GatewayIntents, Http, InputTextStyle, Interaction, InteractionResponseFlags,
+        ModalInteraction,
     },
     async_trait,
     builder::CreateInteractionResponseMessage,
@@ -27,12 +28,16 @@ use crate::{
     persistence::{
         images::{
             AssociateMessage, GalleryMetadata, GalleryRegistry, GetGallery, GetGalleryByMessage,
+            delete_image,
         },
         user::{GetUser, UserActor, UserId, UserManager},
     },
 };
 
 const GALLERY_BUTTON_PREFIX: &str = "gallery";
+const PROMPT_RETRY_PREFIX: &str = "prompt_retry";
+const PROMPT_DELETE_PREFIX: &str = "prompt_delete";
+const PROMPT_DELETE_CONFIRM_PREFIX: &str = "prompt_delete_confirm";
 
 enum DiscordInteraction {
     Command {
@@ -419,10 +424,13 @@ impl DiscordActor {
                 .context("while loading gallery metadata for completion message")?
             {
                 Some(metadata) => {
-                    let rows = Self::build_gallery_components(&metadata);
-                    if !rows.is_empty() {
-                        builder = builder.components(rows);
-                    }
+                    let mut rows = vec![
+                        // Delete & retry buttons
+                        Self::build_prompt_action_buttons(&metadata.id, user_id),
+                    ];
+                    rows.extend(Self::build_gallery_components(&metadata));
+
+                    builder = builder.components(rows);
                     gallery_to_associate = Some(metadata.id);
                 }
                 None => {
@@ -501,13 +509,9 @@ impl DiscordActor {
                 component,
             } => self.handle_component(ctx, discord_ctx, component).await,
             DiscordInteraction::Modal {
-                ctx: _discord_ctx,
+                ctx: discord_ctx,
                 modal,
-            } => {
-                // Modal support will be added in a future iteration.
-                warn!(custom_id = %modal.data.custom_id, "Unhandled modal submission");
-                Ok(())
-            }
+            } => self.handle_modal(ctx, discord_ctx, modal).await,
         }
     }
 
@@ -557,14 +561,44 @@ impl DiscordActor {
 
     async fn handle_component(
         &mut self,
-        _ctx: &mut Context<Self, ()>,
-        _discord_ctx: &all::Context,
+        ctx: &mut Context<Self, ()>,
+        discord_ctx: &all::Context,
         component: &ComponentInteraction,
     ) -> Result<()> {
         let custom_id = component.data.custom_id.as_str();
 
         if custom_id.starts_with(GALLERY_BUTTON_PREFIX) {
             return self.handle_gallery_component(component).await;
+        }
+
+        if custom_id.starts_with(PROMPT_RETRY_PREFIX) {
+            return self.handle_retry_button(component).await;
+        }
+
+        if custom_id.starts_with(PROMPT_DELETE_CONFIRM_PREFIX) {
+            return self
+                .handle_delete_confirm_button(ctx, discord_ctx, component)
+                .await;
+        }
+
+        if custom_id.starts_with(PROMPT_DELETE_PREFIX) {
+            return self.handle_delete_button(component).await;
+        }
+
+        if custom_id == "delete_cancel" {
+            // Replace the confirmation message with a simple notice so Discord
+            // doesn't reject the update for being empty.
+            let response = CreateInteractionResponseMessage::new()
+                .content("Deletion cancelled.")
+                .components(vec![]); // Remove buttons
+
+            return component
+                .create_response(
+                    &self.http,
+                    CreateInteractionResponse::UpdateMessage(response),
+                )
+                .await
+                .with_context(|| "while dismissing delete confirmation");
         }
 
         warn!(custom_id, "Unhandled component interaction");
@@ -672,6 +706,283 @@ impl DiscordActor {
             .with_context(|| "while responding to component interaction")
     }
 
+    async fn handle_retry_button(&self, component: &ComponentInteraction) -> Result<()> {
+        let Some((gallery_id, expected_user_id)) =
+            Self::parse_prompt_action_custom_id(&component.data.custom_id)
+        else {
+            return self
+                .respond_component_message(component, "Unable to parse retry button.")
+                .await;
+        };
+
+        // Verify that the user clicking the button is the original user
+        if component.user.id.get() != expected_user_id {
+            return self
+                .respond_component_message(
+                    component,
+                    "Only the original author can retry this prompt.",
+                )
+                .await;
+        }
+
+        // Get gallery metadata to retrieve the original prompt
+        let metadata = match self
+            .gallery_registry
+            .ask(GetGallery(gallery_id.clone()))
+            .await
+            .context("while loading gallery metadata")?
+        {
+            Some(metadata) => metadata,
+            None => {
+                return self
+                    .respond_component_message(component, "This gallery is no longer available.")
+                    .await;
+            }
+        };
+
+        // Get the original prompt from display_prompts
+        let original_prompt = metadata
+            .display_prompts
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("");
+
+        // Create a modal with the prompt pre-filled
+        let modal_custom_id = format!(
+            "{}:{}:{}",
+            PROMPT_RETRY_PREFIX, gallery_id, expected_user_id
+        );
+        let input = CreateInputText::new(InputTextStyle::Paragraph, "Prompt", "prompt_input")
+            .value(original_prompt)
+            .placeholder("Enter your image generation prompt")
+            .required(true);
+
+        let modal = CreateModal::new(modal_custom_id, "Retry Prompt")
+            .components(vec![CreateActionRow::InputText(input)]);
+
+        component
+            .create_response(&self.http, CreateInteractionResponse::Modal(modal))
+            .await
+            .with_context(|| "while showing retry modal")
+    }
+
+    async fn handle_delete_button(&self, component: &ComponentInteraction) -> Result<()> {
+        let Some((gallery_id, expected_user_id)) =
+            Self::parse_prompt_action_custom_id(&component.data.custom_id)
+        else {
+            return self
+                .respond_component_message(component, "Unable to parse delete button.")
+                .await;
+        };
+
+        // Verify that the user clicking the button is the original user
+        if component.user.id.get() != expected_user_id {
+            return self
+                .respond_component_message(
+                    component,
+                    "Only the original author can delete this image.",
+                )
+                .await;
+        }
+
+        // Show confirmation buttons
+        let channel_id = component.message.channel_id.get();
+        let message_id = component.message.id.get();
+
+        let confirm_button = CreateButton::new(format!(
+            "{}:{}:{}:{}",
+            PROMPT_DELETE_CONFIRM_PREFIX, gallery_id, channel_id, message_id
+        ))
+        .style(ButtonStyle::Danger)
+        .label("Yes, delete");
+
+        let cancel_button = CreateButton::new("delete_cancel")
+            .style(ButtonStyle::Secondary)
+            .label("Cancel");
+
+        let buttons = CreateActionRow::Buttons(vec![confirm_button, cancel_button]);
+
+        let response = CreateInteractionResponseMessage::new()
+            .content("Are you sure you want to delete this image?")
+            .components(vec![buttons])
+            .flags(InteractionResponseFlags::EPHEMERAL);
+
+        component
+            .create_response(&self.http, CreateInteractionResponse::Message(response))
+            .await
+            .with_context(|| "while showing delete confirmation")
+    }
+
+    async fn handle_delete_confirm_button(
+        &self,
+        _ctx: &mut Context<Self, ()>,
+        _discord_ctx: &all::Context,
+        component: &ComponentInteraction,
+    ) -> Result<()> {
+        let Some((gallery_id, channel_id, message_id)) =
+            Self::parse_delete_confirm_custom_id(&component.data.custom_id)
+        else {
+            return self
+                .respond_component_message(component, "Unable to parse delete button.")
+                .await;
+        };
+
+        // Delete the message the delete button was on
+        if let Err(err) = all::ChannelId::new(channel_id)
+            .delete_message(&self.http, message_id)
+            .await
+        {
+            warn!(
+                channel_id,
+                message_id, "Failed to delete prompt message for gallery {gallery_id}: {err:#}"
+            );
+        }
+
+        // Delete the image(s)
+        let user_id_key = UserId::Discord(component.user.id).key();
+        match delete_image(&gallery_id, &user_id_key).await {
+            Ok(result) => {
+                let response = CreateInteractionResponseMessage::new()
+                    .content(result.message)
+                    .components(vec![]);
+
+                component
+                    .create_response(
+                        &self.http,
+                        CreateInteractionResponse::UpdateMessage(response),
+                    )
+                    .await
+                    .with_context(|| "while confirming deletion")
+            }
+            Err(err) => {
+                let error_msg = format!("Failed to delete image: {:#}", err);
+                error!("{}", error_msg);
+                self.respond_component_message(component, &error_msg).await
+            }
+        }
+    }
+
+    async fn handle_modal(
+        &self,
+        _ctx: &mut Context<Self, ()>,
+        discord_ctx: &all::Context,
+        modal: &ModalInteraction,
+    ) -> Result<()> {
+        let custom_id = modal.data.custom_id.as_str();
+
+        if custom_id.starts_with(PROMPT_RETRY_PREFIX) {
+            return self.handle_retry_modal(discord_ctx, modal).await;
+        }
+
+        warn!(custom_id = %modal.data.custom_id, "Unhandled modal submission");
+        Ok(())
+    }
+
+    async fn handle_retry_modal(
+        &self,
+        discord_ctx: &all::Context,
+        modal: &ModalInteraction,
+    ) -> Result<()> {
+        // Parse the custom_id to extract gallery_id and user_id
+        let Some((_gallery_id, expected_user_id)) =
+            Self::parse_prompt_action_custom_id(&modal.data.custom_id)
+        else {
+            return self
+                .respond_modal_error(modal, "Unable to parse retry modal.")
+                .await;
+        };
+
+        // Verify that the user submitting the modal is the original user
+        if modal.user.id.get() != expected_user_id {
+            return self
+                .respond_modal_error(modal, "Only the original author can retry this prompt.")
+                .await;
+        }
+
+        // Extract the edited prompt from the modal
+        let edited_prompt = modal
+            .data
+            .components
+            .iter()
+            .flat_map(|row| &row.components)
+            .find_map(|component| {
+                if let all::ActionRowComponent::InputText(text) = component {
+                    if text.custom_id == "prompt_input" {
+                        return text.value.as_ref().map(|s| s.as_str());
+                    }
+                }
+                None
+            })
+            .unwrap_or("");
+
+        if edited_prompt.trim().is_empty() {
+            return self
+                .respond_modal_error(modal, "Prompt cannot be empty.")
+                .await;
+        }
+
+        // Defer the modal response
+        modal
+            .create_response(
+                &discord_ctx.http,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new()
+                        .flags(InteractionResponseFlags::empty()),
+                ),
+            )
+            .await
+            .context("while deferring retry modal response")?;
+
+        // Submit a new action with the edited prompt
+        let payload = ActionPayload::Prompt {
+            user_id: UserId::Discord(modal.user.id),
+            user_name: modal.user.name.clone(),
+            input: edited_prompt.to_string(),
+        };
+
+        // Create a followup message for progress tracking
+        let followup_builder = CreateInteractionResponseFollowup::new()
+            .content(format!(
+                "**Prompt**: {}\nStatus: preparing request…",
+                edited_prompt
+            ))
+            .allowed_mentions(CreateAllowedMentions::new());
+
+        let followup = modal
+            .create_followup(&discord_ctx.http, followup_builder)
+            .await
+            .context("while creating retry followup message")?;
+
+        // Update origin with the actual followup message ID
+        let origin = ActionOrigin::Discord {
+            application_id: self.config.application_id,
+            guild_id: modal.guild_id.map(|id| id.get()),
+            channel_id: followup.channel_id.get(),
+            message_id: followup.id.get(),
+            user_id: modal.user.id.get(),
+            progress_message: Some(format!("**Prompt**: {}", edited_prompt)),
+        };
+
+        match self.broker.ask(SubmitAction::new(origin, payload)).await {
+            Ok(_action_id) => Ok(()),
+            Err(err) => {
+                error!("Failed to submit retry action: {:#}", err);
+                Ok(())
+            }
+        }
+    }
+
+    async fn respond_modal_error(&self, modal: &ModalInteraction, content: &str) -> Result<()> {
+        let response = CreateInteractionResponseMessage::new()
+            .content(content.to_owned())
+            .flags(InteractionResponseFlags::EPHEMERAL);
+
+        modal
+            .create_response(&self.http, CreateInteractionResponse::Message(response))
+            .await
+            .with_context(|| "while responding to modal with error")
+    }
+
     fn parse_gallery_custom_id(custom_id: &str) -> Option<(String, usize)> {
         let mut parts = custom_id.split(':');
         let prefix = parts.next()?;
@@ -685,6 +996,36 @@ impl DiscordActor {
         }
         let index = index_str.parse().ok()?;
         Some((gallery_id, index))
+    }
+
+    fn parse_prompt_action_custom_id(custom_id: &str) -> Option<(String, u64)> {
+        let mut parts = custom_id.split(':');
+        let prefix = parts.next()?;
+        if prefix != PROMPT_RETRY_PREFIX && prefix != PROMPT_DELETE_PREFIX {
+            return None;
+        }
+        let gallery_id = parts.next()?.to_string();
+        let user_id_str = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        let user_id = user_id_str.parse().ok()?;
+        Some((gallery_id, user_id))
+    }
+
+    fn parse_delete_confirm_custom_id(custom_id: &str) -> Option<(String, u64, u64)> {
+        let mut parts = custom_id.split(':');
+        let prefix = parts.next()?;
+        if prefix != PROMPT_DELETE_CONFIRM_PREFIX {
+            return None;
+        }
+        let gallery_id = parts.next()?.to_string();
+        let channel_id = parts.next()?.parse().ok()?;
+        let message_id = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((gallery_id, channel_id, message_id))
     }
 
     fn build_gallery_components(metadata: &GalleryMetadata) -> Vec<CreateActionRow> {
@@ -727,6 +1068,24 @@ impl DiscordActor {
         }
 
         rows
+    }
+
+    fn build_prompt_action_buttons(gallery_id: &str, user_id: u64) -> CreateActionRow {
+        let delete_button = CreateButton::new(format!(
+            "{}:{}:{}",
+            PROMPT_DELETE_PREFIX, gallery_id, user_id
+        ))
+        .style(ButtonStyle::Danger)
+        .label("🗑️ Delete");
+
+        let retry_button = CreateButton::new(format!(
+            "{}:{}:{}",
+            PROMPT_RETRY_PREFIX, gallery_id, user_id
+        ))
+        .style(ButtonStyle::Primary)
+        .label("🔄 Retry");
+
+        CreateActionRow::Buttons(vec![delete_button, retry_button])
     }
 
     async fn handle_prompt_command(
