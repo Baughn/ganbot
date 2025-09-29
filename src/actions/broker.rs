@@ -527,10 +527,10 @@ async fn execute_dream(
     user_actor: ActorRef<crate::persistence::user::UserActor>,
     user_id: crate::persistence::user::UserId,
     input: String,
-    _progress: &ActionProgressEmitter,
+    progress: &ActionProgressEmitter,
 ) -> Result<ActionResponse> {
     let actor = crate::actions::dream::DreamActor::spawn(
-        crate::actions::dream::DreamActor::new(user_actor).await,
+        crate::actions::dream::DreamActor::new(user_actor, Some(progress.clone())).await,
     );
     let result = actor
         .ask(input)

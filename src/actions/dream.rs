@@ -7,6 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     actions::{
+        ActionProgressEmitter,
         imagen::{self, GenerateImages, ImagenActor, ImagenBackend},
         prompt::PromptResult,
     },
@@ -26,6 +27,7 @@ use crate::{
 #[derive(Actor)]
 pub struct DreamActor {
     user_actor: kameo::actor::ActorRef<UserActor>,
+    progress: Option<ActionProgressEmitter>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Reply)]
@@ -43,6 +45,10 @@ impl Message<String> for DreamActor {
         _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
         debug!("DreamActor received message: {}", msg);
+
+        if let Some(progress) = &self.progress {
+            progress.progress(Some(1.0), "Drafting detective variations…");
+        }
 
         // Parse the user's prompt like !prompt does
         let mut prompt = Generate::from_str(&msg)?;
@@ -123,11 +129,16 @@ impl Message<String> for DreamActor {
             "Received detective prompt variations"
         );
 
+        if let Some(progress) = &self.progress {
+            progress.progress(Some(8.0), "Prompts locked in; dispatching to the lab…");
+        }
+
         // Step 2: Generate images for each prompt in parallel using the shared imagen actor
         let imagen_actor = ImagenActor::spawn(ImagenActor::default());
         let model_for_generation = requested_model_token.clone();
         let selected_model_clone = selected_model.clone();
 
+        let progress = self.progress.clone();
         let image_generation_futures = generated_prompts.iter().enumerate().map(|(idx, image_prompt)| {
             let user_actor = self.user_actor.clone();
             let imagen_actor = imagen_actor.clone();
@@ -135,6 +146,7 @@ impl Message<String> for DreamActor {
             let model_token = model_for_generation.clone();
             let model = selected_model_clone.clone();
             let variation = idx + 1;
+            let progress = progress.clone();
             async move {
                 let image_prompt_with_model = format!("{} -m {} -c 1", image_prompt, model_token);
                 let mut prompt_preview: String = image_prompt.chars().take(160).collect();
@@ -164,7 +176,7 @@ impl Message<String> for DreamActor {
                     .ask(GenerateImages {
                         prompt: generate.clone(),
                         model,
-                        progress: None,
+                        progress,
                     })
                     .await
                     .map_err(|err| {
@@ -185,6 +197,10 @@ impl Message<String> for DreamActor {
             num_responses = image_results.len(),
             "Completed dream image generation requests"
         );
+
+        if let Some(progress) = &self.progress {
+            progress.progress(Some(96.0), "Case closed; packaging evidence…");
+        }
 
         // Step 3: Create gallery with individual prompts
         let mut image_entries: Vec<(String, String, Arc<image::RgbImage>)> = Vec::new();
@@ -340,7 +356,13 @@ impl Message<String> for DreamActor {
 }
 
 impl DreamActor {
-    pub async fn new(user_actor: kameo::actor::ActorRef<UserActor>) -> Self {
-        Self { user_actor }
+    pub async fn new(
+        user_actor: kameo::actor::ActorRef<UserActor>,
+        progress: Option<ActionProgressEmitter>,
+    ) -> Self {
+        Self {
+            user_actor,
+            progress,
+        }
     }
 }

@@ -216,8 +216,12 @@ fn build_commands() -> Vec<CreateCommand> {
         CreateCommand::new("dream")
             .description("Let the detective dream up images")
             .add_option(
-                CreateCommandOption::new(CommandOptionType::String, "dream", "What to dream")
-                    .required(true),
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "request",
+                    "What should the detective dream about?",
+                )
+                .required(true),
             ),
         CreateCommand::new("select")
             .description("Select an image URL for editing")
@@ -1088,34 +1092,38 @@ impl DiscordActor {
         CreateActionRow::Buttons(vec![delete_button, retry_button])
     }
 
-    async fn handle_prompt_command(
+    async fn handle_generation_command<F>(
         &mut self,
-        _ctx: &mut Context<Self, ()>,
         discord_ctx: &all::Context,
         command: &CommandInteraction,
         input: String,
-    ) -> Result<()> {
+        label: &str,
+        payload_factory: F,
+    ) -> Result<()>
+    where
+        F: Fn(UserId, String, String) -> ActionPayload,
+    {
         command
             .defer(&discord_ctx.http)
             .await
-            .context("while deferring prompt response")?;
+            .context("while deferring response")?;
 
         // Ensure the user actor is instantiated so downstream actions have state ready.
         let _ = self
             .get_user_actor(command.user.id, &command.user.name)
             .await?;
 
-        let preface = format!("**Prompt**: {}", input);
+        let preface = format!("**{}**: {}", label, input.as_str());
         let initial_content = format!("{preface}\nStatus: preparing request…");
 
         let followup_builder = CreateInteractionResponseFollowup::new()
-            .content(initial_content.clone())
+            .content(initial_content)
             .allowed_mentions(CreateAllowedMentions::new());
 
         let followup = command
             .create_followup(&discord_ctx.http, followup_builder)
             .await
-            .context("while publishing prompt progress message")?;
+            .context("while publishing progress message")?;
 
         let origin = ActionOrigin::Discord {
             application_id: self.config.application_id,
@@ -1126,11 +1134,11 @@ impl DiscordActor {
             progress_message: Some(preface.clone()),
         };
 
-        let payload = ActionPayload::Prompt {
-            user_id: UserId::Discord(command.user.id),
-            user_name: command.user.name.clone(),
+        let payload = payload_factory(
+            UserId::Discord(command.user.id),
+            command.user.name.clone(),
             input,
-        };
+        );
 
         match self.broker.ask(SubmitAction::new(origin, payload)).await {
             Ok(action_id) => {
@@ -1141,7 +1149,7 @@ impl DiscordActor {
                     format!("Status: queued (`{action_id}`)"),
                 )
                 .await
-                .with_context(|| "while acknowledging queued prompt")?;
+                .with_context(|| "while acknowledging queued request")?;
             }
             Err(err) => {
                 self.delete_progress_message(followup.channel_id.get(), followup.id.get())
@@ -1160,14 +1168,46 @@ impl DiscordActor {
         Ok(())
     }
 
+    async fn handle_prompt_command(
+        &mut self,
+        _ctx: &mut Context<Self, ()>,
+        discord_ctx: &all::Context,
+        command: &CommandInteraction,
+        input: String,
+    ) -> Result<()> {
+        self.handle_generation_command(
+            discord_ctx,
+            command,
+            input,
+            "Prompt",
+            |user_id, user_name, input| ActionPayload::Prompt {
+                user_id,
+                user_name,
+                input,
+            },
+        )
+        .await
+    }
+
     async fn handle_dream_command(
         &mut self,
         _ctx: &mut Context<Self, ()>,
-        _discord_ctx: &all::Context,
-        _command: &CommandInteraction,
-        _request: String,
+        discord_ctx: &all::Context,
+        command: &CommandInteraction,
+        request: String,
     ) -> Result<()> {
-        todo!()
+        self.handle_generation_command(
+            discord_ctx,
+            command,
+            request,
+            "Dream",
+            |user_id, user_name, input| ActionPayload::Dream {
+                user_id,
+                user_name,
+                input,
+            },
+        )
+        .await
     }
 
     async fn handle_select_command(
