@@ -712,7 +712,7 @@ fn handle_comfy_progress(emitter: &ActionProgressEmitter, fraction: f32, stage: 
         if let Some(position) = stage.strip_prefix("queued:") {
             let message = match position.parse::<u32>() {
                 Ok(0) => "Queued on ComfyUI (starting imminently)".to_string(),
-                Ok(pos) => format!("Queued on ComfyUI (approximately {} job(s) ahead)", pos),
+                Ok(pos) => format!("Queued on ComfyUI (ticket #{pos})"),
                 Err(_) => "Queued on ComfyUI".to_string(),
             };
             emitter.progress(Some(0.0), message);

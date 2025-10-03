@@ -254,7 +254,9 @@ struct ProgressThrottle {
 impl ProgressThrottle {
     fn new() -> Self {
         Self {
-            bucket: TokenBucket::new(1.0, 0.5),
+            // Allow a small burst of immediate progress updates (e.g., workflow prep,
+            // queue assignment, and the first backend update) before throttling resumes.
+            bucket: TokenBucket::new(4.0, 0.25),
             last_snapshot: None,
         }
     }
