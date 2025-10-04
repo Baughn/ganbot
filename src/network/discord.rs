@@ -17,7 +17,7 @@ use serenity::{
     model::{channel::MessageFlags, gateway::Ready, id::ApplicationId},
 };
 use tokio::task::JoinHandle;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument, warn, Level};
 
 use crate::{
     actions::{
@@ -268,6 +268,7 @@ impl DiscordCommandActor {
 impl Message<DiscordCommandJob> for DiscordCommandActor {
     type Reply = ();
 
+    #[instrument(skip_all, name = "discord_command_actor.handle_job_msg")]
     async fn handle(
         &mut self,
         job: DiscordCommandJob,
@@ -615,6 +616,7 @@ async fn register_commands(http: &Http) -> Result<()> {
 impl kameo::prelude::Message<DiscordInteraction> for DiscordActor {
     type Reply = ();
 
+    #[instrument(skip_all, name = "discord_actor.handle_interaction_msg")]
     async fn handle(
         &mut self,
         event: DiscordInteraction,
@@ -629,7 +631,7 @@ impl kameo::prelude::Message<DiscordInteraction> for DiscordActor {
 impl kameo::prelude::Message<BrokerActionUpdate> for DiscordActor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(action = %msg.id))]
+    #[instrument(skip_all, name = "discord_actor.handle_broker_update_msg", fields(action = %msg.id))]
     async fn handle(
         &mut self,
         msg: BrokerActionUpdate,
@@ -782,6 +784,7 @@ impl DiscordActor {
         }
     }
 
+    #[instrument(skip_all, level = Level::TRACE)]
     async fn handle_command(
         &mut self,
         ctx: &mut Context<Self, ()>,
@@ -842,6 +845,7 @@ impl DiscordActor {
         }
     }
 
+    #[instrument(skip_all, level = Level::TRACE)]
     async fn handle_component(
         &mut self,
         ctx: &mut Context<Self, ()>,
@@ -1300,6 +1304,7 @@ impl DiscordActor {
         }
     }
 
+    #[instrument(skip_all, level = Level::TRACE)]
     async fn handle_modal(
         &self,
         _ctx: &mut Context<Self, ()>,
