@@ -17,7 +17,7 @@ use serenity::{
     model::{channel::MessageFlags, gateway::Ready, id::ApplicationId},
 };
 use tokio::task::JoinHandle;
-use tracing::{error, info, instrument, warn, Level};
+use tracing::{Level, error, info, instrument, warn};
 
 use crate::{
     actions::{

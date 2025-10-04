@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use kameo::actor::WeakActorRef;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tracing::trace;
 use uuid::Uuid;
 
 use crate::{
@@ -254,9 +255,9 @@ struct ProgressThrottle {
 impl ProgressThrottle {
     fn new() -> Self {
         Self {
-            // Allow a small burst of immediate progress updates (e.g., workflow prep,
-            // queue assignment, and the first backend update) before throttling resumes.
-            bucket: TokenBucket::new(4.0, 0.25),
+            // Discord allows 5 message edits per ~5 seconds per channel; align our local throttle
+            // so we proactively respect that budget.
+            bucket: TokenBucket::new(5.0, 1.0),
             last_snapshot: None,
         }
     }
@@ -272,8 +273,28 @@ impl ProgressThrottle {
             return false;
         }
 
-        if !self.bucket.try_consume(1.0) {
+        let is_percent_update = percent.is_some();
+
+        if is_percent_update && !self.bucket.is_full() {
+            trace!(
+                ?percent,
+                "Skipping percent progress update; rate bucket is not full"
+            );
             return false;
+        }
+
+        if is_percent_update {
+            if !self.bucket.try_consume(1.0) {
+                return false;
+            }
+        } else {
+            let available = self.bucket.available_tokens();
+            if available < 1.0 {
+                // Reserve capacity for high-priority state changes even when we're in debt.
+                self.bucket.force_consume(1.0);
+            } else if !self.bucket.try_consume(1.0) {
+                return false;
+            }
         }
 
         self.record(percent, message);

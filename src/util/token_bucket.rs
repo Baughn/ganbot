@@ -61,4 +61,16 @@ impl TokenBucket {
         self.refill();
         self.tokens = (self.tokens - amount).clamp(0.0, self.max_tokens);
     }
+
+    /// Returns the available tokens after refilling the bucket.
+    pub fn available_tokens(&mut self) -> f64 {
+        self.refill();
+        self.tokens
+    }
+
+    /// Indicates whether the bucket is currently full.
+    pub fn is_full(&mut self) -> bool {
+        self.refill();
+        self.tokens >= self.max_tokens - f64::EPSILON
+    }
 }
