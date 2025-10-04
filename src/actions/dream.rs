@@ -44,7 +44,7 @@ const COMMENTARY_SEEDS: &[CommentarySeed] = &[
 use crate::{
     actions::{
         ActionProgressEmitter,
-        imagen::{self, GenerateImages, ImagenActor, ImagenBackend},
+        imagen::{self, BatchInfo, GenerateImagesRequest, ImagenBackend},
         prompt::PromptResult,
     },
     messages::{
@@ -169,15 +169,14 @@ impl Message<String> for DreamActor {
             progress.progress(Some(8.0), "Prompts locked in; dispatching to the lab…");
         }
 
-        // Step 2: Generate images for each prompt in parallel using the shared imagen actor
-        let imagen_actor = ImagenActor::spawn(ImagenActor::default());
+        // Step 2: Generate images for each prompt in parallel via the shared imagen coordinator
         let model_for_generation = requested_model_token.clone();
         let selected_model_clone = selected_model.clone();
 
         let progress = self.progress.clone();
+        let total_batches = generated_prompts.len() as u32;
         let image_generation_futures = generated_prompts.iter().enumerate().map(|(idx, image_prompt)| {
             let user_actor = self.user_actor.clone();
-            let imagen_actor = imagen_actor.clone();
             let image_prompt = image_prompt.clone();
             let model_token = model_for_generation.clone();
             let model = selected_model_clone.clone();
@@ -208,18 +207,23 @@ impl Message<String> for DreamActor {
                 imagen::apply_model_defaults(&mut generate, &model);
                 debug!(variation, %model_token, "Applied model defaults for imagen request");
 
-                let response = imagen_actor
-                    .ask(GenerateImages {
-                        prompt: generate.clone(),
-                        model,
-                        progress,
-                    })
-                    .await
-                    .map_err(|err| {
-                        error!(variation, %model_token, error = ?err, "Imagen actor ask failed");
-                        err
-                    })
-                    .with_context(|| format!("while generating image for variation {}", variation))?;
+                let batch = Some(BatchInfo {
+                    position: variation as u32,
+                    total: total_batches,
+                });
+
+                let response = imagen::submit_generation(GenerateImagesRequest {
+                    prompt: generate.clone(),
+                    model,
+                    progress,
+                    batch,
+                })
+                .await
+                .map_err(|err| {
+                    error!(variation, %model_token, error = ?err, "Imagen generation failed");
+                    err
+                })
+                .with_context(|| format!("while generating image for variation {}", variation))?;
                 debug!(variation, %model_token, backend = ?response.backend, image_count = response.images.len(), "Imagen actor responded");
 
                 Ok::<_, Error>((image_prompt, image_prompt_with_model, response))

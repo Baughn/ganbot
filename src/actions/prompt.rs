@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::{
-    actions::imagen::{self, GenerateImages, ImagenActor, ImagenBackend, ImagenResponse},
+    actions::imagen::{self, GenerateImagesRequest, ImagenBackend, ImagenResponse},
     messages::imagen::Generate,
     persistence::{
         images::{
@@ -89,14 +89,14 @@ impl PromptActor {
 
         imagen::apply_model_defaults(&mut prompt, &model);
 
-        let response = ImagenActor::spawn(ImagenActor::default())
-            .ask(GenerateImages {
-                prompt: prompt.clone(),
-                model,
-                progress: self.progress.clone(),
-            })
-            .await
-            .context("while generating images")?;
+        let response = imagen::submit_generation(GenerateImagesRequest {
+            prompt: prompt.clone(),
+            model,
+            progress: self.progress.clone(),
+            batch: None,
+        })
+        .await
+        .context("while generating images")?;
 
         self.upload_and_format_response(prompt, response, correction_message)
             .await

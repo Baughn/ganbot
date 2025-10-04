@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use anyhow::{Context as _, Result, bail};
 use image::RgbImage;
@@ -23,10 +26,277 @@ use crate::{
 pub struct ImagenActor;
 
 /// Message to run an image generation request against the resolved model backend.
-pub struct GenerateImages {
+pub struct GenerateImagesRequest {
     pub prompt: Generate,
     pub model: Model,
     pub progress: Option<ActionProgressEmitter>,
+    pub batch: Option<BatchInfo>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BatchInfo {
+    pub position: u32,
+    pub total: u32,
+}
+
+#[derive(Clone)]
+struct JobContext {
+    id: uuid::Uuid,
+    coordinator: Arc<ImagenCoordinator>,
+}
+
+impl JobContext {
+    fn coordinator(&self) -> &Arc<ImagenCoordinator> {
+        &self.coordinator
+    }
+}
+
+static IMAGEN_COORDINATOR: OnceLock<Arc<ImagenCoordinator>> = OnceLock::new();
+
+pub struct ImagenCoordinator {
+    inner: Mutex<CoordinatorState>,
+}
+
+struct GenerateImages {
+    prompt: Generate,
+    model: Model,
+    progress: Option<ActionProgressEmitter>,
+    batch: Option<BatchInfo>,
+    job: JobContext,
+}
+
+pub async fn submit_generation(request: GenerateImagesRequest) -> Result<ImagenResponse> {
+    let coordinator = ImagenCoordinator::global();
+    let job_id = uuid::Uuid::new_v4();
+
+    let initial_status = coordinator.register_job(job_id, request.batch);
+    if let Some(progress) = request.progress.as_ref() {
+        progress.progress(initial_status.percent, initial_status.message.clone());
+    }
+
+    let message = GenerateImages {
+        prompt: request.prompt,
+        model: request.model,
+        progress: request.progress,
+        batch: request.batch,
+        job: JobContext {
+            id: job_id,
+            coordinator: coordinator.clone(),
+        },
+    };
+
+    let result = ImagenActor::spawn(ImagenActor::default())
+        .ask(message)
+        .await;
+
+    coordinator.complete_job(job_id);
+
+    Ok(result?)
+}
+
+#[derive(Default)]
+struct CoordinatorState {
+    jobs: HashMap<uuid::Uuid, JobState>,
+}
+
+struct JobState {
+    batch: Option<BatchInfo>,
+    status: JobStatus,
+    nodes: Option<NodePlan>,
+    queue_ticket: Option<u32>,
+    last_queue_remaining: Option<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JobStatus {
+    Queued,
+    Running,
+    Completed,
+}
+
+#[derive(Clone)]
+struct NodePlan {
+    order: Vec<String>,
+    lookup: HashMap<String, usize>,
+}
+
+#[derive(Clone)]
+struct FormattedProgress {
+    percent: Option<f32>,
+    message: String,
+}
+
+impl ImagenCoordinator {
+    fn global() -> Arc<Self> {
+        IMAGEN_COORDINATOR
+            .get_or_init(|| Arc::new(Self::new()))
+            .clone()
+    }
+
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(CoordinatorState::default()),
+        }
+    }
+
+    fn register_job(&self, job_id: uuid::Uuid, batch: Option<BatchInfo>) -> FormattedProgress {
+        let mut inner = self.inner.lock().unwrap();
+        inner.jobs.insert(
+            job_id,
+            JobState {
+                batch,
+                status: JobStatus::Queued,
+                nodes: None,
+                queue_ticket: None,
+                last_queue_remaining: None,
+            },
+        );
+        let message = Self::format_with_batch("Preparing generation workflow…", batch, None);
+        FormattedProgress {
+            percent: Some(0.0),
+            message,
+        }
+    }
+
+    fn set_workflow(&self, job_id: uuid::Uuid, workflow: &serde_json::Value) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(job) = inner.jobs.get_mut(&job_id) {
+            job.status = JobStatus::Running;
+            job.nodes = Some(NodePlan::from_workflow(workflow));
+        }
+    }
+
+    fn format_progress(
+        &self,
+        job_id: uuid::Uuid,
+        fraction: f32,
+        stage: Option<&str>,
+    ) -> Option<FormattedProgress> {
+        let percent = (fraction * 100.0).clamp(0.0, 100.0);
+        let mut inner = self.inner.lock().unwrap();
+        let job = inner.jobs.get_mut(&job_id);
+
+        let job = match job {
+            Some(job) => job,
+            None => return None,
+        };
+
+        let mut percent_override = Some(percent);
+        let base_message = if let Some(stage) = stage {
+            if let Some(position) = stage.strip_prefix("queued:") {
+                job.status = JobStatus::Queued;
+                job.queue_ticket = position.parse().ok();
+                percent_override = Some(0.0);
+                match job.queue_ticket {
+                    Some(0) => "Queued on ComfyUI (starting imminently)".to_string(),
+                    Some(pos) => format!("Queued on ComfyUI – ticket #{pos}"),
+                    None => "Queued on ComfyUI".to_string(),
+                }
+            } else if let Some(remaining) = stage.strip_prefix("queue_remaining:") {
+                job.last_queue_remaining = remaining.parse().ok();
+                percent_override = None;
+                match job.last_queue_remaining {
+                    Some(0) => "Backend queue cleared; starting soon".to_string(),
+                    Some(count) => format!("Backend queue now has {count} job(s)"),
+                    None => "Backend queue updated".to_string(),
+                }
+            } else {
+                match stage {
+                    "cached" => {
+                        percent_override = Some(percent.max(90.0));
+                        "Using cached result from ComfyUI".to_string()
+                    }
+                    "completed" => {
+                        job.status = JobStatus::Completed;
+                        percent_override = Some(100.0);
+                        "Generation completed".to_string()
+                    }
+                    other if !other.is_empty() => {
+                        job.status = JobStatus::Running;
+                        format!("Executing {}", prettify_node_name(other))
+                    }
+                    _ => format!("Progress {:.0}%", percent),
+                }
+            }
+        } else {
+            format!("Progress {:.0}%", percent)
+        };
+
+        let node_details = match stage {
+            Some(stage_name)
+                if !stage_name.starts_with("queued:")
+                    && !stage_name.starts_with("queue_remaining:")
+                    && stage_name != "cached"
+                    && stage_name != "completed"
+                    && !stage_name.is_empty() =>
+            {
+                job.nodes.as_ref().and_then(|plan| {
+                    plan.lookup
+                        .get(stage_name)
+                        .map(|index| (index + 1, plan.order.len()))
+                })
+            }
+            _ => None,
+        };
+
+        let message = Self::format_with_batch(&base_message, job.batch, node_details);
+
+        Some(FormattedProgress {
+            percent: percent_override,
+            message,
+        })
+    }
+
+    fn complete_job(&self, job_id: uuid::Uuid) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.jobs.remove(&job_id);
+    }
+
+    fn format_with_batch(
+        base: &str,
+        batch: Option<BatchInfo>,
+        node: Option<(usize, usize)>,
+    ) -> String {
+        let mut details = Vec::new();
+
+        if let Some((index, total)) = node {
+            if total > 0 {
+                details.push(format!("node {}/{}", index, total));
+            }
+        }
+
+        if let Some(batch) = batch {
+            if batch.total > 1 {
+                details.push(format!("batch {}/{}", batch.position, batch.total));
+            }
+        }
+
+        if details.is_empty() {
+            base.to_string()
+        } else {
+            format!("{} ({})", base, details.join(", "))
+        }
+    }
+}
+
+impl NodePlan {
+    fn from_workflow(workflow: &serde_json::Value) -> Self {
+        let mut order = Vec::new();
+
+        if let Some(map) = workflow.as_object() {
+            for key in map.keys() {
+                order.push(key.to_string());
+            }
+        }
+
+        let lookup = order
+            .iter()
+            .enumerate()
+            .map(|(idx, key)| (key.clone(), idx))
+            .collect();
+
+        Self { order, lookup }
+    }
 }
 
 /// Backend classification for generated images.
@@ -68,6 +338,8 @@ impl Message<GenerateImages> for ImagenActor {
             prompt,
             model,
             progress,
+            batch: _batch,
+            job,
         } = msg;
 
         match &model.backend {
@@ -111,7 +383,7 @@ impl Message<GenerateImages> for ImagenActor {
                     stage2_scheduler: stage2_scheduler.as_deref().unwrap_or("beta"),
                 };
 
-                generate_comfyui(params, progress.as_ref()).await
+                generate_comfyui(params, progress.as_ref(), &job).await
             }
         }
     }
@@ -533,11 +805,10 @@ struct ComfyParams<'a> {
 async fn generate_comfyui(
     params: ComfyParams<'_>,
     progress: Option<&ActionProgressEmitter>,
+    job: &JobContext,
 ) -> Result<ImagenResponse> {
+    let job_ctx = job;
     let progress_emitter = progress.cloned();
-    if let Some(emitter) = &progress_emitter {
-        emitter.progress(Some(0.0), "Preparing generation workflow…");
-    }
 
     let client = ComfyUIClient::new();
     let mut graph = comfyui::api::Graph::new();
@@ -679,10 +950,19 @@ async fn generate_comfyui(
 
     let workflow = graph.build();
 
+    job_ctx.coordinator().set_workflow(job_ctx.id, &workflow);
+
+    let job_context = job_ctx.clone();
+
     let progress_callback = progress_emitter.as_ref().map(|emitter| {
         let emitter = emitter.clone();
+        let job_ctx = job_context.clone();
         Box::new(move |fraction: f32, stage: Option<&str>| {
-            handle_comfy_progress(&emitter, fraction, stage);
+            let status = job_ctx
+                .coordinator()
+                .format_progress(job_ctx.id, fraction, stage)
+                .expect("Imagen coordinator lost job state during progress");
+            emitter.progress(status.percent, status.message);
         }) as comfyui::net::ProgressCallback
     });
 
@@ -704,54 +984,6 @@ async fn generate_comfyui(
         seed: Some(seed),
     })
 }
-
-fn handle_comfy_progress(emitter: &ActionProgressEmitter, fraction: f32, stage: Option<&str>) {
-    let percent = (fraction * 100.0).clamp(0.0, 100.0);
-
-    if let Some(stage) = stage {
-        if let Some(position) = stage.strip_prefix("queued:") {
-            let message = match position.parse::<u32>() {
-                Ok(0) => "Queued on ComfyUI (starting imminently)".to_string(),
-                Ok(pos) => format!("Queued on ComfyUI (ticket #{pos})"),
-                Err(_) => "Queued on ComfyUI".to_string(),
-            };
-            emitter.progress(Some(0.0), message);
-            return;
-        }
-
-        if let Some(remaining) = stage.strip_prefix("queue_remaining:") {
-            let message = match remaining.parse::<u32>() {
-                Ok(0) => "Backend queue cleared; starting soon".to_string(),
-                Ok(count) => format!("Backend queue now has {} job(s) ahead", count),
-                Err(_) => "Backend queue updated".to_string(),
-            };
-            emitter.progress(None, message);
-            return;
-        }
-
-        match stage {
-            "cached" => {
-                emitter.progress(Some(percent.max(90.0)), "Using cached result from ComfyUI");
-                return;
-            }
-            "completed" => {
-                emitter.progress(Some(100.0), "Generation completed");
-                return;
-            }
-            other if !other.is_empty() => {
-                emitter.progress(
-                    Some(percent),
-                    format!("Executing {}", prettify_node_name(other)),
-                );
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    emitter.progress(Some(percent), format!("Progress {:.0}%", percent));
-}
-
 fn prettify_node_name(raw: &str) -> String {
     let mut result = String::new();
     let mut chars = raw.chars().peekable();
