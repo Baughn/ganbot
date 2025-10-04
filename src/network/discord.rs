@@ -14,7 +14,7 @@ use serenity::{
     },
     async_trait,
     builder::CreateInteractionResponseMessage,
-    model::{gateway::Ready, id::ApplicationId},
+    model::{channel::MessageFlags, gateway::Ready, id::ApplicationId},
 };
 use tokio::task::JoinHandle;
 use tracing::{error, info, instrument, warn};
@@ -62,29 +62,219 @@ pub struct BrokerActionUpdate {
     pub status: ActionStatus,
 }
 
-/// Helper methods for sending error responses mostly.
-impl DiscordInteraction {
-    fn ctx(&self) -> &all::Context {
-        match self {
-            DiscordInteraction::Command { ctx, .. } => ctx,
-            DiscordInteraction::Component { ctx, .. } => ctx,
-            DiscordInteraction::Modal { ctx, .. } => ctx,
+enum DiscordCommandJob {
+    Prompt {
+        ctx: all::Context,
+        command: CommandInteraction,
+        input: String,
+    },
+    Dream {
+        ctx: all::Context,
+        command: CommandInteraction,
+        input: String,
+    },
+}
+
+#[derive(Actor)]
+struct DiscordCommandActor {
+    http: Arc<Http>,
+    broker: ActorRef<ActionBroker>,
+    user_manager: ActorRef<UserManager>,
+    application_id: u64,
+}
+
+impl DiscordCommandActor {
+    fn new(
+        http: Arc<Http>,
+        broker: ActorRef<ActionBroker>,
+        user_manager: ActorRef<UserManager>,
+        application_id: u64,
+    ) -> Self {
+        Self {
+            http,
+            broker,
+            user_manager,
+            application_id,
         }
     }
 
-    fn interaction_user_id(&self) -> all::UserId {
-        match self {
-            DiscordInteraction::Command { command, .. } => command.user.id,
-            DiscordInteraction::Component { component, .. } => component.user.id,
-            DiscordInteraction::Modal { modal, .. } => modal.user.id,
+    async fn handle_job(&mut self, job: DiscordCommandJob) -> Result<()> {
+        match job {
+            DiscordCommandJob::Prompt {
+                ctx,
+                command,
+                input,
+            } => {
+                if let Err(err) = self
+                    .handle_generation_command(
+                        &ctx,
+                        &command,
+                        input.as_str(),
+                        "Prompt",
+                        |user_id, user_name, input| ActionPayload::Prompt {
+                            user_id,
+                            user_name,
+                            input,
+                        },
+                    )
+                    .await
+                {
+                    self.handle_command_error(&ctx, &command, "Prompt", &input, err)
+                        .await;
+                }
+                Ok(())
+            }
+            DiscordCommandJob::Dream {
+                ctx,
+                command,
+                input,
+            } => {
+                if let Err(err) = self
+                    .handle_generation_command(
+                        &ctx,
+                        &command,
+                        input.as_str(),
+                        "Dream",
+                        |user_id, user_name, input| ActionPayload::Dream {
+                            user_id,
+                            user_name,
+                            input,
+                        },
+                    )
+                    .await
+                {
+                    self.handle_command_error(&ctx, &command, "Dream", &input, err)
+                        .await;
+                }
+                Ok(())
+            }
         }
     }
 
-    fn interaction_channel_id(&self) -> all::ChannelId {
-        match self {
-            DiscordInteraction::Command { command, .. } => command.channel_id,
-            DiscordInteraction::Component { component, .. } => component.channel_id,
-            DiscordInteraction::Modal { modal, .. } => modal.channel_id,
+    async fn handle_generation_command<F>(
+        &mut self,
+        discord_ctx: &all::Context,
+        command: &CommandInteraction,
+        input: &str,
+        label: &str,
+        payload_factory: F,
+    ) -> Result<()>
+    where
+        F: Fn(UserId, String, String) -> ActionPayload,
+    {
+        command
+            .defer(&discord_ctx.http)
+            .await
+            .context("while deferring response")?;
+
+        // Ensure the user actor is instantiated so downstream actions have state ready.
+        let _ =
+            get_user_actor_impl(&self.user_manager, command.user.id, &command.user.name).await?;
+
+        let preface = format!("**{}**: {}", label, input);
+        let initial_content = format!("{preface}\nStatus: preparing request…");
+
+        let followup_builder = CreateInteractionResponseFollowup::new()
+            .content(initial_content)
+            .allowed_mentions(CreateAllowedMentions::new());
+
+        let followup = command
+            .create_followup(&discord_ctx.http, followup_builder)
+            .await
+            .context("while publishing progress message")?;
+
+        let origin = ActionOrigin::Discord {
+            application_id: self.application_id,
+            guild_id: command.guild_id.map(|id| id.get()),
+            channel_id: followup.channel_id.get(),
+            message_id: followup.id.get(),
+            user_id: command.user.id.get(),
+            progress_message: Some(preface.clone()),
+        };
+
+        let payload = payload_factory(
+            UserId::Discord(command.user.id),
+            command.user.name.clone(),
+            input.to_string(),
+        );
+
+        match self.broker.ask(SubmitAction::new(origin, payload)).await {
+            Ok(action_id) => {
+                update_progress_message_impl(
+                    &self.http,
+                    followup.channel_id.get(),
+                    followup.id.get(),
+                    Some(preface),
+                    format!("Status: queued (`{action_id}`)"),
+                )
+                .await
+                .with_context(|| "while acknowledging queued request")?;
+            }
+            Err(err) => {
+                delete_progress_message_impl(
+                    &self.http,
+                    followup.channel_id.get(),
+                    followup.id.get(),
+                )
+                .await;
+                send_failure_message_impl(
+                    &self.http,
+                    followup.channel_id.get(),
+                    command.user.id.get(),
+                    format!("failed to queue request: {err:#}"),
+                    false,
+                    Some(preface),
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_command_error(
+        &self,
+        discord_ctx: &all::Context,
+        command: &CommandInteraction,
+        label: &str,
+        input: &str,
+        err: anyhow::Error,
+    ) {
+        error!(
+            ?label,
+            user_id = command.user.id.get(),
+            "Failed to process Discord {label} command: {err:#}"
+        );
+
+        let content = format!(
+            "An error occurred while processing **{}** (`{}`):\n{:#}",
+            label, input, err
+        );
+
+        let followup_builder = CreateInteractionResponseFollowup::new()
+            .content(content)
+            .flags(MessageFlags::EPHEMERAL)
+            .allowed_mentions(CreateAllowedMentions::new());
+
+        if let Err(send_err) = command
+            .create_followup(&discord_ctx.http, followup_builder)
+            .await
+        {
+            error!("Failed to deliver error followup: {send_err:#}");
+        }
+    }
+}
+
+impl Message<DiscordCommandJob> for DiscordCommandActor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        job: DiscordCommandJob,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if let Err(err) = self.handle_job(job).await {
+            error!("Discord command actor failed: {err:#}");
         }
     }
 }
@@ -124,6 +314,163 @@ impl ResponseSegment {
     fn render(&self) -> String {
         format!("{}{}", self.prefix, self.text)
     }
+}
+
+async fn update_progress_message_impl(
+    http: &Arc<Http>,
+    channel_id: u64,
+    message_id: u64,
+    preface: Option<String>,
+    status_line: String,
+) -> Result<()> {
+    let mut lines = Vec::new();
+    if let Some(preface) = preface {
+        lines.push(preface);
+    }
+    lines.push(status_line);
+    let content = lines.join("\n");
+
+    let edit = EditMessage::new().content(content);
+
+    all::ChannelId::new(channel_id)
+        .edit_message(http, message_id, edit)
+        .await
+        .with_context(|| "while updating Discord progress message")?;
+    Ok(())
+}
+
+async fn delete_progress_message_impl(http: &Arc<Http>, channel_id: u64, message_id: u64) {
+    if let Err(err) = all::ChannelId::new(channel_id)
+        .delete_message(http, message_id)
+        .await
+    {
+        warn!(
+            channel_id,
+            message_id, "Failed to delete Discord progress message: {err:#}"
+        );
+    }
+}
+
+async fn send_completion_message_impl(
+    http: &Arc<Http>,
+    gallery_registry: &ActorRef<GalleryRegistry>,
+    channel_id: u64,
+    user_id: u64,
+    response: ActionResponse,
+    preface: Option<String>,
+) -> Result<()> {
+    let ActionResponse {
+        lines: response_lines,
+        gallery,
+        ..
+    } = response;
+
+    let mut lines = Vec::with_capacity(response_lines.len() + 1);
+    lines.push(format!("<@{}>", user_id));
+    if let Some(_preface) = preface {
+        // For now, ignore it!
+        // The preface contains the prompt, which is duplicated inside the image.
+    }
+    lines.extend(response_lines);
+    let content = lines.join("\n");
+
+    let user = all::UserId::new(user_id);
+    let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
+
+    let mut builder = CreateMessage::new()
+        .content(content)
+        .allowed_mentions(allowed_mentions);
+
+    let mut gallery_to_associate: Option<String> = None;
+
+    if let Some(gallery_ref) = &gallery {
+        match gallery_registry
+            .ask(GetGallery(gallery_ref.id.clone()))
+            .await
+            .context("while loading gallery metadata for completion message")?
+        {
+            Some(metadata) => {
+                let mut rows = vec![
+                    // Delete & retry buttons
+                    DiscordActor::build_prompt_action_buttons(&metadata.id, user_id),
+                ];
+                rows.extend(DiscordActor::build_gallery_components(&metadata));
+
+                builder = builder.components(rows);
+                gallery_to_associate = Some(metadata.id);
+            }
+            None => {
+                warn!(gallery_id = %gallery_ref.id, "Gallery metadata missing; omitting buttons");
+            }
+        }
+    }
+
+    let message = all::ChannelId::new(channel_id)
+        .send_message(http, builder)
+        .await
+        .with_context(|| "while sending Discord completion message")?;
+
+    if let Some(gallery_id) = gallery_to_associate {
+        if let Err(err) = gallery_registry
+            .ask(AssociateMessage {
+                gallery_id,
+                channel_id,
+                message_id: message.id.get(),
+            })
+            .await
+            .context("while associating gallery with message")
+        {
+            warn!("Failed to associate gallery message: {err:#}");
+        }
+    }
+
+    Ok(())
+}
+
+async fn send_failure_message_impl(
+    http: &Arc<Http>,
+    channel_id: u64,
+    user_id: u64,
+    error: String,
+    retry_scheduled: bool,
+    preface: Option<String>,
+) -> Result<()> {
+    let mut lines = Vec::new();
+    lines.push(format!("<@{}>", user_id));
+    if let Some(preface) = preface {
+        lines.push(preface);
+    }
+    lines.push(format!("Status: failed – {error}"));
+    if retry_scheduled {
+        lines.push("A retry has been scheduled.".to_string());
+    }
+    let content = lines.join("\n");
+
+    let user = all::UserId::new(user_id);
+    let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
+    let builder = CreateMessage::new()
+        .content(content)
+        .allowed_mentions(allowed_mentions);
+
+    all::ChannelId::new(channel_id)
+        .send_message(http, builder)
+        .await
+        .with_context(|| "while sending Discord failure message")?;
+    Ok(())
+}
+
+async fn get_user_actor_impl(
+    user_manager: &ActorRef<UserManager>,
+    discord_user_id: all::UserId,
+    discord_user_name: &str,
+) -> Result<ActorRef<UserActor>> {
+    let user_id = UserId::Discord(discord_user_id);
+    let user = user_manager
+        .ask(GetUser(user_id.clone(), discord_user_name.to_string()))
+        .await
+        .with_context(|| format!("while retrieving user {user_id:?}"))?;
+
+    Ok(user)
 }
 
 #[async_trait]
@@ -273,24 +620,8 @@ impl kameo::prelude::Message<DiscordInteraction> for DiscordActor {
         event: DiscordInteraction,
         ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        if let Err(err) = self.handle_interaction(ctx, &event).await {
+        if let Err(err) = self.handle_interaction(ctx, event).await {
             error!("Failed to handle Discord interaction: {err:#}");
-            // Make an attempt to notify the user about the error.
-            match event
-                .interaction_channel_id()
-                .say(
-                    &event.ctx().http,
-                    format!(
-                        "An error occurred while processing your request. Please try again later.\n{err}"
-                    ),
-                )
-                .await
-            {
-                Ok(_) => {}
-                Err(send_err) => {
-                    error!("Failed to send error message to Discord: {send_err:#}");
-                }
-            }
         }
     }
 }
@@ -386,32 +717,11 @@ impl DiscordActor {
         preface: Option<String>,
         status_line: String,
     ) -> Result<()> {
-        let mut lines = Vec::new();
-        if let Some(preface) = preface {
-            lines.push(preface);
-        }
-        lines.push(status_line);
-        let content = lines.join("\n");
-
-        let edit = EditMessage::new().content(content);
-
-        all::ChannelId::new(channel_id)
-            .edit_message(&self.http, message_id, edit)
-            .await
-            .with_context(|| "while updating Discord progress message")?;
-        Ok(())
+        update_progress_message_impl(&self.http, channel_id, message_id, preface, status_line).await
     }
 
     async fn delete_progress_message(&self, channel_id: u64, message_id: u64) {
-        if let Err(err) = all::ChannelId::new(channel_id)
-            .delete_message(&self.http, message_id)
-            .await
-        {
-            warn!(
-                channel_id,
-                message_id, "Failed to delete Discord progress message: {err:#}"
-            );
-        }
+        delete_progress_message_impl(&self.http, channel_id, message_id).await;
     }
 
     async fn send_completion_message(
@@ -421,74 +731,15 @@ impl DiscordActor {
         response: ActionResponse,
         preface: Option<String>,
     ) -> Result<()> {
-        let ActionResponse {
-            lines: response_lines,
-            gallery,
-            ..
-        } = response;
-
-        let mut lines = Vec::with_capacity(response_lines.len() + 1);
-        lines.push(format!("<@{}>", user_id));
-        if let Some(_preface) = preface {
-            // For now, ignore it!
-            // The preface contains the prompt, which is duplicated inside the image.
-        }
-        lines.extend(response_lines);
-        let content = lines.join("\n");
-
-        let user = all::UserId::new(user_id);
-        let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
-
-        let mut builder = CreateMessage::new()
-            .content(content)
-            .allowed_mentions(allowed_mentions);
-
-        let mut gallery_to_associate: Option<String> = None;
-
-        if let Some(gallery_ref) = &gallery {
-            match self
-                .gallery_registry
-                .ask(GetGallery(gallery_ref.id.clone()))
-                .await
-                .context("while loading gallery metadata for completion message")?
-            {
-                Some(metadata) => {
-                    let mut rows = vec![
-                        // Delete & retry buttons
-                        Self::build_prompt_action_buttons(&metadata.id, user_id),
-                    ];
-                    rows.extend(Self::build_gallery_components(&metadata));
-
-                    builder = builder.components(rows);
-                    gallery_to_associate = Some(metadata.id);
-                }
-                None => {
-                    warn!(gallery_id = %gallery_ref.id, "Gallery metadata missing; omitting buttons");
-                }
-            }
-        }
-
-        let message = all::ChannelId::new(channel_id)
-            .send_message(&self.http, builder)
-            .await
-            .with_context(|| "while sending Discord completion message")?;
-
-        if let Some(gallery_id) = gallery_to_associate {
-            if let Err(err) = self
-                .gallery_registry
-                .ask(AssociateMessage {
-                    gallery_id,
-                    channel_id,
-                    message_id: message.id.get(),
-                })
-                .await
-                .context("while associating gallery with message")
-            {
-                warn!("Failed to associate gallery message: {err:#}");
-            }
-        }
-
-        Ok(())
+        send_completion_message_impl(
+            &self.http,
+            &self.gallery_registry,
+            channel_id,
+            user_id,
+            response,
+            preface,
+        )
+        .await
     }
 
     async fn send_failure_message(
@@ -499,34 +750,21 @@ impl DiscordActor {
         retry_scheduled: bool,
         preface: Option<String>,
     ) -> Result<()> {
-        let mut lines = Vec::new();
-        lines.push(format!("<@{}>", user_id));
-        if let Some(preface) = preface {
-            lines.push(preface);
-        }
-        lines.push(format!("Status: failed – {error}"));
-        if retry_scheduled {
-            lines.push("A retry has been scheduled.".to_string());
-        }
-        let content = lines.join("\n");
-
-        let user = all::UserId::new(user_id);
-        let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
-        let builder = CreateMessage::new()
-            .content(content)
-            .allowed_mentions(allowed_mentions);
-
-        all::ChannelId::new(channel_id)
-            .send_message(&self.http, builder)
-            .await
-            .with_context(|| "while sending Discord failure message")?;
-        Ok(())
+        send_failure_message_impl(
+            &self.http,
+            channel_id,
+            user_id,
+            error,
+            retry_scheduled,
+            preface,
+        )
+        .await
     }
 
     async fn handle_interaction(
         &mut self,
         ctx: &mut Context<Self, ()>,
-        event: &DiscordInteraction,
+        event: DiscordInteraction,
     ) -> Result<()> {
         match event {
             DiscordInteraction::Command {
@@ -547,8 +785,8 @@ impl DiscordActor {
     async fn handle_command(
         &mut self,
         ctx: &mut Context<Self, ()>,
-        discord_ctx: &all::Context,
-        command: &CommandInteraction,
+        discord_ctx: all::Context,
+        command: CommandInteraction,
     ) -> Result<()> {
         fn read_string_option(command: &CommandInteraction, name: &str) -> Option<String> {
             command
@@ -562,23 +800,39 @@ impl DiscordActor {
                 })
         }
 
-        match command.data.name.as_str() {
+        let command_name = command.data.name.clone();
+
+        match command_name.as_str() {
             "prompt" => {
                 let prompt = read_string_option(&command, "prompt")
                     .ok_or_else(|| anyhow::anyhow!("Prompt text is required"))?;
-                self.handle_prompt_command(ctx, &discord_ctx, command, prompt)
-                    .await
+                self.dispatch_command_actor(
+                    ctx,
+                    DiscordCommandJob::Prompt {
+                        ctx: discord_ctx,
+                        command,
+                        input: prompt,
+                    },
+                )
+                .await
             }
             "dream" => {
                 let request = read_string_option(&command, "request")
                     .ok_or_else(|| anyhow::anyhow!("Dream request is required"))?;
-                self.handle_dream_command(ctx, &discord_ctx, command, request)
-                    .await
+                self.dispatch_command_actor(
+                    ctx,
+                    DiscordCommandJob::Dream {
+                        ctx: discord_ctx,
+                        command,
+                        input: request,
+                    },
+                )
+                .await
             }
             "select" => {
                 let url = read_string_option(&command, "url")
                     .ok_or_else(|| anyhow::anyhow!("Image URL is required"))?;
-                self.handle_select_command(ctx, &discord_ctx, command, url)
+                self.handle_select_command(ctx, &discord_ctx, &command, url)
                     .await
             }
             other => {
@@ -591,27 +845,27 @@ impl DiscordActor {
     async fn handle_component(
         &mut self,
         ctx: &mut Context<Self, ()>,
-        discord_ctx: &all::Context,
-        component: &ComponentInteraction,
+        discord_ctx: all::Context,
+        component: ComponentInteraction,
     ) -> Result<()> {
         let custom_id = component.data.custom_id.as_str();
 
         if custom_id.starts_with(GALLERY_BUTTON_PREFIX) {
-            return self.handle_gallery_component(component).await;
+            return self.handle_gallery_component(&component).await;
         }
 
         if custom_id.starts_with(PROMPT_RETRY_PREFIX) {
-            return self.handle_retry_button(component).await;
+            return self.handle_retry_button(&component).await;
         }
 
         if custom_id.starts_with(PROMPT_DELETE_CONFIRM_PREFIX) {
             return self
-                .handle_delete_confirm_button(ctx, discord_ctx, component)
+                .handle_delete_confirm_button(ctx, &discord_ctx, &component)
                 .await;
         }
 
         if custom_id.starts_with(PROMPT_DELETE_PREFIX) {
-            return self.handle_delete_button(component).await;
+            return self.handle_delete_button(&component).await;
         }
 
         if custom_id == "delete_cancel" {
@@ -631,8 +885,27 @@ impl DiscordActor {
         }
 
         warn!(custom_id, "Unhandled component interaction");
-        self.respond_component_message(component, "This control is not implemented yet.")
+        self.respond_component_message(&component, "This control is not implemented yet.")
             .await
+    }
+
+    async fn dispatch_command_actor(
+        &mut self,
+        _ctx: &mut Context<Self, ()>,
+        job: DiscordCommandJob,
+    ) -> Result<()> {
+        let actor = DiscordCommandActor::spawn(DiscordCommandActor::new(
+            self.http.clone(),
+            self.broker.clone(),
+            self.user_manager.clone(),
+            self.config.application_id,
+        ));
+
+        actor
+            .tell(job)
+            .send()
+            .await
+            .context("while dispatching Discord command actor")
     }
 
     fn build_gallery_response_content(metadata: &GalleryMetadata, image_index: usize) -> String {
@@ -1030,13 +1303,13 @@ impl DiscordActor {
     async fn handle_modal(
         &self,
         _ctx: &mut Context<Self, ()>,
-        discord_ctx: &all::Context,
-        modal: &ModalInteraction,
+        discord_ctx: all::Context,
+        modal: ModalInteraction,
     ) -> Result<()> {
         let custom_id = modal.data.custom_id.as_str();
 
         if custom_id.starts_with(PROMPT_RETRY_PREFIX) {
-            return self.handle_retry_modal(discord_ctx, modal).await;
+            return self.handle_retry_modal(&discord_ctx, &modal).await;
         }
 
         warn!(custom_id = %modal.data.custom_id, "Unhandled modal submission");
@@ -1253,124 +1526,6 @@ impl DiscordActor {
         CreateActionRow::Buttons(vec![delete_button, retry_button])
     }
 
-    async fn handle_generation_command<F>(
-        &mut self,
-        discord_ctx: &all::Context,
-        command: &CommandInteraction,
-        input: String,
-        label: &str,
-        payload_factory: F,
-    ) -> Result<()>
-    where
-        F: Fn(UserId, String, String) -> ActionPayload,
-    {
-        command
-            .defer(&discord_ctx.http)
-            .await
-            .context("while deferring response")?;
-
-        // Ensure the user actor is instantiated so downstream actions have state ready.
-        let _ = self
-            .get_user_actor(command.user.id, &command.user.name)
-            .await?;
-
-        let preface = format!("**{}**: {}", label, input.as_str());
-        let initial_content = format!("{preface}\nStatus: preparing request…");
-
-        let followup_builder = CreateInteractionResponseFollowup::new()
-            .content(initial_content)
-            .allowed_mentions(CreateAllowedMentions::new());
-
-        let followup = command
-            .create_followup(&discord_ctx.http, followup_builder)
-            .await
-            .context("while publishing progress message")?;
-
-        let origin = ActionOrigin::Discord {
-            application_id: self.config.application_id,
-            guild_id: command.guild_id.map(|id| id.get()),
-            channel_id: followup.channel_id.get(),
-            message_id: followup.id.get(),
-            user_id: command.user.id.get(),
-            progress_message: Some(preface.clone()),
-        };
-
-        let payload = payload_factory(
-            UserId::Discord(command.user.id),
-            command.user.name.clone(),
-            input,
-        );
-
-        match self.broker.ask(SubmitAction::new(origin, payload)).await {
-            Ok(action_id) => {
-                self.update_progress_message(
-                    followup.channel_id.get(),
-                    followup.id.get(),
-                    Some(preface),
-                    format!("Status: queued (`{action_id}`)"),
-                )
-                .await
-                .with_context(|| "while acknowledging queued request")?;
-            }
-            Err(err) => {
-                self.delete_progress_message(followup.channel_id.get(), followup.id.get())
-                    .await;
-                self.send_failure_message(
-                    followup.channel_id.get(),
-                    command.user.id.get(),
-                    format!("failed to queue request: {err:#}"),
-                    false,
-                    Some(preface),
-                )
-                .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_prompt_command(
-        &mut self,
-        _ctx: &mut Context<Self, ()>,
-        discord_ctx: &all::Context,
-        command: &CommandInteraction,
-        input: String,
-    ) -> Result<()> {
-        self.handle_generation_command(
-            discord_ctx,
-            command,
-            input,
-            "Prompt",
-            |user_id, user_name, input| ActionPayload::Prompt {
-                user_id,
-                user_name,
-                input,
-            },
-        )
-        .await
-    }
-
-    async fn handle_dream_command(
-        &mut self,
-        _ctx: &mut Context<Self, ()>,
-        discord_ctx: &all::Context,
-        command: &CommandInteraction,
-        request: String,
-    ) -> Result<()> {
-        self.handle_generation_command(
-            discord_ctx,
-            command,
-            request,
-            "Dream",
-            |user_id, user_name, input| ActionPayload::Dream {
-                user_id,
-                user_name,
-                input,
-            },
-        )
-        .await
-    }
-
     async fn handle_select_command(
         &mut self,
         _ctx: &mut Context<Self, ()>,
@@ -1379,20 +1534,5 @@ impl DiscordActor {
         _url: String,
     ) -> Result<()> {
         todo!()
-    }
-
-    async fn get_user_actor(
-        &self,
-        discord_user_id: all::UserId,
-        discord_user_name: &str,
-    ) -> Result<ActorRef<UserActor>> {
-        let user_id = UserId::Discord(discord_user_id);
-        let user = self
-            .user_manager
-            .ask(GetUser(user_id.clone(), discord_user_name.to_string()))
-            .await
-            .with_context(|| format!("while retrieving user {user_id:?}"))?;
-
-        Ok(user)
     }
 }
