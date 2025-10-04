@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use kameo::Actor as _;
 use tracing::{debug, info, trace};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 use crate::supervisor::Supervisor;
 
@@ -23,6 +23,8 @@ async fn main() -> Result<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt()
+        .with_ansi(true)
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .with_env_filter(filter)
         .with_target(true)
         .with_thread_ids(false)
