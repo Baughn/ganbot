@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context as AnyhowContext, Result};
 use kameo::prelude::*;
@@ -17,7 +21,7 @@ use serenity::{
     model::{channel::MessageFlags, gateway::Ready, id::ApplicationId},
 };
 use tokio::task::JoinHandle;
-use tracing::{Level, error, info, instrument, warn};
+use tracing::{Level, debug, error, info, instrument, trace, warn};
 
 use crate::{
     actions::{
@@ -62,6 +66,17 @@ pub struct BrokerActionUpdate {
     pub status: ActionStatus,
 }
 
+#[derive(Debug, Clone)]
+struct RegisterProgressActor {
+    action_id: ActionId,
+    actor: ActorRef<DiscordProgressActor>,
+}
+
+#[derive(Debug, Clone)]
+struct ProgressActorFinished {
+    action_id: ActionId,
+}
+
 enum DiscordCommandJob {
     Prompt {
         ctx: all::Context,
@@ -76,11 +91,196 @@ enum DiscordCommandJob {
 }
 
 #[derive(Actor)]
+struct DiscordProgressActor {
+    http: Arc<Http>,
+    gallery_registry: ActorRef<GalleryRegistry>,
+    parent: WeakActorRef<DiscordActor>,
+    action_id: ActionId,
+    last_origin: Option<ActionOrigin>,
+    fallback_preface: Option<String>,
+}
+
+impl DiscordProgressActor {
+    fn new(
+        http: Arc<Http>,
+        gallery_registry: ActorRef<GalleryRegistry>,
+        parent: WeakActorRef<DiscordActor>,
+        action_id: ActionId,
+        origin: ActionOrigin,
+    ) -> Self {
+        let fallback_preface = match &origin {
+            ActionOrigin::Discord {
+                progress_message, ..
+            } => progress_message.clone(),
+            _ => None,
+        };
+
+        Self {
+            http,
+            gallery_registry,
+            parent,
+            action_id,
+            last_origin: Some(origin),
+            fallback_preface,
+        }
+    }
+
+    fn resolve_context(&mut self, update: &BrokerActionUpdate) -> Option<(u64, u64, u64, String)> {
+        if let ActionOrigin::Discord {
+            channel_id,
+            message_id,
+            user_id,
+            progress_message,
+            ..
+        } = &update.origin
+        {
+            let preface = progress_message
+                .clone()
+                .or_else(|| self.fallback_preface.clone())
+                .unwrap_or_else(|| format!("Action `{}`", update.id));
+            self.fallback_preface = Some(preface.clone());
+            self.last_origin = Some(update.origin.clone());
+            return Some((*channel_id, *message_id, *user_id, preface));
+        }
+
+        if let Some(ActionOrigin::Discord {
+            channel_id,
+            message_id,
+            user_id,
+            progress_message,
+            ..
+        }) = &self.last_origin
+        {
+            let preface = progress_message
+                .clone()
+                .or_else(|| self.fallback_preface.clone())
+                .unwrap_or_else(|| format!("Action `{}`", update.id));
+            return Some((*channel_id, *message_id, *user_id, preface));
+        }
+
+        None
+    }
+
+    async fn handle_update(
+        &mut self,
+        update: BrokerActionUpdate,
+        ctx: &mut Context<Self, ()>,
+    ) -> Result<()> {
+        trace_http_ratelimiter(&self.http, "discord_progress_actor.handle_update").await;
+
+        let Some((channel_id, message_id, user_id, preface)) = self.resolve_context(&update) else {
+            trace!(action = %update.id, "Dropping broker update with no Discord context");
+            return Ok(());
+        };
+
+        match update.status {
+            ActionStatus::Queued => {
+                update_progress_message_impl(
+                    &self.http,
+                    channel_id,
+                    message_id,
+                    Some(preface),
+                    format!("Status: queued (`{}`)", update.id),
+                )
+                .await
+            }
+            ActionStatus::Started => {
+                update_progress_message_impl(
+                    &self.http,
+                    channel_id,
+                    message_id,
+                    Some(preface),
+                    "Status: submitted to generator; waiting for backend scheduling".to_string(),
+                )
+                .await
+            }
+            ActionStatus::Progress(progress) => {
+                let status_line = if let Some(percent) = progress.percent {
+                    let percent = percent.clamp(0.0, 100.0);
+                    format!("Status: {:.0}% - {}", percent, progress.message)
+                } else {
+                    format!("Status: {}", progress.message)
+                };
+                update_progress_message_impl(
+                    &self.http,
+                    channel_id,
+                    message_id,
+                    Some(preface),
+                    status_line,
+                )
+                .await
+            }
+            ActionStatus::Completed(completed) => {
+                delete_progress_message_impl(&self.http, channel_id, message_id).await;
+                send_completion_message_impl(
+                    &self.http,
+                    &self.gallery_registry,
+                    channel_id,
+                    user_id,
+                    completed.response,
+                    Some(preface),
+                )
+                .await?;
+                self.finish(ctx).await;
+                Ok(())
+            }
+            ActionStatus::Failed(failure) => {
+                delete_progress_message_impl(&self.http, channel_id, message_id).await;
+                send_failure_message_impl(
+                    &self.http,
+                    channel_id,
+                    user_id,
+                    failure.error,
+                    failure.retry_scheduled,
+                    Some(preface),
+                )
+                .await?;
+                self.finish(ctx).await;
+                Ok(())
+            }
+        }
+    }
+
+    async fn finish(&self, ctx: &mut Context<Self, ()>) {
+        if let Some(parent) = self.parent.upgrade() {
+            if let Err(err) = parent
+                .tell(ProgressActorFinished {
+                    action_id: self.action_id,
+                })
+                .send()
+                .await
+            {
+                warn!(action = %self.action_id, "Failed to notify Discord actor about completion: {err:#}");
+            }
+        }
+
+        ctx.stop();
+    }
+}
+
+impl Message<BrokerActionUpdate> for DiscordProgressActor {
+    type Reply = ();
+
+    #[instrument(skip_all, name = "discord_progress_actor.handle_update_msg", fields(action = %msg.id))]
+    async fn handle(
+        &mut self,
+        msg: BrokerActionUpdate,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if let Err(err) = self.handle_update(msg, ctx).await {
+            error!(action = %self.action_id, "Failed to process broker update: {err:#}");
+        }
+    }
+}
+
+#[derive(Actor)]
 struct DiscordCommandActor {
     http: Arc<Http>,
     broker: ActorRef<ActionBroker>,
     user_manager: ActorRef<UserManager>,
     application_id: u64,
+    gallery_registry: ActorRef<GalleryRegistry>,
+    parent: WeakActorRef<DiscordActor>,
 }
 
 impl DiscordCommandActor {
@@ -89,12 +289,16 @@ impl DiscordCommandActor {
         broker: ActorRef<ActionBroker>,
         user_manager: ActorRef<UserManager>,
         application_id: u64,
+        gallery_registry: ActorRef<GalleryRegistry>,
+        parent: WeakActorRef<DiscordActor>,
     ) -> Self {
         Self {
             http,
             broker,
             user_manager,
             application_id,
+            gallery_registry,
+            parent,
         }
     }
 
@@ -162,11 +366,6 @@ impl DiscordCommandActor {
     where
         F: Fn(UserId, String, String) -> ActionPayload,
     {
-        command
-            .defer(&discord_ctx.http)
-            .await
-            .context("while deferring response")?;
-
         // Ensure the user actor is instantiated so downstream actions have state ready.
         let _ =
             get_user_actor_impl(&self.user_manager, command.user.id, &command.user.name).await?;
@@ -198,17 +397,29 @@ impl DiscordCommandActor {
             input.to_string(),
         );
 
-        match self.broker.ask(SubmitAction::new(origin, payload)).await {
+        let submit_origin = origin.clone();
+
+        match self
+            .broker
+            .ask(SubmitAction::new(submit_origin, payload))
+            .await
+        {
             Ok(action_id) => {
-                update_progress_message_impl(
-                    &self.http,
-                    followup.channel_id.get(),
-                    followup.id.get(),
-                    Some(preface),
-                    format!("Status: queued (`{action_id}`)"),
-                )
-                .await
-                .with_context(|| "while acknowledging queued request")?;
+                if self
+                    .spawn_progress_actor(action_id, origin.clone())
+                    .await
+                    .is_none()
+                {
+                    update_progress_message_impl(
+                        &self.http,
+                        followup.channel_id.get(),
+                        followup.id.get(),
+                        Some(preface),
+                        format!("Status: queued (`{action_id}`)"),
+                    )
+                    .await
+                    .with_context(|| "while acknowledging queued request")?;
+                }
             }
             Err(err) => {
                 delete_progress_message_impl(
@@ -230,6 +441,51 @@ impl DiscordCommandActor {
         }
 
         Ok(())
+    }
+
+    async fn spawn_progress_actor(
+        &self,
+        action_id: ActionId,
+        origin: ActionOrigin,
+    ) -> Option<ActorRef<DiscordProgressActor>> {
+        let actor = DiscordProgressActor::spawn(DiscordProgressActor::new(
+            self.http.clone(),
+            self.gallery_registry.clone(),
+            self.parent.clone(),
+            action_id,
+            origin.clone(),
+        ));
+
+        if let Some(parent) = self.parent.upgrade() {
+            if let Err(err) = parent
+                .tell(RegisterProgressActor {
+                    action_id,
+                    actor: actor.clone(),
+                })
+                .send()
+                .await
+            {
+                warn!(action = %action_id, "Failed to register progress actor: {err:#}");
+                return None;
+            }
+        } else {
+            warn!(action = %action_id, "Discord actor unavailable when registering progress actor");
+            return None;
+        }
+
+        if let Err(err) = actor
+            .tell(BrokerActionUpdate {
+                id: action_id,
+                origin,
+                status: ActionStatus::Queued,
+            })
+            .send()
+            .await
+        {
+            warn!(action = %action_id, "Failed to send initial queued update: {err:#}");
+        }
+
+        Some(actor)
     }
 
     async fn handle_command_error(
@@ -287,6 +543,7 @@ pub struct DiscordActor {
     user_manager: ActorRef<UserManager>,
     broker: ActorRef<ActionBroker>,
     gallery_registry: ActorRef<GalleryRegistry>,
+    progress_sessions: HashMap<ActionId, ActorRef<DiscordProgressActor>>,
 }
 
 struct Handler {
@@ -474,6 +731,63 @@ async fn get_user_actor_impl(
     Ok(user)
 }
 
+async fn trace_http_ratelimiter(http: &Arc<Http>, label: &str) {
+    let Some(ratelimiter) = http.ratelimiter.as_ref() else {
+        trace!(%label, "http ratelimiter not configured");
+        return;
+    };
+
+    let routes = ratelimiter.routes();
+    let buckets = {
+        let guard = routes.read().await;
+        guard
+            .iter()
+            .map(|(bucket, limiter)| (*bucket, Arc::clone(limiter)))
+            .collect::<Vec<_>>()
+    };
+
+    if buckets.is_empty() {
+        trace!(%label, "http ratelimiter has no tracked buckets");
+        return;
+    }
+
+    for (bucket, limiter) in buckets {
+        let ratelimit = limiter.lock().await;
+        let reset_after_ms = ratelimit.reset_after().map(|d| d.as_millis() as i64);
+        let reset_epoch_s = ratelimit
+            .reset()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+        let reset_in_ms = ratelimit
+            .reset()
+            .and_then(|t| t.duration_since(SystemTime::now()).ok())
+            .map(|d| d.as_millis() as i64);
+
+        if ratelimit.remaining() == 0 {
+            debug!(
+                %label,
+                bucket = ?bucket,
+                remaining = ratelimit.remaining(),
+                limit = ratelimit.limit(),
+                reset_after_ms,
+                reset_epoch_s,
+                reset_in_ms,
+                "http ratelimiter bucket empty",
+            );
+        }
+        trace!(
+            %label,
+            bucket = ?bucket,
+            remaining = ratelimit.remaining(),
+            limit = ratelimit.limit(),
+            reset_after_ms,
+            reset_epoch_s,
+            reset_in_ms,
+            "http ratelimiter bucket state",
+        );
+    }
+}
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: all::Context, ready: Ready) {
@@ -538,6 +852,7 @@ impl Actor for DiscordActor {
             user_manager,
             broker,
             gallery_registry,
+            progress_sessions: HashMap::new(),
         })
     }
 
@@ -643,124 +958,46 @@ impl kameo::prelude::Message<BrokerActionUpdate> for DiscordActor {
     }
 }
 
+impl kameo::prelude::Message<RegisterProgressActor> for DiscordActor {
+    type Reply = ();
+
+    #[instrument(skip_all, name = "discord_actor.register_progress_actor", fields(action = %msg.action_id))]
+    async fn handle(
+        &mut self,
+        msg: RegisterProgressActor,
+        _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.progress_sessions.insert(msg.action_id, msg.actor);
+    }
+}
+
+impl kameo::prelude::Message<ProgressActorFinished> for DiscordActor {
+    type Reply = ();
+
+    #[instrument(skip_all, name = "discord_actor.progress_actor_finished", fields(action = %msg.action_id))]
+    async fn handle(
+        &mut self,
+        msg: ProgressActorFinished,
+        _ctx: &mut kameo::prelude::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.progress_sessions.remove(&msg.action_id);
+    }
+}
+
 impl DiscordActor {
-    async fn handle_broker_update(&self, update: BrokerActionUpdate) -> Result<()> {
-        let ActionOrigin::Discord {
-            application_id: _,
-            guild_id: _,
-            channel_id,
-            message_id,
-            user_id,
-            progress_message,
-        } = update.origin
-        else {
+    async fn handle_broker_update(&mut self, update: BrokerActionUpdate) -> Result<()> {
+        trace_http_ratelimiter(&self.http, "discord_actor.handle_broker_update").await;
+
+        if let Some(session) = self.progress_sessions.get(&update.id).cloned() {
+            if let Err(err) = session.tell(update.clone()).send().await {
+                warn!(action = %update.id, "Progress actor unavailable: {err:#}");
+                self.progress_sessions.remove(&update.id);
+            }
             return Ok(());
-        };
-
-        let preface = progress_message.unwrap_or_else(|| format!("Action `{}`", update.id));
-
-        match update.status {
-            ActionStatus::Queued => {
-                self.update_progress_message(
-                    channel_id,
-                    message_id,
-                    Some(preface.clone()),
-                    format!("Status: queued (`{}`)", update.id),
-                )
-                .await
-            }
-            ActionStatus::Started => {
-                self.update_progress_message(
-                    channel_id,
-                    message_id,
-                    Some(preface.clone()),
-                    "Status: submitted to generator; waiting for backend scheduling".to_string(),
-                )
-                .await
-            }
-            ActionStatus::Progress(progress) => {
-                let status_line = if let Some(percent) = progress.percent {
-                    let percent = percent.clamp(0.0, 100.0);
-                    format!("Status: {:.0}% - {}", percent, progress.message)
-                } else {
-                    format!("Status: {}", progress.message)
-                };
-                self.update_progress_message(
-                    channel_id,
-                    message_id,
-                    Some(preface.clone()),
-                    status_line,
-                )
-                .await
-            }
-            ActionStatus::Completed(completed) => {
-                self.delete_progress_message(channel_id, message_id).await;
-                self.send_completion_message(channel_id, user_id, completed.response, Some(preface))
-                    .await
-            }
-            ActionStatus::Failed(failure) => {
-                self.delete_progress_message(channel_id, message_id).await;
-                self.send_failure_message(
-                    channel_id,
-                    user_id,
-                    failure.error,
-                    failure.retry_scheduled,
-                    Some(preface),
-                )
-                .await
-            }
         }
-    }
 
-    async fn update_progress_message(
-        &self,
-        channel_id: u64,
-        message_id: u64,
-        preface: Option<String>,
-        status_line: String,
-    ) -> Result<()> {
-        update_progress_message_impl(&self.http, channel_id, message_id, preface, status_line).await
-    }
-
-    async fn delete_progress_message(&self, channel_id: u64, message_id: u64) {
-        delete_progress_message_impl(&self.http, channel_id, message_id).await;
-    }
-
-    async fn send_completion_message(
-        &self,
-        channel_id: u64,
-        user_id: u64,
-        response: ActionResponse,
-        preface: Option<String>,
-    ) -> Result<()> {
-        send_completion_message_impl(
-            &self.http,
-            &self.gallery_registry,
-            channel_id,
-            user_id,
-            response,
-            preface,
-        )
-        .await
-    }
-
-    async fn send_failure_message(
-        &self,
-        channel_id: u64,
-        user_id: u64,
-        error: String,
-        retry_scheduled: bool,
-        preface: Option<String>,
-    ) -> Result<()> {
-        send_failure_message_impl(
-            &self.http,
-            channel_id,
-            user_id,
-            error,
-            retry_scheduled,
-            preface,
-        )
-        .await
+        trace!(action = %update.id, "No registered progress actor for update");
+        Ok(())
     }
 
     async fn handle_interaction(
@@ -768,6 +1005,7 @@ impl DiscordActor {
         ctx: &mut Context<Self, ()>,
         event: DiscordInteraction,
     ) -> Result<()> {
+        trace_http_ratelimiter(&self.http, "discord_actor.handle_interaction").await;
         match event {
             DiscordInteraction::Command {
                 ctx: discord_ctx,
@@ -804,11 +1042,21 @@ impl DiscordActor {
         }
 
         let command_name = command.data.name.clone();
+        let command_name_str = command_name.as_str();
 
-        match command_name.as_str() {
+        match command_name_str {
             "prompt" => {
                 let prompt = read_string_option(&command, "prompt")
                     .ok_or_else(|| anyhow::anyhow!("Prompt text is required"))?;
+                if let Err(err) = command.defer(&discord_ctx.http).await {
+                    error!(
+                        command = command_name_str,
+                        user_id = command.user.id.get(),
+                        error = ?err,
+                        "Failed to defer Discord interaction"
+                    );
+                    return Ok(());
+                }
                 self.dispatch_command_actor(
                     ctx,
                     DiscordCommandJob::Prompt {
@@ -822,6 +1070,15 @@ impl DiscordActor {
             "dream" => {
                 let request = read_string_option(&command, "request")
                     .ok_or_else(|| anyhow::anyhow!("Dream request is required"))?;
+                if let Err(err) = command.defer(&discord_ctx.http).await {
+                    error!(
+                        command = command_name_str,
+                        user_id = command.user.id.get(),
+                        error = ?err,
+                        "Failed to defer Discord interaction"
+                    );
+                    return Ok(());
+                }
                 self.dispatch_command_actor(
                     ctx,
                     DiscordCommandJob::Dream {
@@ -835,6 +1092,15 @@ impl DiscordActor {
             "select" => {
                 let url = read_string_option(&command, "url")
                     .ok_or_else(|| anyhow::anyhow!("Image URL is required"))?;
+                if let Err(err) = command.defer(&discord_ctx.http).await {
+                    error!(
+                        command = command_name_str,
+                        user_id = command.user.id.get(),
+                        error = ?err,
+                        "Failed to defer Discord interaction"
+                    );
+                    return Ok(());
+                }
                 self.handle_select_command(ctx, &discord_ctx, &command, url)
                     .await
             }
@@ -895,14 +1161,17 @@ impl DiscordActor {
 
     async fn dispatch_command_actor(
         &mut self,
-        _ctx: &mut Context<Self, ()>,
+        ctx: &mut Context<Self, ()>,
         job: DiscordCommandJob,
     ) -> Result<()> {
+        let parent = ctx.actor_ref().downgrade();
         let actor = DiscordCommandActor::spawn(DiscordCommandActor::new(
             self.http.clone(),
             self.broker.clone(),
             self.user_manager.clone(),
             self.config.application_id,
+            self.gallery_registry.clone(),
+            parent,
         ));
 
         actor
