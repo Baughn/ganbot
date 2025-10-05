@@ -14,7 +14,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use kameo::actor::WeakActorRef;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Duration};
 use tracing::trace;
 use uuid::Uuid;
 
@@ -209,9 +209,38 @@ impl ActionProgressEmitter {
         let message = message.into();
         let emitter = self.clone();
         tokio::spawn(async move {
+            let force_emit = percent.map(|p| p >= 99.9).unwrap_or(false);
+
+            if force_emit {
+                if !emitter.should_emit_progress(percent, &message).await {
+                    return;
+                }
+                emitter
+                    .send_status(ActionStatus::Progress(ActionProgress { percent, message }))
+                    .await;
+                return;
+            }
+
+            let ticket = {
+                let mut throttle = emitter.throttle.lock().await;
+                throttle.register_pending(percent, &message)
+            };
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let maybe_progress = {
+                let mut throttle = emitter.throttle.lock().await;
+                throttle.take_pending(ticket)
+            };
+
+            let Some((percent, message)) = maybe_progress else {
+                return;
+            };
+
             if !emitter.should_emit_progress(percent, &message).await {
                 return;
             }
+
             emitter
                 .send_status(ActionStatus::Progress(ActionProgress { percent, message }))
                 .await;
@@ -250,6 +279,8 @@ impl ActionProgressEmitter {
 struct ProgressThrottle {
     bucket: TokenBucket,
     last_snapshot: Option<(Option<f32>, String)>,
+    pending: Option<(u64, Option<f32>, String)>,
+    next_ticket: u64,
 }
 
 impl ProgressThrottle {
@@ -259,6 +290,8 @@ impl ProgressThrottle {
             // so we proactively respect that budget.
             bucket: TokenBucket::new(5.0, 1.0),
             last_snapshot: None,
+            pending: None,
+            next_ticket: 0,
         }
     }
 
@@ -316,5 +349,22 @@ impl ProgressThrottle {
 
     fn record(&mut self, percent: Option<f32>, message: &str) {
         self.last_snapshot = Some((percent, message.to_string()));
+    }
+
+    fn register_pending(&mut self, percent: Option<f32>, message: &str) -> u64 {
+        self.next_ticket = self.next_ticket.wrapping_add(1);
+        let ticket = self.next_ticket;
+        self.pending = Some((ticket, percent, message.to_string()));
+        ticket
+    }
+
+    fn take_pending(&mut self, ticket: u64) -> Option<(Option<f32>, String)> {
+        match &self.pending {
+            Some((pending_ticket, _, _)) if *pending_ticket == ticket => {
+                let (_, percent, message) = self.pending.take().unwrap();
+                Some((percent, message))
+            }
+            _ => None,
+        }
     }
 }
