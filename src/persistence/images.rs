@@ -212,7 +212,7 @@ impl ImageUploader {
             )
             .await
         {
-            error!("Failed to store generation data: {}", e);
+            error!("Failed to store generation data: {:#}", e);
             // Continue with upload even if generation data storage fails
         }
 
@@ -246,7 +246,7 @@ impl ImageUploader {
             )
             .await
         {
-            error!("Failed to store generation data for gallery image: {}", e);
+            error!("Failed to store generation data for gallery image: {:#}", e);
             // Continue with upload even if generation data storage fails
         }
 
@@ -629,7 +629,7 @@ pub async fn delete_image(uuid: &str, username: &str) -> Result<DeleteResult> {
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let error_msg = format!("Failed to delete {}: {}", filename, stderr);
-            error!("{}", error_msg);
+            error!("{:#}", error_msg);
             deletion_errors.push(error_msg);
         }
     }

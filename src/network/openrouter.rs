@@ -212,7 +212,7 @@ where
         self.api
             .ask(request)
             .await
-            .map_err(|err| anyhow!("OpenRouter structured request failed: {err}"))
+            .map_err(|err| anyhow!("OpenRouter structured request failed: {err:#}"))
     }
 }
 
@@ -250,7 +250,7 @@ impl Message<chat::Oneshot> for ConversationActor {
             .api
             .ask(request)
             .await
-            .map_err(|err| anyhow!("OpenRouter oneshot request failed: {err}"))?;
+            .map_err(|err| anyhow!("OpenRouter oneshot request failed: {err:#}"))?;
 
         let text = response
             .text
@@ -299,7 +299,7 @@ impl Message<NanoBanana> for ConversationActor {
             .api
             .ask(request)
             .await
-            .map_err(|err| anyhow!("OpenRouter NanoBanana request failed: {err}"))?;
+            .map_err(|err| anyhow!("OpenRouter NanoBanana request failed: {err:#}"))?;
 
         let text = response
             .text

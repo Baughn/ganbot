@@ -86,7 +86,7 @@ impl ActionBroker {
                     .send()
                     .await
                 {
-                    warn!("Failed to report completion of action: {err}");
+                    warn!("Failed to report completion of action: {err:#}");
                 }
             }
         })
@@ -513,7 +513,7 @@ async fn execute_prompt(
                 .await
                 .context("while registering gallery metadata")
             {
-                error!("Failed to register gallery metadata: {err:?}");
+                error!("Failed to register gallery metadata: {err:#}");
             }
         }
 
@@ -591,7 +591,7 @@ async fn execute_dream(
                 .await
                 .context("while registering dream gallery metadata")
             {
-                error!("Failed to register dream gallery metadata: {err:?}");
+                error!("Failed to register dream gallery metadata: {err:#}");
             }
         }
 

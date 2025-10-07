@@ -1052,8 +1052,7 @@ impl DiscordActor {
                     error!(
                         command = command_name_str,
                         user_id = command.user.id.get(),
-                        error = ?err,
-                        "Failed to defer Discord interaction"
+                        "Failed to defer Discord interaction: {err:#}"
                     );
                     return Ok(());
                 }
@@ -1074,8 +1073,7 @@ impl DiscordActor {
                     error!(
                         command = command_name_str,
                         user_id = command.user.id.get(),
-                        error = ?err,
-                        "Failed to defer Discord interaction"
+                        "Failed to defer Discord interaction: {err:#}"
                     );
                     return Ok(());
                 }
@@ -1096,8 +1094,7 @@ impl DiscordActor {
                     error!(
                         command = command_name_str,
                         user_id = command.user.id.get(),
-                        error = ?err,
-                        "Failed to defer Discord interaction"
+                        "Failed to defer Discord interaction: {err:#}"
                     );
                     return Ok(());
                 }

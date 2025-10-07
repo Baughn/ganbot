@@ -131,7 +131,7 @@ impl Actor for IrcActor {
                 .send()
                 .await
             {
-                warn!("Failed to register IRC actor with broker: {err}");
+                warn!("Failed to register IRC actor with broker: {err:#}");
             }
         } else {
             warn!("ActionBroker not available; IRC actions may not be routed");

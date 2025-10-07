@@ -156,7 +156,7 @@ impl Actor for Supervisor {
                 match timing {
                     Err(e) => {
                         // Well, that's that then.
-                        error!("Too many failures; shutting down: {e}");
+                        error!("Too many failures; shutting down: {e:#}");
                         return Ok(ControlFlow::Break(reason));
                     }
                     Ok(timing) => {
@@ -371,7 +371,7 @@ impl Message<ReloadConfig> for Supervisor {
             }
             Err(e) => {
                 error!(
-                    "Failed to reload models configuration, keeping old config: {}",
+                    "Failed to reload models configuration, keeping old config: {:#}",
                     e
                 );
             }
