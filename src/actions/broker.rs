@@ -74,10 +74,13 @@ impl ActionBroker {
 
             let status = match execute_action(&request, &progress).await {
                 Ok(response) => ActionStatus::Completed(ActionCompleted { response }),
-                Err(error) => ActionStatus::Failed(ActionFailure {
-                    error: format!("{error:#}"),
-                    retry_scheduled: false,
-                }),
+                Err(error) => {
+                    tracing::error!("Action failed: {:#}", error);
+                    ActionStatus::Failed(ActionFailure {
+                        error: format!("{error:#}"),
+                        retry_scheduled: false,
+                    })
+                }
             };
 
             if let Some(broker) = broker_ref.upgrade() {
@@ -454,9 +457,8 @@ async fn execute_prompt(
     let actor = crate::actions::prompt::PromptActor::spawn(
         crate::actions::prompt::PromptActor::new(user_actor, Some(progress.clone())).await,
     );
-    let result = actor
-        .ask(input)
-        .await
+
+    let result = crate::util::kameo::extract_ask_result(actor.ask(input).await)
         .context("while executing prompt action")?;
     let crate::actions::prompt::PromptResult {
         text,
@@ -532,9 +534,8 @@ async fn execute_dream(
     let actor = crate::actions::dream::DreamActor::spawn(
         crate::actions::dream::DreamActor::new(user_actor, Some(progress.clone())).await,
     );
-    let result = actor
-        .ask(input)
-        .await
+
+    let result = crate::util::kameo::extract_ask_result(actor.ask(input).await)
         .context("while executing dream action")?;
     let crate::actions::prompt::PromptResult {
         text,

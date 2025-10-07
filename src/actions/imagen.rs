@@ -85,13 +85,13 @@ pub async fn submit_generation(request: GenerateImagesRequest) -> Result<ImagenR
         },
     };
 
-    let result = ImagenActor::spawn(ImagenActor::default())
+    let ask_result = ImagenActor::spawn(ImagenActor::default())
         .ask(message)
         .await;
 
     coordinator.complete_job(job_id);
 
-    Ok(result?)
+    crate::util::kameo::extract_ask_result(ask_result)
 }
 
 #[derive(Default)]

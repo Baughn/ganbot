@@ -87,6 +87,10 @@ src/
 
 ## Key Dependencies and Usage
 
+### Reading dependency code
+
+You'll need to check the exact version in Cargo.toml / Cargo.lock, but then you can look in the Rust registry at ~/.cargo.
+
 ### Redis
 
 Redis is used for all persistence through a reconnecting `ConnectionManager`. Current key patterns:

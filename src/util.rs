@@ -1,5 +1,6 @@
 //! Misc utility functions
 
+pub mod kameo;
 pub mod token_bucket;
 
 use std::future::Future;

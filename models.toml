@@ -41,7 +41,17 @@ cfg = 4.5
 sampler = "er_sde"
 scheduler = "sgm_uniform"
 steps = 28
-resolutions = ["768x1344", "832x1216", "896x1152", "1024x1024", "1024x1536", "1152x896", "1216x832", "1344x768", "1536x1024"]
+resolutions = [
+    "768x1344",
+    "832x1216",
+    "896x1152",
+    "1024x1024",
+    "1024x1536",
+    "1152x896",
+    "1216x832",
+    "1344x768",
+    "1536x1024",
+]
 two_stage = false
 
 [models.oneobsession]
@@ -202,8 +212,8 @@ description = "Illustrious 1.0. For fanart. Use tags and English."
 [models.illustriousxl.prompt_defaults]
 negative_append = "3d, bored, simple background, worst quality, old, early, low quality, lowres, bad hands, mutated hands, censored, monochrome"
 
-[models.illustriousxl.backend]
-ComfyUI.checkpoint = "xl-ill/Illustrious-XL-v1.0.safetensors"
+[models.illustriousxl.backend.ComfyUI]
+checkpoint = "xl-ill/Illustrious-XL-v1.0.safetensors"
 
 [models.rouwei]
 name = "rouwei"
@@ -214,32 +224,36 @@ description = "Rouwei, an opinionated fanart model. Use tags."
 positive_append = "newest, best quality, rouwei"
 negative_append = "worst quality, low quality, watermark"
 
-[models.rouwei.backend]
-ComfyUI.checkpoint = "xl-ill/rouwei_061Vpred.safetensors"
+[models.rouwei.backend.ComfyUI]
+checkpoint = "xl-ill/rouwei_061Vpred.safetensors"
 
 [models.quillworks]
 name = "quillworks"
 inherit = "sdxl"
 description = "A multi-style fanart model. Try Ink Sketch Style, BrushWork, Anime, Cartoon, 3d cartoon, sketch, watercolor, realistic or digital art style"
 
-[models.quillworks.backend]
-ComfyUI.checkpoint = "xl-ill/QuillworksIllustrious_QuillworksV15.safetensors"
+[models.quillworks.backend.ComfyUI]
+checkpoint = "xl-ill/QuillworksIllustrious_QuillworksV15.safetensors"
 
 [models.animaginexl]
 name = "animaginexl"
 inherit = "sdxl"
 description = "AniMagine XL. Use tags, NovelAI style."
 
-[models.animaginexl.backend]
-ComfyUI.checkpoint = "xl/animagineXLV3_v30.safetensors"
+[models.animaginexl.backend.ComfyUI]
+checkpoint = "xl/animagineXLV3_v30.safetensors"
 
 [models.animavividxl]
 name = "animavividxl"
 inherit = "sdxl"
 description = "AniMaVivid XL. Use tags."
 
-[models.animavividxl.backend]
-ComfyUI.checkpoint = "xl/animavividXL_v10.safetensors"
+[models.animavividxl.backend.ComfyUI]
+checkpoint = "xl/animavivid_v10.safetensors"
+sampler = "euler_ancestral"
+scheduler = "karras"
+stage2_sampler = "euler_ancestral"
+stage2_scheduler = "karras"
 
 [models.nanobanana]
 name = "nanobanana"
