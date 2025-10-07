@@ -1572,15 +1572,15 @@ impl DiscordActor {
 
     #[instrument(skip_all, level = Level::TRACE)]
     async fn handle_modal(
-        &self,
-        _ctx: &mut Context<Self, ()>,
+        &mut self,
+        ctx: &mut Context<Self, ()>,
         discord_ctx: all::Context,
         modal: ModalInteraction,
     ) -> Result<()> {
         let custom_id = modal.data.custom_id.as_str();
 
         if custom_id.starts_with(PROMPT_RETRY_PREFIX) {
-            return self.handle_retry_modal(&discord_ctx, &modal).await;
+            return self.handle_retry_modal(ctx, &discord_ctx, &modal).await;
         }
 
         warn!(custom_id = %modal.data.custom_id, "Unhandled modal submission");
@@ -1588,7 +1588,8 @@ impl DiscordActor {
     }
 
     async fn handle_retry_modal(
-        &self,
+        &mut self,
+        ctx: &mut Context<Self, ()>,
         discord_ctx: &all::Context,
         modal: &ModalInteraction,
     ) -> Result<()> {
@@ -1630,6 +1631,21 @@ impl DiscordActor {
                 .await;
         }
 
+        if let Err(err) =
+            get_user_actor_impl(&self.user_manager, modal.user.id, &modal.user.name).await
+        {
+            error!(
+                user_id = modal.user.id.get(),
+                "Failed to prepare user state for retry: {err:#}"
+            );
+            return self
+                .respond_modal_error(
+                    modal,
+                    "Unable to prepare your retry right now. Please try again in a moment.",
+                )
+                .await;
+        }
+
         // Defer the modal response
         modal
             .create_response(
@@ -1642,6 +1658,8 @@ impl DiscordActor {
             .await
             .context("while deferring retry modal response")?;
 
+        let preface = format!("**Prompt**: {}", edited_prompt);
+
         // Submit a new action with the edited prompt
         let payload = ActionPayload::Prompt {
             user_id: UserId::Discord(modal.user.id),
@@ -1651,10 +1669,7 @@ impl DiscordActor {
 
         // Create a followup message for progress tracking
         let followup_builder = CreateInteractionResponseFollowup::new()
-            .content(format!(
-                "**Prompt**: {}\nStatus: preparing request…",
-                edited_prompt
-            ))
+            .content(format!("{preface}\nStatus: preparing request…"))
             .allowed_mentions(CreateAllowedMentions::new());
 
         let followup = modal
@@ -1669,13 +1684,51 @@ impl DiscordActor {
             channel_id: followup.channel_id.get(),
             message_id: followup.id.get(),
             user_id: modal.user.id.get(),
-            progress_message: Some(format!("**Prompt**: {}", edited_prompt)),
+            progress_message: Some(preface.clone()),
         };
 
-        match self.broker.ask(SubmitAction::new(origin, payload)).await {
-            Ok(_action_id) => Ok(()),
+        let submit_origin = origin.clone();
+
+        match self
+            .broker
+            .ask(SubmitAction::new(submit_origin, payload))
+            .await
+        {
+            Ok(action_id) => {
+                if self
+                    .spawn_progress_actor_for_origin(ctx, action_id, origin)
+                    .await
+                    .is_none()
+                {
+                    update_progress_message_impl(
+                        &self.http,
+                        followup.channel_id.get(),
+                        followup.id.get(),
+                        Some(preface.clone()),
+                        format!("Status: queued (`{action_id}`)"),
+                    )
+                    .await
+                    .with_context(|| "while acknowledging queued request")?;
+                }
+                Ok(())
+            }
             Err(err) => {
                 error!("Failed to submit retry action: {:#}", err);
+                delete_progress_message_impl(
+                    &self.http,
+                    followup.channel_id.get(),
+                    followup.id.get(),
+                )
+                .await;
+                send_failure_message_impl(
+                    &self.http,
+                    followup.channel_id.get(),
+                    modal.user.id.get(),
+                    format!("failed to queue request: {err:#}"),
+                    false,
+                    Some(preface),
+                )
+                .await?;
                 Ok(())
             }
         }
@@ -1690,6 +1743,40 @@ impl DiscordActor {
             .create_response(&self.http, CreateInteractionResponse::Message(response))
             .await
             .with_context(|| "while responding to modal with error")
+    }
+
+    async fn spawn_progress_actor_for_origin(
+        &mut self,
+        ctx: &mut Context<Self, ()>,
+        action_id: ActionId,
+        origin: ActionOrigin,
+    ) -> Option<ActorRef<DiscordProgressActor>> {
+        let parent = ctx.actor_ref().downgrade();
+        let actor = DiscordProgressActor::spawn(DiscordProgressActor::new(
+            self.http.clone(),
+            self.gallery_registry.clone(),
+            parent,
+            action_id,
+            origin.clone(),
+        ));
+
+        self.progress_sessions.insert(action_id, actor.clone());
+
+        if let Err(err) = actor
+            .tell(BrokerActionUpdate {
+                id: action_id,
+                origin,
+                status: ActionStatus::Queued,
+            })
+            .send()
+            .await
+        {
+            warn!(action = %action_id, "Failed to send initial queued update: {err:#}");
+            self.progress_sessions.remove(&action_id);
+            return None;
+        }
+
+        Some(actor)
     }
 
     fn parse_gallery_custom_id(custom_id: &str) -> Option<(String, usize)> {
