@@ -277,7 +277,7 @@ impl Actor for ActionBroker {
 impl Message<SubmitAction> for ActionBroker {
     type Reply = Result<crate::actions::ActionId>;
 
-    #[instrument(skip_all)]
+    #[instrument(name = "ActionBroker.submit_action", skip_all)]
     async fn handle(
         &mut self,
         msg: SubmitAction,
@@ -305,7 +305,7 @@ impl Message<SubmitAction> for ActionBroker {
 impl Message<ActionLifecycleResult> for ActionBroker {
     type Reply = ();
 
-    #[instrument(skip_all)]
+    #[instrument(name = "ActionBroker.action_lifecycle_result", skip_all)]
     async fn handle(
         &mut self,
         msg: ActionLifecycleResult,
@@ -337,7 +337,7 @@ impl Message<ActionLifecycleResult> for ActionBroker {
 impl Message<RegisterIrc> for ActionBroker {
     type Reply = ();
 
-    #[instrument(skip_all, fields(server = %msg.server))]
+    #[instrument(name = "ActionBroker.register_irc", skip_all, fields(server = %msg.server))]
     async fn handle(
         &mut self,
         msg: RegisterIrc,
@@ -350,7 +350,7 @@ impl Message<RegisterIrc> for ActionBroker {
 impl Message<RegisterDiscord> for ActionBroker {
     type Reply = ();
 
-    #[instrument(skip_all)]
+    #[instrument(name = "ActionBroker.register_discord", skip_all)]
     async fn handle(
         &mut self,
         msg: RegisterDiscord,

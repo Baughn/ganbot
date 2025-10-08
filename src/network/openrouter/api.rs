@@ -164,7 +164,7 @@ impl<T> StructuredRequest<T> {
 impl Message<CompletionRequest> for OpenRouterApi {
     type Reply = Result<CompletionResponse>;
 
-    #[instrument(skip_all, fields(origin = msg.origin.as_deref().unwrap_or("unknown")))]
+    #[instrument(name = "OpenRouterApi.completion", skip_all, fields(origin = msg.origin.as_deref().unwrap_or("unknown")))]
     async fn handle(
         &mut self,
         msg: CompletionRequest,
@@ -251,7 +251,7 @@ where
 {
     type Reply = Result<T>;
 
-    #[instrument(skip_all, fields(origin = msg.origin.as_deref().unwrap_or("unknown")))]
+    #[instrument(name = "OpenRouterApi.structured", skip_all, fields(origin = msg.origin.as_deref().unwrap_or("unknown")))]
     async fn handle(
         &mut self,
         msg: StructuredRequest<T>,

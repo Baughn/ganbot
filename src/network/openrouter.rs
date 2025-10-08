@@ -58,7 +58,7 @@ impl OpenRouter {
 impl Message<chat::Oneshot> for OpenRouter {
     type Reply = ForwardedReply<chat::Oneshot, Result<chat::OneshotResponse>>;
 
-    #[instrument(skip_all)]
+    #[instrument(name = "OpenRouter.oneshot", skip_all)]
     async fn handle(
         &mut self,
         msg: chat::Oneshot,
@@ -79,7 +79,7 @@ where
 {
     type Reply = ForwardedReply<chat::Structured<T>, Result<T>>;
 
-    #[instrument(skip_all)]
+    #[instrument(name = "OpenRouter.structured", skip_all)]
     async fn handle(
         &mut self,
         msg: chat::Structured<T>,
@@ -97,7 +97,7 @@ where
 impl Message<NanoBanana> for OpenRouter {
     type Reply = ForwardedReply<NanoBanana, Result<NanoBananaResponse>>;
 
-    #[instrument(skip_all)]
+    #[instrument(name = "OpenRouter.nanobanana", skip_all)]
     async fn handle(
         &mut self,
         msg: NanoBanana,
@@ -179,7 +179,7 @@ where
 {
     type Reply = Result<T>;
 
-    #[instrument(skip_all)]
+    #[instrument(name = "ConversationActor.structured", skip_all)]
     async fn handle(
         &mut self,
         msg: chat::Structured<T>,
@@ -219,7 +219,7 @@ where
 impl Message<chat::Oneshot> for ConversationActor {
     type Reply = Result<chat::OneshotResponse>;
 
-    #[instrument(skip_all)]
+    #[instrument(name = "ConversationActor.oneshot", skip_all)]
     async fn handle(
         &mut self,
         msg: chat::Oneshot,
@@ -263,7 +263,7 @@ impl Message<chat::Oneshot> for ConversationActor {
 impl Message<NanoBanana> for ConversationActor {
     type Reply = Result<NanoBananaResponse>;
 
-    #[instrument(skip_all)]
+    #[instrument(name = "ConversationActor.nanobanana", skip_all)]
     async fn handle(
         &mut self,
         msg: NanoBanana,

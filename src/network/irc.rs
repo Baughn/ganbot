@@ -530,7 +530,7 @@ impl IrcActor {
 impl Message<SendReply> for IrcActor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(server = %self.name))]
+    #[instrument(name = "IrcActor.send_reply", skip_all, fields(server = %self.name))]
     async fn handle(
         &mut self,
         msg: SendReply,
@@ -546,7 +546,7 @@ impl Message<SendReply> for IrcActor {
 impl Message<BrokerActionDelivery> for IrcActor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(server = %self.name))]
+    #[instrument(name = "IrcActor.broker_action_delivery", skip_all, fields(server = %self.name))]
     async fn handle(
         &mut self,
         msg: BrokerActionDelivery,
@@ -574,7 +574,7 @@ impl Message<BrokerActionDelivery> for IrcActor {
 impl Message<CheckUserIdentified> for IrcActor {
     type Reply = Result<Option<bool>>;
 
-    #[instrument(skip_all, fields(server = %self.name, nick = %msg.nickname))]
+    #[instrument(name = "IrcActor.check_user_identified", skip_all, fields(server = %self.name, nick = %msg.nickname))]
     async fn handle(
         &mut self,
         msg: CheckUserIdentified,
@@ -902,7 +902,7 @@ impl
 {
     type Reply = ();
 
-    #[instrument(skip_all, fields(server = %self.name))]
+    #[instrument(name = "IrcActor.stream_message", skip_all, level = tracing::Level::TRACE, fields(server = %self.name))]
     async fn handle(
         &mut self,
         msg: StreamMessage<Result<irc::proto::Message, irc::error::Error>, &str, &str>,
@@ -1092,7 +1092,7 @@ async fn handle_irc_message(
 impl Message<ProcessBufferedMessages> for IrcActor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(server = %self.name))]
+    #[instrument(name = "IrcActor.process_buffered_messages", skip_all, fields(server = %self.name))]
     async fn handle(
         &mut self,
         _msg: ProcessBufferedMessages,

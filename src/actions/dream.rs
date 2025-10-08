@@ -74,7 +74,7 @@ struct DreamPromptResponse {
 impl Message<String> for DreamActor {
     type Reply = Result<PromptResult, Error>;
 
-    #[tracing::instrument(skip(self, _ctx, msg), fields(prompt_length = msg.len()))]
+    #[tracing::instrument(name = "DreamActor.generate", skip(self, _ctx, msg), fields(prompt_length = msg.len()))]
     async fn handle(
         &mut self,
         msg: String,
