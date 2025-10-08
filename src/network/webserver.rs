@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::{
     Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
@@ -11,7 +11,8 @@ use redis::aio::ConnectionManager;
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use tower_http::services::ServeDir;
+use tower::ServiceBuilder;
+use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 
 use crate::{
@@ -64,11 +65,19 @@ impl WebServer {
             redis: self.redis.clone(),
         };
 
+        // Configure static file service with cache headers
+        let static_service = ServiceBuilder::new()
+            .layer(SetResponseHeaderLayer::if_not_present(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            ))
+            .service(ServeDir::new("static"));
+
         let app = Router::new()
             .route("/", get(index_handler))
             .route("/help/{*path}", get(help_handler))
             .route("/gallery/models", get(model_gallery_handler))
-            .nest_service("/static", ServeDir::new("static"))
+            .nest_service("/static", static_service)
             .with_state(state);
 
         axum::serve(listener, app)
@@ -152,7 +161,9 @@ impl Actor for WebServer {
 
 /// Handler for the home page
 async fn index_handler() -> impl IntoResponse {
-    Html(
+    let css_url = static_url("style.css").await;
+
+    Html(format!(
         r#"
 <!DOCTYPE html>
 <html lang="en">
@@ -160,7 +171,7 @@ async fn index_handler() -> impl IntoResponse {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ganbot</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="{}">
 </head>
 <body>
     <nav class="sidebar">
@@ -182,7 +193,8 @@ async fn index_handler() -> impl IntoResponse {
 </body>
 </html>
     "#,
-    )
+        css_url
+    ))
 }
 
 /// Handler for help pages
@@ -192,6 +204,8 @@ async fn help_handler(Path(path): Path<String>) -> Response {
 
     match tokio::fs::read_to_string(&file_path).await {
         Ok(markdown_content) => {
+            let css_url = static_url("style.css").await;
+
             // Convert markdown to HTML
             let parser = pulldown_cmark::Parser::new(&markdown_content);
             let mut html_output = String::new();
@@ -206,7 +220,7 @@ async fn help_handler(Path(path): Path<String>) -> Response {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Help - {}</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="{}">
 </head>
 <body>
     <nav class="sidebar">
@@ -223,7 +237,7 @@ async fn help_handler(Path(path): Path<String>) -> Response {
 </body>
 </html>
             "#,
-                path, html_output
+                path, css_url, html_output
             );
 
             Html(full_html).into_response()
@@ -269,7 +283,8 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
     models.sort_by_key(|(name, _)| *name);
 
     if models.is_empty() || state.gallery_config.prompts.is_empty() {
-        return Html(
+        let css_url = static_url("style.css").await;
+        return Html(format!(
             r#"
 <!DOCTYPE html>
 <html lang="en">
@@ -277,7 +292,7 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Model Gallery</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="{}">
 </head>
 <body>
     <nav class="sidebar">
@@ -294,9 +309,9 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
     </main>
 </body>
 </html>
-            "#
-            .to_string(),
-        )
+            "#,
+            css_url
+        ))
         .into_response();
     }
 
@@ -368,16 +383,37 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
         table_rows.push_str(&format!("<td class=\"model-label\">{}</td>", model_name));
 
         for prompt in &state.gallery_config.prompts {
+            // Build a Generate struct and apply model defaults
+            let mut generate = Generate {
+                raw_prompt: prompt.clone(),
+                prompt: prompt.clone(),
+                negative_prompt: None,
+                num_images: Some(1),
+                aspect: None,
+                width: None,
+                height: None,
+                model: Some(model_name.to_string()),
+                seed: None,
+                steps: None,
+                references: References {
+                    img2img: None,
+                    img2img_strength: None,
+                    context: Vec::new(),
+                },
+                alias: None,
+            };
+            crate::actions::imagen::apply_model_defaults(&mut generate, model);
+
             let image_url = get_gallery_image(
                 &mut state.redis,
                 model_name,
-                prompt,
+                &generate,
                 &image_host_config.base_url,
             )
             .await;
 
             table_rows.push_str(&format!(
-                r#"<td><a href="{0}" target="_blank"><img src="{0}" alt="{1} - {2}" class="gallery-img" /></a></td>"#,
+                r#"<td><a href="{0}" class="gallery-link"><img src="{0}" alt="{1} - {2}" class="gallery-img" /></a></td>"#,
                 image_url, model_name, prompt
             ));
         }
@@ -386,6 +422,9 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
     }
 
     // Render the full HTML
+    let css_url = static_url("style.css").await;
+    let js_url = static_url("gallery.js").await;
+
     let html = format!(
         r#"
 <!DOCTYPE html>
@@ -394,8 +433,8 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Model Gallery</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <script src="/static/gallery.js" defer></script>
+    <link rel="stylesheet" href="{}">
+    <script src="{}" defer></script>
 </head>
 <body>
     <nav class="sidebar">
@@ -425,7 +464,7 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
 </body>
 </html>
         "#,
-        tag_buttons, table_header, table_rows
+        css_url, js_url, tag_buttons, table_header, table_rows
     );
 
     Html(html).into_response()
@@ -434,10 +473,39 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
 /// Gallery cache helper functions
 const PLACEHOLDER_URL: &str = "/static/placeholder.svg";
 
-/// Generate a stable cache key for a model+prompt combination
-fn gallery_cache_key(model_name: &str, prompt: &str) -> String {
+/// Calculate SHA256 hash of a file for cache busting
+async fn calculate_file_hash(path: &str) -> Result<String> {
+    let content = tokio::fs::read(path)
+        .await
+        .context(format!("Failed to read file: {}", path))?;
+
     let mut hasher = Sha256::new();
-    hasher.update(prompt.as_bytes());
+    hasher.update(&content);
+    let hash = hasher.finalize();
+
+    // Return first 8 characters of hex hash
+    Ok(format!("{:x}", hash)[..8].to_string())
+}
+
+/// Generate a versioned static file URL with content hash for cache busting
+async fn static_url(filename: &str) -> String {
+    let path = format!("static/{}", filename);
+    match calculate_file_hash(&path).await {
+        Ok(hash) => format!("/static/{}?v={}", filename, hash),
+        Err(e) => {
+            error!("Failed to calculate hash for {}: {:#}", path, e);
+            // Fallback to unversioned URL if hash calculation fails
+            format!("/static/{}", filename)
+        }
+    }
+}
+
+/// Generate a stable cache key for a model+prompt combination
+fn gallery_cache_key(model_name: &str, generate: &Generate) -> String {
+    let mut hasher = Sha256::new();
+    // Serialize the entire Generate struct to ensure all parameters are included
+    let json = serde_json::to_string(generate).unwrap_or_default();
+    hasher.update(json.as_bytes());
     let hash = hasher.finalize();
     format!("gallery:cache:{}:{:x}", model_name, hash)
 }
@@ -446,10 +514,10 @@ fn gallery_cache_key(model_name: &str, prompt: &str) -> String {
 async fn get_gallery_image(
     redis: &mut ConnectionManager,
     model_name: &str,
-    prompt: &str,
+    generate: &Generate,
     image_host_base_url: &str,
 ) -> String {
-    let cache_key = gallery_cache_key(model_name, prompt);
+    let cache_key = gallery_cache_key(model_name, generate);
 
     match redis::cmd("GET")
         .arg(&cache_key)
@@ -471,10 +539,10 @@ async fn get_gallery_image(
 async fn set_gallery_image(
     redis: &mut ConnectionManager,
     model_name: &str,
-    prompt: &str,
+    generate: &Generate,
     image_uuid: &str,
 ) -> Result<()> {
-    let cache_key = gallery_cache_key(model_name, prompt);
+    let cache_key = gallery_cache_key(model_name, generate);
 
     redis::cmd("SET")
         .arg(&cache_key)
@@ -535,16 +603,37 @@ async fn pre_generate_gallery_task(
 
     // Collect all missing (model, prompt) combinations
     let mut missing = Vec::new();
-    for (model_name, _) in &models {
+    for (model_name, model) in &models {
         for prompt in &gallery_config.prompts {
-            let cache_key = gallery_cache_key(model_name, prompt);
+            // Build Generate struct and apply model defaults
+            let mut generate = Generate {
+                raw_prompt: prompt.clone(),
+                prompt: prompt.clone(),
+                negative_prompt: None,
+                num_images: Some(1),
+                aspect: None,
+                width: None,
+                height: None,
+                model: Some(model_name.to_string()),
+                seed: None,
+                steps: None,
+                references: References {
+                    img2img: None,
+                    img2img_strength: None,
+                    context: Vec::new(),
+                },
+                alias: None,
+            };
+            crate::actions::imagen::apply_model_defaults(&mut generate, model);
+
+            let cache_key = gallery_cache_key(model_name, &generate);
             match redis::cmd("EXISTS")
                 .arg(&cache_key)
                 .query_async::<u8>(&mut redis)
                 .await
             {
                 Ok(0) => {
-                    missing.push((model_name.to_string(), prompt.clone()));
+                    missing.push((model_name.to_string(), generate));
                 }
                 Ok(_) => {
                     debug!("Gallery image already cached: {}", cache_key);
@@ -565,32 +654,12 @@ async fn pre_generate_gallery_task(
     info!("Gallery pre-generation: {} images to generate", total);
 
     // Generate each missing image serially
-    for (index, (model_name, prompt)) in missing.iter().enumerate() {
+    for (index, (model_name, generate_request)) in missing.iter().enumerate() {
         let progress = index + 1;
         info!(
             "Gallery: Generating {}/{} ({} / {})",
-            progress, total, model_name, prompt
+            progress, total, model_name, generate_request.raw_prompt
         );
-
-        // Build generation request
-        let mut generate_request = Generate {
-            raw_prompt: prompt.clone(),
-            prompt: prompt.clone(),
-            negative_prompt: None,
-            num_images: Some(1),
-            aspect: None,
-            width: None,
-            height: None,
-            model: Some(model_name.clone()),
-            seed: None,
-            steps: None,
-            references: References {
-                img2img: None,
-                img2img_strength: None,
-                context: Vec::new(),
-            },
-            alias: None,
-        };
 
         // Resolve the model
         let model = match models_config.models.get(model_name) {
@@ -600,9 +669,6 @@ async fn pre_generate_gallery_task(
                 continue;
             }
         };
-
-        // Apply model defaults (prepend/append positive/negative prompts)
-        crate::actions::imagen::apply_model_defaults(&mut generate_request, &model);
 
         // Generate the image
         let imagen_request = GenerateImagesRequest {
@@ -617,7 +683,7 @@ async fn pre_generate_gallery_task(
             Err(e) => {
                 error!(
                     "Failed to generate gallery image for {} / {}: {:#}",
-                    model_name, prompt, e
+                    model_name, generate_request.raw_prompt, e
                 );
                 continue;
             }
@@ -625,7 +691,10 @@ async fn pre_generate_gallery_task(
 
         // Upload the image
         if result.images.is_empty() {
-            error!("No images generated for {} / {}", model_name, prompt);
+            error!(
+                "No images generated for {} / {}",
+                model_name, generate_request.raw_prompt
+            );
             continue;
         }
 
@@ -635,7 +704,7 @@ async fn pre_generate_gallery_task(
             image,
             result.workflow,
             Some(backend_str),
-            Some(generate_request),
+            Some(generate_request.clone()),
         )
         .await
         {
@@ -653,7 +722,7 @@ async fn pre_generate_gallery_task(
             .trim_end_matches(".jpg");
 
         // Store in cache
-        if let Err(e) = set_gallery_image(&mut redis, model_name, prompt, uuid).await {
+        if let Err(e) = set_gallery_image(&mut redis, model_name, generate_request, uuid).await {
             error!("Failed to cache gallery image: {:#}", e);
         }
 

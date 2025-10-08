@@ -1,6 +1,6 @@
 default = "auto"
 default_english = "qwen"
-default_tagged = "fanart"
+default_tagged = "chroma"
 #default_edit = "nanobanana"
 
 [aliases]
@@ -14,6 +14,7 @@ animavivid = "animavividxl"
 [templates.sdxl]
 name = "sdxl"
 description = "Default SDXL settings"
+tags = ["booru", "english"]
 
 [templates.sdxl.backend.ComfyUI]
 cfg = 4.5
@@ -101,21 +102,21 @@ description = "Chroma. Use anime tags and English."
 tags = ["english", "booru", "recommended"]
 
 [models.chroma.prompt_defaults]
-positive_prepend = "masterpiece"
-negative_prepend = "low quality, bad anatomy, extra digits, missing digits, extra limbs, missing limbs"
+positive_prepend = "The scene is rendered in a modern 2020s anime style with bold, clean linework and careful shading."
+negative_prepend = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
 
 [models.chroma.backend.ComfyUI]
-unet = "chroma/chroma-unlocked-latest-detail-calibrated.safetensors"
+unet = "chroma/Chroma1-HD.safetensors"
 clip = "chroma/t5xxl_fp16.safetensors"
-cfg = 3.5
+cfg = 4.0
 sampler = "euler_ancestral"
 scheduler = "sgm_uniform"
 steps = 40
-resolution = [1280, 1280]
+resolution = [1024, 1024]
 
 [models.hassaku]
 name = "hassaku"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "A multi-style fanart model. Less glitchy than Quillworks."
 
 [models.hassaku.prompt_defaults]
@@ -126,7 +127,7 @@ ComfyUI.checkpoint = "xl-ill/hassakuXLIllustrious_v30.safetensors"
 
 [models.ntrmix]
 name = "ntrmix"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "NTRMix XIII. Illustrious-based; for fanart. Use tags."
 
 [models.ntrmix.prompt_defaults]
@@ -138,7 +139,7 @@ ComfyUI.checkpoint = "xl-ill/ntrMIXIllustriousXL_xiii.safetensors"
 
 [models."ntrmix-40"]
 name = "ntrmix-40"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "NTRMix v4.0. Illustrious-based; for fanart. Use tags."
 
 [models."ntrmix-40".prompt_defaults]
@@ -150,7 +151,7 @@ ComfyUI.checkpoint = "xl-ill/ntrMIXIllustriousXL_v40.safetensors"
 
 [models.monody]
 name = "monody"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "Monody Illustrious. For cute fanart. Use tags."
 
 [models.monody.prompt_defaults]
@@ -162,7 +163,7 @@ ComfyUI.checkpoint = "xl-ill/monodyIllustrious_a1.safetensors"
 
 [models."pasanctuary-1.0"]
 name = "pasanctuary-1.0"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "PASanctuary SDXL 1.0. For fanart. Use tags."
 
 [models."pasanctuary-1.0".prompt_defaults]
@@ -174,7 +175,7 @@ ComfyUI.checkpoint = "xl-ill/pasanctuarySDXL_v10.safetensors"
 
 [models."pasanctuary-2.0"]
 name = "pasanctuary-2.0"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "PASanctuary SDXL 2.0. For fanart. Use tags."
 
 [models."pasanctuary-2.0".prompt_defaults]
@@ -186,7 +187,7 @@ ComfyUI.checkpoint = "xl-ill/pasanctuarySDXL_v20.safetensors"
 
 [models."pasanctuary-3.0"]
 name = "pasanctuary-3.0"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "PASanctuary SDXL 3.0. For fanart. Use tags."
 
 [models."pasanctuary-3.0".prompt_defaults]
@@ -198,7 +199,7 @@ ComfyUI.checkpoint = "xl-ill/pasanctuarySDXL_v30.safetensors"
 
 [models."pasanctuary-4.0"]
 name = "pasanctuary-4.0"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "PASanctuary SDXL 4.0. For fanart. Use tags."
 
 [models."pasanctuary-4.0".prompt_defaults]
@@ -210,7 +211,7 @@ ComfyUI.checkpoint = "xl-ill/pasanctuarySDXL_v40.safetensors"
 
 [models."pasanctuary-5.0"]
 name = "pasanctuary-5.0"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "PASanctuary SDXL 5.0. For fanart. Use tags."
 
 [models."pasanctuary-5.0".prompt_defaults]
@@ -222,7 +223,7 @@ ComfyUI.checkpoint = "xl-ill/pasanctuarySDXL_v50.safetensors"
 
 [models.illustriousxl]
 name = "illustriousxl"
-inherit = "sdxl"
+inherit = "illustrious"
 description = "Illustrious 1.0. For fanart. Use tags and English."
 
 [models.illustriousxl.prompt_defaults]
@@ -235,6 +236,7 @@ checkpoint = "xl-ill/Illustrious-XL-v1.0.safetensors"
 name = "rouwei"
 inherit = "sdxl"
 description = "Rouwei, an opinionated fanart model. Use tags."
+tags = ["booru"]
 
 [models.rouwei.prompt_defaults]
 positive_append = "newest, best quality, rouwei"
@@ -247,6 +249,7 @@ checkpoint = "xl-ill/rouwei_061Vpred.safetensors"
 name = "quillworks"
 inherit = "sdxl"
 description = "A multi-style fanart model. Try Ink Sketch Style, BrushWork, Anime, Cartoon, 3d cartoon, sketch, watercolor, realistic or digital art style"
+tags = ["booru"]
 
 [models.quillworks.backend.ComfyUI]
 checkpoint = "xl-ill/QuillworksIllustrious_QuillworksV15.safetensors"
