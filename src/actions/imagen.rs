@@ -859,6 +859,7 @@ async fn generate_comfyui(
         models::Checkpoint::Split { unet, clip, vae } => {
             let clip_type = match unet.split('/').next().unwrap() {
                 "qwen" => "qwen_image",
+                "chroma" => "chroma",
                 _ => bail!("Unknown CLIP type for checkpoint: {}", unet),
             };
             (

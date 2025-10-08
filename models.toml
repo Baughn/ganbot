@@ -55,6 +55,12 @@ resolutions = [
 ]
 two_stage = false
 
+[templates.flux]
+tags = ["english", "booru"]
+[templates.flux.backend.ComfyUI]
+vae = "ae.safetensors"
+clip = "t5xxl_fp16.safetensors"
+
 [models.oneobsession]
 name = "oneobsession"
 inherit = "noobai"
@@ -90,7 +96,7 @@ ComfyUI.checkpoint = "xl-ill/plantMilkModelSuite_walnut.safetensors"
 
 [models.chroma]
 name = "chroma"
-inherit = "sdxl"
+inherit = "flux"
 description = "Chroma. Use anime tags and English."
 tags = ["english", "booru", "recommended"]
 
@@ -98,8 +104,14 @@ tags = ["english", "booru", "recommended"]
 positive_prepend = "masterpiece"
 negative_prepend = "low quality, bad anatomy, extra digits, missing digits, extra limbs, missing limbs"
 
-[models.chroma.backend]
-ComfyUI.checkpoint = "chroma/chroma-unlocked-latest-detail-calibrated.safetensors"
+[models.chroma.backend.ComfyUI]
+unet = "chroma/chroma-unlocked-latest-detail-calibrated.safetensors"
+clip = "chroma/t5xxl_fp16.safetensors"
+cfg = 3.5
+sampler = "euler_ancestral"
+scheduler = "sgm_uniform"
+steps = 40
+resolution = [1280, 1280]
 
 [models.hassaku]
 name = "hassaku"
