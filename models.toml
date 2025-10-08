@@ -14,7 +14,6 @@ animavivid = "animavividxl"
 [templates.sdxl]
 name = "sdxl"
 description = "Default SDXL settings"
-tags = ["booru"]
 
 [templates.sdxl.backend.ComfyUI]
 cfg = 4.5
@@ -31,11 +30,13 @@ stage2_scheduler = "beta"
 [templates.illustrious]
 inherit = "sdxl"
 description = "Illustrious-based settings"
+tags = ["booru", "fanart"]
 [templates.illustrious.prompt_defaults]
 negative_append = "bored, 3d, bad quality, worst quality, lowres, jpeg artifacts, bad anatomy, bad hands, multiple views, signature, watermark, censored, ugly, messy"
 
 [templates.noobai]
 inherit = "sdxl"
+tags = ["booru", "fanart"]
 [templates.noobai.backend.ComfyUI]
 cfg = 4.5
 sampler = "er_sde"
@@ -57,12 +58,13 @@ two_stage = false
 [models.oneobsession]
 name = "oneobsession"
 inherit = "noobai"
+tags = ["booru", "fanart", "recommended"]
 backend.ComfyUI.checkpoint = "xl-noob/oneObsession_v16Noobai.safetensors"
 
 [models.qwen_image_fp8]
 name = "qwen_image_fp8"
 description = "Qwen-Image. A general-purpose model; use English, preferably."
-tags = ["english", "booru"]
+tags = ["english", "booru", "recommended"]
 [models.qwen_image_fp8.backend.ComfyUI]
 unet = "qwen/qwen_image_fp8_e4m3fn.safetensors"
 clip = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
@@ -77,6 +79,7 @@ resolution = [1280, 1280]
 name = "walnut"
 inherit = "illustrious"
 description = "PlantMilkTeaWalnut. A fanart model; use tags!"
+tags = ["fanart", "booru", "recommended"]
 
 [models.walnut.backend]
 ComfyUI.checkpoint = "xl-ill/plantMilkModelSuite_walnut.safetensors"
@@ -89,6 +92,7 @@ ComfyUI.checkpoint = "xl-ill/plantMilkModelSuite_walnut.safetensors"
 name = "chroma"
 inherit = "sdxl"
 description = "Chroma. Use anime tags and English."
+tags = ["english", "booru", "recommended"]
 
 [models.chroma.prompt_defaults]
 positive_prepend = "masterpiece"

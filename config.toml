@@ -17,3 +17,17 @@ dream_model = "openrouter/sonoma-sky-alpha"
 ssh_hostname = "direct.brage.info"
 ssh_directory = "/home/svein/web/GAN/"
 base_url = "https://brage.info/GAN/"
+
+[webserver]
+bind_address = "127.0.0.1"
+port = 8080
+
+[model_gallery]
+prompts = [
+  "1girl, portrait, outdoors, scenery, mountainous horizon",
+  "1girl, 1boy, sitting, side-by-side, hiking clothes, ruins, city",
+  "portrait of a woman",
+  "fantasy landscape with mountains and lake",
+  "abstract geometric art",
+  "cyberpunk city at night",
+]

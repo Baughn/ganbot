@@ -54,3 +54,9 @@ comfyui-api = { path = "crates/comfyui-api" }
 notify = "6.1"
 rvcr = "0.2.1"
 reqwest-middleware = "0.2.5"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+askama = { version = "0.12", features = ["with-axum"] }
+pulldown-cmark = "0.12"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }

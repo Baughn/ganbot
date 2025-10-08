@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <rect width="400" height="400" fill="#2c3e50"/>
+  <text x="200" y="180" font-family="Arial, sans-serif" font-size="20" fill="#95a5a6" text-anchor="middle">
+    Generating...
+  </text>
+  <circle cx="200" cy="240" r="30" stroke="#95a5a6" stroke-width="4" fill="none">
+    <animate attributeName="stroke-dasharray" values="0 200;150 50;0 200" dur="2s" repeatCount="indefinite"/>
+    <animateTransform attributeName="transform" type="rotate" from="0 200 240" to="360 200 240" dur="2s" repeatCount="indefinite"/>
+  </circle>
+</svg>

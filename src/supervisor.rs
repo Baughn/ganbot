@@ -23,12 +23,13 @@ use tracing::{error, info, instrument};
 
 use crate::config::{
     Config,
-    global::{DiscordConfig, ImageHostConfig, IrcConfig, OpenrouterConfig},
+    global::{DiscordConfig, ImageHostConfig, IrcConfig, OpenrouterConfig, WebServerConfig},
     models::{ModelsConfig, load_models_config},
 };
 use crate::network::discord::DiscordActor;
 use crate::network::irc::IrcActor;
 use crate::network::openrouter::OpenRouter;
+use crate::network::webserver::WebServer;
 use crate::persistence::{images::GalleryRegistry, user::UserManager};
 
 type ConfigHash = u64;
@@ -73,6 +74,12 @@ enum SomeActor {
     Irc((IrcConfig, ActorRef<IrcActor>)),
     OpenRouter((OpenrouterConfig, ActorRef<OpenRouter>)),
     Discord((DiscordConfig, ActorRef<DiscordActor>)),
+    WebServer {
+        webserver_config: WebServerConfig,
+        gallery_config: crate::config::global::ModelGalleryConfig,
+        redis: redis::aio::ConnectionManager,
+        actor_ref: ActorRef<WebServer>,
+    },
 }
 
 struct Supervised {
@@ -279,6 +286,38 @@ impl Supervisor {
                 },
             );
         }
+
+        if let Some(webserver_config) = &self.config.webserver {
+            let h = hash(webserver_config);
+            if !running.contains(&h) {
+                let webserver_actor = WebServer::spawn_link(
+                    &self_ref,
+                    (
+                        webserver_config.clone(),
+                        self.config.model_gallery.clone(),
+                        self.redis_connection.clone(),
+                    ),
+                )
+                .await;
+                self.actors.insert(
+                    h,
+                    Supervised {
+                        restart_info: RestartInfo {
+                            failure_count: 0,
+                            last_failure: now,
+                            first_failure: now,
+                            sleep: Duration::from_secs(0),
+                        },
+                        actor: SomeActor::WebServer {
+                            webserver_config: webserver_config.clone(),
+                            gallery_config: self.config.model_gallery.clone(),
+                            redis: self.redis_connection.clone(),
+                            actor_ref: webserver_actor,
+                        },
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -479,6 +518,10 @@ impl SomeActor {
                 let _ = reference.stop_gracefully().await;
                 reference.wait_for_shutdown().await;
             }
+            Self::WebServer { actor_ref, .. } => {
+                let _ = actor_ref.stop_gracefully().await;
+                actor_ref.wait_for_shutdown().await;
+            }
         }
     }
 
@@ -487,6 +530,7 @@ impl SomeActor {
             Self::Irc((_, reference)) => reference.is_alive(),
             Self::OpenRouter((_, reference)) => reference.is_alive(),
             Self::Discord((_, reference)) => reference.is_alive(),
+            Self::WebServer { actor_ref, .. } => actor_ref.is_alive(),
         }
     }
 
@@ -509,6 +553,29 @@ impl SomeActor {
                 reference.kill();
                 let new_reference = DiscordActor::spawn_link(link, config.clone()).await;
                 *self = Self::Discord((config.clone(), new_reference))
+            }
+            Self::WebServer {
+                webserver_config,
+                gallery_config,
+                redis,
+                actor_ref,
+            } => {
+                actor_ref.kill();
+                let new_reference = WebServer::spawn_link(
+                    link,
+                    (
+                        webserver_config.clone(),
+                        gallery_config.clone(),
+                        redis.clone(),
+                    ),
+                )
+                .await;
+                *self = Self::WebServer {
+                    webserver_config: webserver_config.clone(),
+                    gallery_config: gallery_config.clone(),
+                    redis: redis.clone(),
+                    actor_ref: new_reference,
+                }
             }
         }
     }
