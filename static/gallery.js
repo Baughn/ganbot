@@ -90,10 +90,21 @@ document.addEventListener('DOMContentLoaded', () => {
     galleryLinks.forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            const img = link.querySelector('img');
-            const imgSrc = img.src;
-            const imgAlt = img.alt;
-            showModal(modal, imgSrc, imgAlt);
+
+            // Get the parent gallery cell to access all 4 images
+            const galleryCell = link.closest('.gallery-cell');
+            if (galleryCell) {
+                const urls = JSON.parse(galleryCell.dataset.urls || '[]');
+                const img = link.querySelector('img');
+                const imgAlt = img.alt;
+                showModal(modal, urls, imgAlt);
+            } else {
+                // Fallback for non-gallery cells
+                const img = link.querySelector('img');
+                const imgSrc = img.src;
+                const imgAlt = img.alt;
+                showModal(modal, [imgSrc], imgAlt);
+            }
         });
     });
 
@@ -112,13 +123,13 @@ document.addEventListener('DOMContentLoaded', () => {
         closeBtn.innerHTML = '&times;';
         closeBtn.setAttribute('aria-label', 'Close');
 
-        // Create image element
-        const img = document.createElement('img');
-        img.className = 'image-modal-img';
+        // Create image grid container
+        const imageGrid = document.createElement('div');
+        imageGrid.className = 'image-modal-grid';
 
         // Assemble modal
         container.appendChild(closeBtn);
-        container.appendChild(img);
+        container.appendChild(imageGrid);
         overlay.appendChild(container);
         document.body.appendChild(overlay);
 
@@ -136,12 +147,22 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        return { overlay, img };
+        return { overlay, imageGrid };
     }
 
-    function showModal(modal, imgSrc, imgAlt) {
-        modal.img.src = imgSrc;
-        modal.img.alt = imgAlt;
+    function showModal(modal, imageUrls, imgAlt) {
+        // Clear existing images
+        modal.imageGrid.innerHTML = '';
+
+        // Add all images to the grid
+        imageUrls.forEach((url, index) => {
+            const img = document.createElement('img');
+            img.className = 'image-modal-img';
+            img.src = url;
+            img.alt = `${imgAlt} - ${index + 1}`;
+            modal.imageGrid.appendChild(img);
+        });
+
         modal.overlay.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
@@ -149,5 +170,40 @@ document.addEventListener('DOMContentLoaded', () => {
     function hideModal(overlay) {
         overlay.classList.remove('active');
         document.body.style.overflow = '';
+    }
+
+    // Image cycling functionality for gallery cells
+    const galleryCells = document.querySelectorAll('.gallery-cell');
+
+    if (galleryCells.length > 0) {
+        // Update image cycling every 250ms for smooth transitions
+        setInterval(() => {
+            const currentTime = Date.now();
+            // Convert to quarter-seconds (250ms units)
+            const quarterSeconds = Math.floor(currentTime / 250);
+
+            galleryCells.forEach(cell => {
+                const offset = parseInt(cell.dataset.cycleOffset) || 0;
+                const urls = JSON.parse(cell.dataset.urls || '[]');
+
+                if (urls.length === 4) {
+                    // Calculate which image to show: (time + offset) / 40 % 4
+                    // 40 quarter-seconds = 10 seconds = 0.1Hz period
+                    const imageIndex = Math.floor((quarterSeconds + offset) / 40) % 4;
+
+                    // Update visibility of links using opacity and pointer-events
+                    const links = cell.querySelectorAll('.gallery-link');
+                    links.forEach((link, idx) => {
+                        if (idx === imageIndex) {
+                            link.style.opacity = '1';
+                            link.style.pointerEvents = 'auto';
+                        } else {
+                            link.style.opacity = '0';
+                            link.style.pointerEvents = 'none';
+                        }
+                    });
+                }
+            });
+        }, 250);
     }
 });

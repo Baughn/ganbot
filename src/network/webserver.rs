@@ -488,27 +488,10 @@ async fn model_gallery_handler(
 
         for prompt in &state.gallery_config.prompts {
             // Build a Generate struct and apply model defaults
-            let mut generate = Generate {
-                raw_prompt: prompt.clone(),
-                prompt: prompt.clone(),
-                negative_prompt: None,
-                num_images: Some(1),
-                aspect: None,
-                width: None,
-                height: None,
-                model: Some(model_name.to_string()),
-                seed: None,
-                steps: None,
-                references: References {
-                    img2img: None,
-                    img2img_strength: None,
-                    context: Vec::new(),
-                },
-                alias: None,
-            };
+            let mut generate = build_gallery_generate(prompt, model_name);
             crate::actions::imagen::apply_model_defaults(&mut generate, model);
 
-            let image_url = get_gallery_image(
+            let image_urls = get_gallery_image(
                 &mut state.redis,
                 model_name,
                 model,
@@ -517,10 +500,35 @@ async fn model_gallery_handler(
             )
             .await;
 
-            table_rows.push_str(&format!(
-                r#"<td><a href="{0}" class="gallery-link"><img src="{0}" alt="{1} - {2}" class="gallery-img" /></a></td>"#,
-                image_url, model_name, prompt
-            ));
+            // Generate a deterministic but varied cycle offset (0-39, representing 0-9.75s in 0.25s increments)
+            // Based on hash of model+prompt to ensure different cells don't sync
+            let offset_seed = format!("{}{}", model_name, prompt);
+            let offset = offset_seed.bytes().map(|b| b as u32).sum::<u32>() % 40;
+
+            // Serialize URLs as JSON for data attribute
+            let urls_json = serde_json::to_string(&image_urls).unwrap_or_else(|_| "[]".to_string());
+            let urls_json_escaped = urls_json.replace('"', "&quot;");
+
+            // Build HTML with 4 images, first visible, rest hidden
+            let mut cell_html = format!(
+                r#"<td><div class="gallery-cell" data-urls="{}" data-cycle-offset="{}">"#,
+                urls_json_escaped, offset
+            );
+
+            for (index, url) in image_urls.iter().enumerate() {
+                let (opacity, pointer_events) = if index == 0 {
+                    ("1", "auto")
+                } else {
+                    ("0", "none")
+                };
+                cell_html.push_str(&format!(
+                    r#"<a href="{}" class="gallery-link" style="opacity: {}; pointer-events: {};"><img src="{}" alt="{} - {}" class="gallery-img" data-index="{}" /></a>"#,
+                    url, opacity, pointer_events, url, model_name, prompt, index
+                ));
+            }
+
+            cell_html.push_str("</div></td>");
+            table_rows.push_str(&cell_html);
         }
 
         table_rows.push_str("</tr>");
@@ -605,6 +613,28 @@ async fn static_url(filename: &str) -> String {
     }
 }
 
+/// Build a Generate struct for gallery images with canonical settings
+fn build_gallery_generate(prompt: &str, model_name: &str) -> Generate {
+    Generate {
+        raw_prompt: prompt.to_string(),
+        prompt: prompt.to_string(),
+        negative_prompt: Some("nsfw".to_string()),
+        num_images: Some(4),
+        aspect: None,
+        width: None,
+        height: None,
+        model: Some(model_name.to_string()),
+        seed: None,
+        steps: None,
+        references: References {
+            img2img: None,
+            img2img_strength: None,
+            context: Vec::new(),
+        },
+        alias: None,
+    }
+}
+
 /// Generate a stable cache key for a model+prompt combination
 fn gallery_cache_key(model_name: &str, model: &Model, generate: &Generate) -> String {
     let mut hasher = Sha256::new();
@@ -625,14 +655,14 @@ fn gallery_cache_key(model_name: &str, model: &Model, generate: &Generate) -> St
     format!("gallery:cache:{}:{:x}", model_name, hash)
 }
 
-/// Get cached gallery image URL, or return placeholder
+/// Get cached gallery image URLs, or return placeholders
 async fn get_gallery_image(
     redis: &mut ConnectionManager,
     model_name: &str,
     model: &Model,
     generate: &Generate,
     image_host_base_url: &str,
-) -> String {
+) -> Vec<String> {
     let cache_key = gallery_cache_key(model_name, model, generate);
 
     match redis::cmd("GET")
@@ -640,35 +670,49 @@ async fn get_gallery_image(
         .query_async::<String>(redis)
         .await
     {
-        Ok(uuid) => {
-            trace!("Gallery cache hit: {} -> {}", cache_key, uuid);
-            format!("{}/{}.jpg", image_host_base_url.trim_end_matches('/'), uuid)
-        }
+        Ok(json_str) => match serde_json::from_str::<Vec<String>>(&json_str) {
+            Ok(uuids) => {
+                trace!("Gallery cache hit: {} -> {:?}", cache_key, uuids);
+                uuids
+                    .into_iter()
+                    .map(|uuid| {
+                        format!("{}/{}.jpg", image_host_base_url.trim_end_matches('/'), uuid)
+                    })
+                    .collect()
+            }
+            Err(_) => {
+                debug!("Gallery cache invalid JSON: {}", cache_key);
+                vec![PLACEHOLDER_URL.to_string(); 4]
+            }
+        },
         Err(_) => {
-            debug!("Gallery cache miss: {}", cache_key);
-            PLACEHOLDER_URL.to_string()
+            trace!("Gallery cache miss: {}", cache_key);
+            vec![PLACEHOLDER_URL.to_string(); 4]
         }
     }
 }
 
-/// Store gallery image UUID in cache
+/// Store gallery image UUIDs in cache
 async fn set_gallery_image(
     redis: &mut ConnectionManager,
     model_name: &str,
     model: &Model,
     generate: &Generate,
-    image_uuid: &str,
+    image_uuids: &[String],
 ) -> Result<()> {
     let cache_key = gallery_cache_key(model_name, model, generate);
 
+    let uuids_json =
+        serde_json::to_string(image_uuids).context("Failed to serialize image UUIDs")?;
+
     redis::cmd("SET")
         .arg(&cache_key)
-        .arg(image_uuid)
+        .arg(uuids_json)
         .query_async::<()>(redis)
         .await
         .context("Failed to set gallery cache")?;
 
-    info!("Cached gallery image: {} -> {}", cache_key, image_uuid);
+    info!("Cached gallery images: {} -> {:?}", cache_key, image_uuids);
     Ok(())
 }
 
@@ -723,24 +767,7 @@ async fn pre_generate_gallery_task(
     for (model_name, model) in &models {
         for prompt in &gallery_config.prompts {
             // Build Generate struct and apply model defaults
-            let mut generate = Generate {
-                raw_prompt: prompt.clone(),
-                prompt: prompt.clone(),
-                negative_prompt: None,
-                num_images: Some(1),
-                aspect: None,
-                width: None,
-                height: None,
-                model: Some(model_name.to_string()),
-                seed: None,
-                steps: None,
-                references: References {
-                    img2img: None,
-                    img2img_strength: None,
-                    context: Vec::new(),
-                },
-                alias: None,
-            };
+            let mut generate = build_gallery_generate(prompt, model_name);
             crate::actions::imagen::apply_model_defaults(&mut generate, model);
 
             let cache_key = gallery_cache_key(model_name, model, &generate);
@@ -809,49 +836,74 @@ async fn pre_generate_gallery_task(
             }
         };
 
-        // Upload the image
-        if result.images.is_empty() {
+        // Upload all 4 images
+        if result.images.len() < 4 {
             error!(
-                "No images generated for {} / {}",
-                model_name, generate_request.raw_prompt
+                "Expected 4 images but got {} for {} / {}",
+                result.images.len(),
+                model_name,
+                generate_request.raw_prompt
             );
             continue;
         }
 
-        let image = result.images[0].clone();
         let backend_str = result.backend.as_str().to_string();
-        let image_url = match upload_image_with_generation(
-            image,
-            result.workflow,
-            Some(backend_str),
-            Some(generate_request.clone()),
-        )
-        .await
-        {
-            Ok(url) => url,
-            Err(e) => {
-                error!("Failed to upload gallery image: {:#}", e);
-                continue;
+        let mut uuids = Vec::new();
+
+        for (idx, image) in result.images.iter().take(4).enumerate() {
+            let image_url = match upload_image_with_generation(
+                image.clone(),
+                result.workflow.clone(),
+                Some(backend_str.clone()),
+                Some(generate_request.clone()),
+            )
+            .await
+            {
+                Ok(url) => url,
+                Err(e) => {
+                    error!(
+                        "Failed to upload gallery image {}/4 for {} / {}: {:#}",
+                        idx + 1,
+                        model_name,
+                        generate_request.raw_prompt,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            // Extract UUID from URL
+            let uuid = image_url
+                .trim_start_matches(&image_host_base_url)
+                .trim_start_matches('/')
+                .trim_end_matches(".jpg")
+                .to_string();
+
+            uuids.push(uuid);
+        }
+
+        // Only cache if we successfully uploaded all 4 images
+        if uuids.len() == 4 {
+            // Store in cache
+            if let Err(e) = set_gallery_image(
+                &mut redis,
+                model_name,
+                &model_for_cache,
+                generate_request,
+                &uuids,
+            )
+            .await
+            {
+                error!("Failed to cache gallery images: {:#}", e);
             }
-        };
-
-        // Extract UUID from URL
-        let uuid = image_url
-            .trim_start_matches(&image_host_base_url)
-            .trim_start_matches('/')
-            .trim_end_matches(".jpg");
-
-        // Store in cache
-        if let Err(e) = set_gallery_image(
-            &mut redis,
-            model_name,
-            &model_for_cache,
-            generate_request,
-            uuid,
-        )
-        .await
-        {
-            error!("Failed to cache gallery image: {:#}", e);
+        } else {
+            error!(
+                "Only uploaded {}/4 images for {} / {}, skipping cache",
+                uuids.len(),
+                model_name,
+                generate_request.raw_prompt
+            );
+            continue;
         }
 
         info!("Gallery: Generated {}/{} successfully", progress, total);
