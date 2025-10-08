@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tracing::{debug, info, trace};
 
 /// Public API structs - guaranteed to have all required fields populated
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelsConfig {
     pub default: String,
     pub default_english: String,
@@ -16,7 +16,7 @@ pub struct ModelsConfig {
     pub models: HashMap<String, Model>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Model {
     pub name: String,
     pub description: Option<String>,
@@ -25,7 +25,7 @@ pub struct Model {
     pub prompt_defaults: PromptDefaults,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PromptDefaults {
     pub positive_prepend: Option<String>,
     pub negative_prepend: Option<String>,
@@ -35,7 +35,7 @@ pub struct PromptDefaults {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Backend {
     NanoBanana,
     ComfyUI {

@@ -290,7 +290,7 @@ impl Supervisor {
         }
 
         if let Some(webserver_config) = &self.config.webserver {
-            let h = hash(webserver_config);
+            let h = hash((webserver_config, &self.config.model_gallery));
             if !running.contains(&h) {
                 let webserver_actor = WebServer::spawn_link(
                     &self_ref,
@@ -394,28 +394,35 @@ impl Message<ReloadConfig> for Supervisor {
         let new_config = crate::config::load().context("while reloading configuration")?;
         let config_changed = new_config != self.config;
 
-        if config_changed {
-            info!("Configuration changed, applying new settings");
-            self.config = new_config;
-            // Apply the new configuration.
-            let actor_ref = ctx.actor_ref();
-            self.apply_config(&actor_ref).await;
-        } else {
-            info!("Configuration unchanged, no action taken");
-        }
-
         // Always attempt to reload models config regardless of main config changes
-        match load_models_config() {
+        let models_config_changed = match load_models_config() {
             Ok(new_models_config) => {
-                info!("Successfully reloaded models configuration");
+                let changed = new_models_config != self.models_config;
+                if changed {
+                    info!("Models configuration changed");
+                }
                 self.models_config = new_models_config;
+                changed
             }
             Err(e) => {
                 error!(
                     "Failed to reload models configuration, keeping old config: {:#}",
                     e
                 );
+                false
             }
+        };
+
+        if config_changed || models_config_changed {
+            if config_changed {
+                info!("Configuration changed, applying new settings");
+                self.config = new_config;
+            }
+            // Apply the new configuration (restarts affected actors).
+            let actor_ref = ctx.actor_ref();
+            self.apply_config(&actor_ref).await;
+        } else {
+            info!("Configuration unchanged, no action taken");
         }
 
         Ok(())
