@@ -25,9 +25,10 @@ port = 8485
 [model_gallery]
 prompts = [
   "1girl, portrait, outdoors, scenery, mountainous horizon",
-  "1girl, 1boy, sitting, side-by-side, hiking clothes, ruins, city",
+  "1girl, 1boy, hinamori amu, sitting, side-by-side, hiking clothes, ruins, city, shugo chara!",
   "portrait of a woman",
   "fantasy landscape with mountains and lake",
   "abstract geometric art",
   "cyberpunk city at night",
+  "anime, detailed realistic close up of a strawberry shaped like a kitten, sitting, natural light",
 ]

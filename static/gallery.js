@@ -3,12 +3,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const filterButtons = document.querySelectorAll('.tag-filter');
     const modelRows = document.querySelectorAll('tbody tr[data-tags]');
 
-    // Apply initial filter based on active button
-    const activeButton = document.querySelector('.tag-filter.active');
-    if (activeButton) {
-        applyFilter(activeButton.dataset.tag);
+    // Get tag from URL parameter
+    function getTagFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('tag');
     }
 
+    // Update URL with selected tag
+    function updateURL(tag) {
+        const url = new URL(window.location);
+        url.searchParams.set('tag', tag);
+        window.history.pushState({}, '', url);
+    }
+
+    // Apply filter based on selected tag
     function applyFilter(selectedTag) {
         modelRows.forEach(row => {
             const rowTags = row.dataset.tags.split(',');
@@ -21,17 +29,58 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Set active button and apply filter
+    function setActiveTag(tag) {
+        // Update active button
+        filterButtons.forEach(btn => {
+            if (btn.dataset.tag === tag) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+
+        // Apply filter
+        applyFilter(tag);
+    }
+
+    // Initialize: read tag from URL or use active button
+    const urlTag = getTagFromURL();
+    if (urlTag) {
+        // URL has a tag parameter, use it
+        setActiveTag(urlTag);
+    } else {
+        // No URL parameter, use the server-set active button and update URL to match
+        const activeButton = document.querySelector('.tag-filter.active');
+        if (activeButton) {
+            const serverDefaultTag = activeButton.dataset.tag;
+            applyFilter(serverDefaultTag);
+            // Update URL to reflect the server's default choice
+            const url = new URL(window.location);
+            url.searchParams.set('tag', serverDefaultTag);
+            window.history.replaceState({}, '', url);
+        }
+    }
+
+    // Handle filter button clicks
     filterButtons.forEach(button => {
         button.addEventListener('click', () => {
             const selectedTag = button.dataset.tag;
 
-            // Update active button
-            filterButtons.forEach(btn => btn.classList.remove('active'));
-            button.classList.add('active');
+            // Update active state and filter
+            setActiveTag(selectedTag);
 
-            // Filter rows
-            applyFilter(selectedTag);
+            // Update URL
+            updateURL(selectedTag);
         });
+    });
+
+    // Handle browser back/forward navigation
+    window.addEventListener('popstate', () => {
+        const urlTag = getTagFromURL();
+        if (urlTag) {
+            setActiveTag(urlTag);
+        }
     });
 
     // Image zoom modal functionality

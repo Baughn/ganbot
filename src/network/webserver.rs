@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::get,
@@ -9,17 +9,19 @@ use axum::{
 use kameo::{Actor, actor::ActorRef, registry::ACTOR_REGISTRY};
 use redis::aio::ConnectionManager;
 use sha2::{Digest, Sha256};
+use socket2::{Domain, Socket, Type};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use crate::{
     actions::imagen::{GenerateImagesRequest, submit_generation},
     config::{
         global::{ModelGalleryConfig, WebServerConfig},
-        models::Backend,
+        models::{Backend, Model},
     },
     messages::imagen::{Generate, References},
     persistence::images::upload_image_with_generation,
@@ -31,6 +33,8 @@ pub struct WebServer {
     config: WebServerConfig,
     gallery_config: ModelGalleryConfig,
     redis: ConnectionManager,
+    shutdown_token: CancellationToken,
+    pregen_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Shared application state
@@ -40,16 +44,25 @@ struct AppState {
     redis: ConnectionManager,
 }
 
+/// Query parameters for gallery filtering
+#[derive(serde::Deserialize)]
+struct GalleryQuery {
+    tag: Option<String>,
+}
+
 impl WebServer {
     pub fn new(
         config: WebServerConfig,
         gallery_config: ModelGalleryConfig,
         redis: ConnectionManager,
+        shutdown_token: CancellationToken,
     ) -> Self {
         Self {
             config,
             gallery_config,
             redis,
+            shutdown_token,
+            pregen_handle: None,
         }
     }
 
@@ -80,10 +93,16 @@ impl WebServer {
             .nest_service("/static", static_service)
             .with_state(state);
 
+        let shutdown_token = self.shutdown_token.clone();
         axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown_token.cancelled().await;
+                info!("Web server shutdown signal received");
+            })
             .await
             .context("Web server error")?;
 
+        info!("Web server stopped");
         Ok(())
     }
 }
@@ -101,36 +120,53 @@ impl Actor for WebServer {
 
         info!("Starting web server on {}", socket_addr);
 
-        let listener = TcpListener::bind(socket_addr)
-            .await
-            .context("Failed to bind TCP listener")?;
+        // Create socket with SO_REUSEADDR
+        let domain = if socket_addr.is_ipv4() {
+            Domain::IPV4
+        } else {
+            Domain::IPV6
+        };
+        let socket = Socket::new(domain, Type::STREAM, None).context("Failed to create socket")?;
+        socket
+            .set_reuse_address(true)
+            .context("Failed to set SO_REUSEADDR")?;
+        socket
+            .bind(&socket_addr.into())
+            .context("Failed to bind socket")?;
+        socket.listen(1024).context("Failed to listen on socket")?;
+        socket
+            .set_nonblocking(true)
+            .context("Failed to set socket to non-blocking")?;
+
+        let listener = TcpListener::from_std(socket.into())
+            .context("Failed to create TcpListener from socket")?;
+
+        // Create cancellation token for graceful shutdown
+        let shutdown_token = CancellationToken::new();
 
         // Clone values for the spawned task
         let server_config = config.clone();
         let server_gallery_config = gallery_config.clone();
         let server_redis = redis.clone();
+        let server_shutdown_token = shutdown_token.clone();
 
         // Clone actor ref to stop it on error
         let actor_ref_clone = actor_ref.clone();
 
-        // Spawn the server in a separate task and get the handle
-        let server_handle = tokio::spawn(async move {
-            let server = WebServer::new(server_config, server_gallery_config, server_redis);
-            server.run(listener).await
-        });
-
-        // Spawn a monitoring task that watches for panics or errors
+        // Spawn the server in a separate task and monitor it
         tokio::spawn(async move {
-            match server_handle.await {
-                Ok(Ok(())) => {
+            let server = WebServer::new(
+                server_config,
+                server_gallery_config,
+                server_redis,
+                server_shutdown_token,
+            );
+            match server.run(listener).await {
+                Ok(()) => {
                     info!("Web server exited cleanly");
                 }
-                Ok(Err(e)) => {
-                    error!("Web server failed: {:#}", e);
-                    let _ = actor_ref_clone.stop_gracefully().await;
-                }
                 Err(e) => {
-                    error!("Web server panicked: {:#}", e);
+                    error!("Web server failed: {:#}", e);
                     let _ = actor_ref_clone.stop_gracefully().await;
                 }
             }
@@ -139,7 +175,7 @@ impl Actor for WebServer {
         // Spawn background task to pre-generate missing gallery images
         let pregen_gallery_config = gallery_config.clone();
         let pregen_redis = redis.clone();
-        tokio::spawn(async move {
+        let pregen_handle = tokio::spawn(async move {
             // Get image host config
             let image_host_config = Supervisor::image_host().await;
             pre_generate_gallery_task(
@@ -150,12 +186,34 @@ impl Actor for WebServer {
             .await;
         });
 
-        // Return an instance for the actor
+        // Return an instance for the actor with shutdown token and pregen handle
         Ok(Self {
             config,
             gallery_config,
             redis,
+            shutdown_token,
+            pregen_handle: Some(pregen_handle),
         })
+    }
+
+    async fn on_stop(
+        &mut self,
+        _actor_ref: kameo::actor::WeakActorRef<Self>,
+        reason: kameo::error::ActorStopReason,
+    ) -> Result<(), Self::Error> {
+        info!("WebServer stopping: {:?}", reason);
+
+        // Cancel the shutdown token to gracefully stop the axum server
+        self.shutdown_token.cancel();
+
+        // Abort the pre-generation task if it's still running
+        if let Some(handle) = self.pregen_handle.take() {
+            handle.abort();
+            info!("Aborted gallery pre-generation task");
+        }
+
+        info!("WebServer cleanup complete");
+        Ok(())
     }
 }
 
@@ -247,7 +305,10 @@ async fn help_handler(Path(path): Path<String>) -> Response {
 }
 
 /// Handler for model gallery page
-async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoResponse {
+async fn model_gallery_handler(
+    Query(query): Query<GalleryQuery>,
+    State(mut state): State<AppState>,
+) -> impl IntoResponse {
     // Get models from supervisor
     let supervisor = match ACTOR_REGISTRY
         .lock()
@@ -281,6 +342,20 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
         .collect();
 
     models.sort_by_key(|(name, _)| *name);
+
+    // Build reverse alias mapping: model_name -> Vec<alias>
+    let mut model_aliases: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (alias, model_name) in &models_config.aliases {
+        model_aliases
+            .entry(model_name.clone())
+            .or_default()
+            .push(alias.clone());
+    }
+    // Sort aliases for consistent display
+    for aliases in model_aliases.values_mut() {
+        aliases.sort();
+    }
 
     if models.is_empty() || state.gallery_config.prompts.is_empty() {
         let css_url = static_url("style.css").await;
@@ -345,11 +420,29 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
     }
 
     // Build tag filter buttons HTML
-    // Set "Recommended" as default if it exists, otherwise "All"
-    let default_tag = if tags.contains(&"recommended".to_string()) {
-        "recommended"
+    // Determine which tag should be active:
+    // 1. Use query parameter if provided and valid
+    // 2. Otherwise, default to "recommended" if it exists
+    // 3. Fall back to "all"
+    let default_tag = if let Some(ref query_tag) = query.tag {
+        // Validate that the tag exists in our tag list or is "all"
+        if query_tag == "all" || tags.contains(query_tag) {
+            query_tag.as_str()
+        } else {
+            // Invalid tag in query, fall back to default
+            if tags.contains(&"recommended".to_string()) {
+                "recommended"
+            } else {
+                "all"
+            }
+        }
     } else {
-        "all"
+        // No query parameter, use default
+        if tags.contains(&"recommended".to_string()) {
+            "recommended"
+        } else {
+            "all"
+        }
     };
 
     let all_active = if default_tag == "all" { " active" } else { "" };
@@ -380,7 +473,18 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
     for (model_name, model) in &models {
         let tags_attr = model.tags.join(",");
         table_rows.push_str(&format!(r#"<tr data-tags="{}">"#, tags_attr));
-        table_rows.push_str(&format!("<td class=\"model-label\">{}</td>", model_name));
+
+        // Build model label with aliases
+        let mut label_html = format!("<td class=\"model-label\">{}", model_name);
+        if let Some(aliases) = model_aliases.get(*model_name)
+            && !aliases.is_empty()
+        {
+            label_html.push_str("<div class=\"model-aliases\">");
+            label_html.push_str(&aliases.join(", "));
+            label_html.push_str("</div>");
+        }
+        label_html.push_str("</td>");
+        table_rows.push_str(&label_html);
 
         for prompt in &state.gallery_config.prompts {
             // Build a Generate struct and apply model defaults
@@ -407,6 +511,7 @@ async fn model_gallery_handler(State(mut state): State<AppState>) -> impl IntoRe
             let image_url = get_gallery_image(
                 &mut state.redis,
                 model_name,
+                model,
                 &generate,
                 &image_host_config.base_url,
             )
@@ -501,11 +606,21 @@ async fn static_url(filename: &str) -> String {
 }
 
 /// Generate a stable cache key for a model+prompt combination
-fn gallery_cache_key(model_name: &str, generate: &Generate) -> String {
+fn gallery_cache_key(model_name: &str, model: &Model, generate: &Generate) -> String {
     let mut hasher = Sha256::new();
+
+    // Include the model configuration (backend and prompt_defaults)
+    // These are the fields that affect image generation
+    let model_config_json = serde_json::json!({
+        "backend": model.backend,
+        "prompt_defaults": model.prompt_defaults,
+    });
+    hasher.update(model_config_json.to_string().as_bytes());
+
     // Serialize the entire Generate struct to ensure all parameters are included
-    let json = serde_json::to_string(generate).unwrap_or_default();
-    hasher.update(json.as_bytes());
+    let generate_json = serde_json::to_string(generate).unwrap_or_default();
+    hasher.update(generate_json.as_bytes());
+
     let hash = hasher.finalize();
     format!("gallery:cache:{}:{:x}", model_name, hash)
 }
@@ -514,10 +629,11 @@ fn gallery_cache_key(model_name: &str, generate: &Generate) -> String {
 async fn get_gallery_image(
     redis: &mut ConnectionManager,
     model_name: &str,
+    model: &Model,
     generate: &Generate,
     image_host_base_url: &str,
 ) -> String {
-    let cache_key = gallery_cache_key(model_name, generate);
+    let cache_key = gallery_cache_key(model_name, model, generate);
 
     match redis::cmd("GET")
         .arg(&cache_key)
@@ -525,7 +641,7 @@ async fn get_gallery_image(
         .await
     {
         Ok(uuid) => {
-            debug!("Gallery cache hit: {} -> {}", cache_key, uuid);
+            trace!("Gallery cache hit: {} -> {}", cache_key, uuid);
             format!("{}/{}.jpg", image_host_base_url.trim_end_matches('/'), uuid)
         }
         Err(_) => {
@@ -539,10 +655,11 @@ async fn get_gallery_image(
 async fn set_gallery_image(
     redis: &mut ConnectionManager,
     model_name: &str,
+    model: &Model,
     generate: &Generate,
     image_uuid: &str,
 ) -> Result<()> {
-    let cache_key = gallery_cache_key(model_name, generate);
+    let cache_key = gallery_cache_key(model_name, model, generate);
 
     redis::cmd("SET")
         .arg(&cache_key)
@@ -626,7 +743,7 @@ async fn pre_generate_gallery_task(
             };
             crate::actions::imagen::apply_model_defaults(&mut generate, model);
 
-            let cache_key = gallery_cache_key(model_name, &generate);
+            let cache_key = gallery_cache_key(model_name, model, &generate);
             match redis::cmd("EXISTS")
                 .arg(&cache_key)
                 .query_async::<u8>(&mut redis)
@@ -669,6 +786,9 @@ async fn pre_generate_gallery_task(
                 continue;
             }
         };
+
+        // Clone model for cache operations since it will be moved into the request
+        let model_for_cache = model.clone();
 
         // Generate the image
         let imagen_request = GenerateImagesRequest {
@@ -722,7 +842,15 @@ async fn pre_generate_gallery_task(
             .trim_end_matches(".jpg");
 
         // Store in cache
-        if let Err(e) = set_gallery_image(&mut redis, model_name, generate_request, uuid).await {
+        if let Err(e) = set_gallery_image(
+            &mut redis,
+            model_name,
+            &model_for_cache,
+            generate_request,
+            uuid,
+        )
+        .await
+        {
             error!("Failed to cache gallery image: {:#}", e);
         }
 
