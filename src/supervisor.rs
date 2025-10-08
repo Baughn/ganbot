@@ -148,7 +148,7 @@ impl Actor for Supervisor {
         Ok(supervisor)
     }
 
-    #[instrument(skip(self, actor_ref, reason))]
+    #[instrument(skip(self, actor_ref))]
     async fn on_link_died(
         &mut self,
         actor_ref: WeakActorRef<Self>,
@@ -159,6 +159,8 @@ impl Actor for Supervisor {
         let self_reference = actor_ref.upgrade().expect("Supervisor should not be dead");
         for actor in self.actors.values_mut() {
             if !actor.actor.is_alive() {
+                let ac = &actor.actor;
+                error!("Actor {ac} is dead; considering restart");
                 let timing = calculate_restart(&actor.restart_info);
                 match timing {
                     Err(e) => {
@@ -500,6 +502,17 @@ impl Supervisor {
             .await
             .expect("while getting models configuration")
             .0
+    }
+}
+
+impl std::fmt::Display for SomeActor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Irc((config, _)) => write!(f, "IRC (server: {})", config.server),
+            Self::OpenRouter(_) => write!(f, "OpenRouter"),
+            Self::Discord(_) => write!(f, "Discord"),
+            Self::WebServer { .. } => write!(f, "WebServer"),
+        }
     }
 }
 

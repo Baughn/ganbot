@@ -19,8 +19,8 @@ ssh_directory = "/home/svein/web/GAN/"
 base_url = "https://brage.info/GAN/"
 
 [webserver]
-bind_address = "127.0.0.1"
-port = 8080
+bind_address = "[::]"
+port = 8485
 
 [model_gallery]
 prompts = [
