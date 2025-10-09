@@ -1881,7 +1881,9 @@ impl DiscordActor {
         .style(ButtonStyle::Primary)
         .label("🔄 Retry");
 
-        CreateActionRow::Buttons(vec![delete_button, retry_button])
+        let help_button = CreateButton::new_link("https://ganbot.brage.info/").label("❓ Help");
+
+        CreateActionRow::Buttons(vec![delete_button, retry_button, help_button])
     }
 
     async fn handle_select_command(

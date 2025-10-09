@@ -12,7 +12,6 @@ use crate::actions;
 use crate::actions::broker::{ActionBroker, RegisterIrc};
 use crate::actions::{ActionId, ActionOrigin, ActionPayload, ActionResponse, SubmitAction};
 use crate::config::global::IrcConfig;
-use crate::help;
 use crate::persistence::user::{self, GetUserId, UserActor, UserManager};
 use crate::util::token_bucket::TokenBucket;
 
@@ -376,64 +375,6 @@ impl IrcActor {
         Ok(())
     }
 
-    /// Formats models help information for IRC display
-    fn format_models_for_irc(models_help: &help::ModelsHelp) -> String {
-        let mut output = Vec::new();
-
-        // Header
-        output.push("=== Available Models ===".to_string());
-        output.push(format!("Default: {}", models_help.default));
-
-        // Aliases section
-        if !models_help.aliases.is_empty() {
-            output.push("".to_string()); // Empty line
-            output.push("== Aliases ==".to_string());
-            for (alias, target) in &models_help.aliases {
-                output.push(format!("  {} -> {}", alias, target));
-            }
-        }
-
-        // Models section
-        if !models_help.models.is_empty() {
-            output.push("".to_string()); // Empty line
-            output.push("== Models ==".to_string());
-            for model in &models_help.models {
-                output.push(format!("• {}", model.name));
-
-                if let Some(ref desc) = model.description {
-                    output.push(format!("  Description: {}", desc));
-                }
-
-                match &model.backend_info {
-                    help::BackendInfo::NanoBanana => {
-                        output.push(
-                            "Backend:  NanoBanana (Gemini 2.5-flash-image-preview)".to_string(),
-                        );
-                    }
-                    help::BackendInfo::ComfyUI {
-                        checkpoint,
-                        sampler,
-                        steps,
-                        resolution,
-                        cfg,
-                        scheduler,
-                    } => {
-                        output.push("  Backend: Stable Diffusion".to_string());
-                        output.push(format!("  Checkpoint: {}", checkpoint));
-                        output.push(format!(
-                            "  Settings: {}x{}, {} steps, CFG {:.1}",
-                            resolution.0, resolution.1, steps, cfg
-                        ));
-                        output.push(format!("  Sampler: {} ({})", sampler, scheduler));
-                    }
-                }
-                output.push("".to_string()); // Empty line after each model
-            }
-        }
-
-        output.join("\n")
-    }
-
     async fn process_privmsg(
         &mut self,
         privmsg: PrivMsg,
@@ -671,7 +612,7 @@ impl Message<ProcessCommand> for ReplyActor {
             .unwrap_or("")
             .trim();
 
-        let mut reply_privately = false;
+        let reply_privately = false;
 
         let reply = match command {
             "ping" => Some("Pong!".to_string()),
@@ -864,16 +805,9 @@ impl Message<ProcessCommand> for ReplyActor {
                 }
             }
             "models" => {
-                // Fetch and format models configuration
-                match help::get_models_help().await {
-                    Ok(models_help) => {
-                        let formatted = IrcActor::format_models_for_irc(&models_help);
-                        reply_privately = true;
-                        Some(formatted)
-                    }
-                    Err(e) => Some(format!("Error fetching models: {e:#}")),
-                }
+                Some("Available models: https://ganbot.brage.info/gallery/models".to_string())
             }
+            "help" => Some("Help: https://ganbot.brage.info/".to_string()),
             x => {
                 info!("Unknown command: {}", x);
                 None
