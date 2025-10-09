@@ -29,6 +29,8 @@ impl Generate {
         let mut model = None;
         let mut seed = None;
         let mut steps = None;
+        let mut sampler = None;
+        let mut scheduler = None;
         let mut denoise = None;
         let mut alias = None;
 
@@ -97,6 +99,22 @@ impl Generate {
                         bail!("Option {} requires a value", token);
                     }
                     steps = Some(parse_u32(tokens[i], "steps")?);
+                    i += 1;
+                }
+                "--sampler" => {
+                    i += 1;
+                    if i >= tokens.len() {
+                        bail!("Option {} requires a value", token);
+                    }
+                    sampler = Some(tokens[i].to_string());
+                    i += 1;
+                }
+                "--scheduler" => {
+                    i += 1;
+                    if i >= tokens.len() {
+                        bail!("Option {} requires a value", token);
+                    }
+                    scheduler = Some(tokens[i].to_string());
                     i += 1;
                 }
                 "--denoise" => {
@@ -179,6 +197,8 @@ impl Generate {
                         "--model" => model = Some(value.to_string()),
                         "--seed" => seed = Some(parse_u64(value, "seed")?),
                         "--steps" => steps = Some(parse_u32(value, "steps")?),
+                        "--sampler" => sampler = Some(value.to_string()),
+                        "--scheduler" => scheduler = Some(value.to_string()),
                         "--denoise" => denoise = Some(parse_f32(value, "denoise")?),
                         "--alias" => alias = Some(value.to_string()),
                         _ => {
@@ -222,12 +242,14 @@ impl Generate {
             model,
             seed,
             steps,
+            sampler,
+            scheduler,
             references: References {
-                img2img: None,
                 img2img_strength: denoise,
-                context: Vec::new(),
+                ..Default::default()
             },
             alias,
+            ..Default::default()
         })
     }
 }
@@ -268,6 +290,14 @@ impl Display for Generate {
         if let Some(st) = self.steps {
             parts.push("-s".to_string());
             parts.push(st.to_string());
+        }
+        if let Some(s) = &self.sampler {
+            parts.push("--sampler".to_string());
+            parts.push(s.clone());
+        }
+        if let Some(sc) = &self.scheduler {
+            parts.push("--scheduler".to_string());
+            parts.push(sc.clone());
         }
         if let Some(d) = self.references.img2img_strength {
             parts.push("--denoise".to_string());

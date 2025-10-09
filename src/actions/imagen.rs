@@ -359,14 +359,21 @@ impl Message<GenerateImages> for ImagenActor {
                     .unwrap_or(model.prompt_defaults.count.unwrap_or(2))
                     .clamp(1, 6);
 
+                // Use user-provided sampler/scheduler if present, otherwise use model defaults
+                // Clone the options to avoid borrow checker issues when moving prompt
+                let user_sampler = prompt.sampler.clone();
+                let user_scheduler = prompt.scheduler.clone();
+                let selected_sampler = user_sampler.as_deref().unwrap_or(sampler.as_str());
+                let selected_scheduler = user_scheduler.as_deref().unwrap_or(scheduler.as_str());
+
                 let params = ComfyParams {
                     prompt,
                     model_name: &model.name,
                     count,
                     checkpoint,
                     cfg: *cfg,
-                    sampler: sampler.as_str(),
-                    scheduler: scheduler.as_str(),
+                    sampler: selected_sampler,
+                    scheduler: selected_scheduler,
                     steps: *steps,
                     resolution: *resolution,
                     resolutions: resolutions.as_ref(),
@@ -468,6 +475,8 @@ pub fn merge_prompt_settings(mut prompt: Generate, base: Generate) -> Generate {
         model: base_model,
         seed: base_seed,
         steps: base_steps,
+        sampler: base_sampler,
+        scheduler: base_scheduler,
         ..
     } = base;
 
@@ -501,6 +510,12 @@ pub fn merge_prompt_settings(mut prompt: Generate, base: Generate) -> Generate {
     }
     if prompt.steps.is_none() {
         prompt.steps = base_steps;
+    }
+    if prompt.sampler.is_none() {
+        prompt.sampler = base_sampler;
+    }
+    if prompt.scheduler.is_none() {
+        prompt.scheduler = base_scheduler;
     }
     if prompt.model.is_none() {
         prompt.model = base_model;
@@ -537,26 +552,13 @@ fn append_clause(existing: &str, addition: &str, default_separator: &str) -> Str
 #[cfg(test)]
 mod tests {
     use super::merge_prompt_settings;
-    use crate::messages::imagen::{Generate, References};
+    use crate::messages::imagen::Generate;
 
     fn generate_with_prompt(prompt: &str) -> Generate {
         Generate {
             raw_prompt: prompt.to_string(),
             prompt: prompt.to_string(),
-            negative_prompt: None,
-            num_images: None,
-            aspect: None,
-            width: None,
-            height: None,
-            model: None,
-            seed: None,
-            steps: None,
-            references: References {
-                img2img: None,
-                img2img_strength: None,
-                context: Vec::new(),
-            },
-            alias: None,
+            ..Default::default()
         }
     }
 

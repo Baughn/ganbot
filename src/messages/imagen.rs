@@ -27,6 +27,10 @@ pub struct Generate {
     pub seed: Option<u64>,
     /// Number of inference steps to use.
     pub steps: Option<u32>,
+    /// Optional sampler to use for generation.
+    pub sampler: Option<String>,
+    /// Optional scheduler to use for generation.
+    pub scheduler: Option<String>,
     /// References to images that can be used as starting points or for context.
     pub references: References,
     /// Optional alias name to load settings from.
@@ -34,7 +38,7 @@ pub struct Generate {
     pub alias: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct References {
     /// A starting-point image for img2img generation.
     #[serde(skip)]
@@ -58,9 +62,32 @@ impl fmt::Debug for Generate {
             .field("model", &self.model)
             .field("seed", &self.seed)
             .field("steps", &self.steps)
+            .field("sampler", &self.sampler)
+            .field("scheduler", &self.scheduler)
             .field("references", &self.references)
             .field("alias", &self.alias)
             .finish()
+    }
+}
+
+impl Default for Generate {
+    fn default() -> Self {
+        Self {
+            raw_prompt: String::new(),
+            prompt: String::new(),
+            negative_prompt: None,
+            num_images: None,
+            aspect: None,
+            width: None,
+            height: None,
+            model: None,
+            seed: None,
+            steps: None,
+            sampler: None,
+            scheduler: None,
+            references: References::default(),
+            alias: None,
+        }
     }
 }
 

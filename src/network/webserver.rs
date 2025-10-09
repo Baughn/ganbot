@@ -25,7 +25,7 @@ use crate::{
         global::{GalleryStyle, ModelGalleryConfig, WebServerConfig},
         models::{Backend, Model},
     },
-    messages::imagen::{Generate, References},
+    messages::imagen::Generate,
     persistence::images::upload_image_with_generation,
     supervisor::{GetModelsConfig, Supervisor},
     util::image_compression::compress_jpeg,
@@ -768,18 +768,8 @@ fn build_gallery_generate(prompt: &str, model_name: &str) -> Generate {
         prompt: prompt.to_string(),
         negative_prompt: Some("nsfw".to_string()),
         num_images: Some(4),
-        aspect: None,
-        width: None,
-        height: None,
         model: Some(model_name.to_string()),
-        seed: None,
-        steps: None,
-        references: References {
-            img2img: None,
-            img2img_strength: None,
-            context: Vec::new(),
-        },
-        alias: None,
+        ..Default::default()
     }
 }
 

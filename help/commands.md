@@ -26,6 +26,11 @@ Generate images with precise control over model and parameters.
 - `--alias <name>` - Load settings from a saved alias
 - `--no <terms>` - Negative prompt (everything after `--no` is excluded from the image)
 
+**Advanced Options:**
+
+- `--sampler <name>` - Sampler algorithm to use (e.g., `euler`, `dpmpp_2m`, `er_sde`)
+- `--scheduler <name>` - Scheduler to use (e.g., `normal`, `karras`, `beta`, `sgm_uniform`)
+
 **Option Shortcuts:**
 
 You can combine short options with their values:

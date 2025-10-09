@@ -217,20 +217,10 @@ impl Message<String> for DreamActor {
                 let base_generate = Generate {
                     raw_prompt: image_prompt.clone(),
                     prompt: image_prompt.clone(),
-                    negative_prompt: None,
                     num_images: Some(1),
                     aspect: Some(aspect),
-                    width: None,
-                    height: None,
                     model: Some(model_token.clone()),
-                    seed: None,
-                    steps: None,
-                    references: crate::messages::imagen::References {
-                        img2img: None,
-                        img2img_strength: None,
-                        context: Vec::new(),
-                    },
-                    alias: None,
+                    ..Default::default()
                 };
 
                 let mut generate = imagen::hydrate_prompt(base_generate, &user_actor)
