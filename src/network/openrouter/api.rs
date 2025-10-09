@@ -305,6 +305,10 @@ where
             .and_then(|choices| choices.get(0))
             .ok_or_else(|| anyhow!("OpenRouter structured response missing choices"))?;
 
+        if let Some(model) = choice.get("model").and_then(|m| m.as_str()) {
+            debug!(model = %model, "OpenRouter selected model for structured request");
+        }
+
         let message = choice
             .get("message")
             .ok_or_else(|| anyhow!("OpenRouter structured response missing message"))?;
@@ -618,6 +622,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn completion_roundtrip_works_with_urls() -> Result<()> {
         let config = crate::config::load()?;
         if config.openrouter.token.is_empty() {
@@ -661,6 +666,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn structured_roundtrip_returns_json() -> Result<()> {
         let config = crate::config::load()?;
         if config.openrouter.token.is_empty() {
@@ -717,6 +723,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn structured_roundtrip_with_image_input() -> Result<()> {
         let config = crate::config::load()?;
         if config.openrouter.token.is_empty() {

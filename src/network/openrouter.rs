@@ -252,6 +252,10 @@ impl Message<chat::Oneshot> for ConversationActor {
             .await
             .map_err(|err| anyhow!("OpenRouter oneshot request failed: {err:#}"))?;
 
+        if let Some(ref model) = response.model {
+            debug!(model = %model, "OpenRouter selected model");
+        }
+
         let text = response
             .text
             .ok_or_else(|| anyhow!("OpenRouter response missing text content"))?;
@@ -300,6 +304,10 @@ impl Message<NanoBanana> for ConversationActor {
             .ask(request)
             .await
             .map_err(|err| anyhow!("OpenRouter NanoBanana request failed: {err:#}"))?;
+
+        if let Some(ref model) = response.model {
+            debug!(model = %model, "OpenRouter selected model");
+        }
 
         let text = response
             .text
