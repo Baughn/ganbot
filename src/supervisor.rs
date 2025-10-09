@@ -364,10 +364,10 @@ fn start_config_watcher(actor_ref: ActorRef<Supervisor>) -> notify::Result<Recom
             }
 
             let now = Instant::now();
-            if let Some(previous) = last_reload {
-                if now.duration_since(previous) < Duration::from_millis(250) {
-                    continue;
-                }
+            if let Some(previous) = last_reload
+                && now.duration_since(previous) < Duration::from_millis(250)
+            {
+                continue;
             }
             last_reload = Some(now);
 
@@ -420,7 +420,7 @@ impl Message<ReloadConfig> for Supervisor {
             }
             // Apply the new configuration (restarts affected actors).
             let actor_ref = ctx.actor_ref();
-            self.apply_config(&actor_ref).await;
+            self.apply_config(actor_ref).await;
         } else {
             info!("Configuration unchanged, no action taken");
         }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::network::openrouter::structured::*;
 use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine as _;
-use image::{ImageEncoder, RgbImage};
+use image::RgbImage;
 use kameo::{Actor, actor::ActorRef, prelude::*};
 use reqwest_middleware::ClientWithMiddleware;
 use serde::de::DeserializeOwned;
@@ -56,14 +56,12 @@ impl Actor for OpenRouterApi {
 /// MIME types supported for encoded image uploads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMimeKind {
-    Png,
     Jpeg,
 }
 
 impl ImageMimeKind {
     fn as_str(&self) -> &'static str {
         match self {
-            ImageMimeKind::Png => "image/png",
             ImageMimeKind::Jpeg => "image/jpeg",
         }
     }
@@ -72,10 +70,8 @@ impl ImageMimeKind {
 /// A named image attachment that can either reference raw pixel data or an existing URL.
 #[derive(Debug, Clone)]
 pub enum RequestImage {
-    Url {
-        name: Option<String>,
-        url: String,
-    },
+    #[allow(dead_code)]
+    Url { name: Option<String>, url: String },
     Data {
         name: Option<String>,
         mime: ImageMimeKind,
@@ -325,18 +321,17 @@ where
                 let mut last_err = None;
 
                 for item in items {
-                    if item.get("type").and_then(|v| v.as_str()) == Some("output_text")
-                        || item.get("type").and_then(|v| v.as_str()) == Some("text")
+                    if (item.get("type").and_then(|v| v.as_str()) == Some("output_text")
+                        || item.get("type").and_then(|v| v.as_str()) == Some("text"))
+                        && let Some(raw) = item.get("text").and_then(|v| v.as_str())
                     {
-                        if let Some(raw) = item.get("text").and_then(|v| v.as_str()) {
-                            match serde_json::from_str::<Value>(raw) {
-                                Ok(val) => {
-                                    candidate = Some(val);
-                                    break;
-                                }
-                                Err(err) => {
-                                    last_err = Some(err);
-                                }
+                        match serde_json::from_str::<Value>(raw) {
+                            Ok(val) => {
+                                candidate = Some(val);
+                                break;
+                            }
+                            Err(err) => {
+                                last_err = Some(err);
                             }
                         }
                     }
@@ -415,17 +410,6 @@ fn encode_image_to_data_url(image: &RgbImage, mime: ImageMimeKind) -> Result<Str
     let mut buffer = Vec::new();
 
     match mime {
-        ImageMimeKind::Png => {
-            let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
-            encoder
-                .write_image(
-                    image.as_raw(),
-                    image.width(),
-                    image.height(),
-                    image::ExtendedColorType::Rgb8,
-                )
-                .context("failed to encode image as PNG")?;
-        }
         ImageMimeKind::Jpeg => {
             let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut buffer);
             encoder
@@ -448,16 +432,14 @@ fn encode_image_to_data_url(image: &RgbImage, mime: ImageMimeKind) -> Result<Str
 struct MissingImageError;
 
 fn extract_image_from_message(message: &Value) -> Result<Option<RgbImage>> {
-    if let Some(images) = message.get("images").and_then(|v| v.as_array()) {
-        if let Some(first) = images.first() {
-            if let Some(url) = first
-                .get("image_url")
-                .and_then(|img| img.get("url"))
-                .and_then(|url| url.as_str())
-            {
-                return decode_image_payload(url).map(Some);
-            }
-        }
+    if let Some(images) = message.get("images").and_then(|v| v.as_array())
+        && let Some(first) = images.first()
+        && let Some(url) = first
+            .get("image_url")
+            .and_then(|img| img.get("url"))
+            .and_then(|url| url.as_str())
+    {
+        return decode_image_payload(url).map(Some);
     }
 
     if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
@@ -521,13 +503,10 @@ fn extract_text_from_message(message: &Value) -> Option<String> {
         Some(Value::Array(items)) => {
             for item in items {
                 let kind = item.get("type").and_then(|v| v.as_str());
-                match kind {
-                    Some("text") | Some("output_text") => {
-                        if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                            return Some(text.to_string());
-                        }
-                    }
-                    _ => continue,
+                if (matches!(kind, Some("text") | Some("output_text")))
+                    && let Some(text) = item.get("text").and_then(|v| v.as_str())
+                {
+                    return Some(text.to_string());
                 }
             }
             None

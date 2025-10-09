@@ -18,49 +18,6 @@ pub enum FuzzyResult<T> {
     },
 }
 
-impl<T: std::fmt::Debug> FuzzyResult<T> {
-    pub fn into_result(self) -> Result<T, String> {
-        match self {
-            FuzzyResult::Exact(item) => Ok(item),
-            FuzzyResult::Corrected { corrected, .. } => Ok(corrected),
-            FuzzyResult::Suggestions {
-                candidates,
-                original,
-            } => {
-                if candidates.is_empty() {
-                    Err(format!("'{}' not found", original))
-                } else {
-                    let suggestions = candidates
-                        .into_iter()
-                        .take(5)
-                        .map(|c| format!("{:?}", c))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    Err(format!("Did you mean: {}?", suggestions))
-                }
-            }
-            FuzzyResult::NotFound { original } => Err(format!("'{}' not found", original)),
-        }
-    }
-
-    pub fn with_correction_message(self, format_fn: impl Fn(&T) -> String) -> (T, Option<String>)
-    where
-        T: std::fmt::Debug,
-    {
-        match self {
-            FuzzyResult::Exact(item) => (item, None),
-            FuzzyResult::Corrected {
-                corrected,
-                original,
-            } => {
-                let message = format!("Corrected '{}' to '{}'", original, format_fn(&corrected));
-                (corrected, Some(message))
-            }
-            _ => panic!("Cannot extract corrected item from non-corrected result"),
-        }
-    }
-}
-
 pub fn find_fuzzy_match<'a, T>(
     input: &str,
     candidates: impl IntoIterator<Item = (&'a str, T)>,

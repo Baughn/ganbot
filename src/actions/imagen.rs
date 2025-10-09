@@ -85,9 +85,7 @@ pub async fn submit_generation(request: GenerateImagesRequest) -> Result<ImagenR
         },
     };
 
-    let ask_result = ImagenActor::spawn(ImagenActor::default())
-        .ask(message)
-        .await;
+    let ask_result = ImagenActor::spawn(ImagenActor).ask(message).await;
 
     coordinator.complete_job(job_id);
 
@@ -176,10 +174,7 @@ impl ImagenCoordinator {
         let mut inner = self.inner.lock().unwrap();
         let job = inner.jobs.get_mut(&job_id);
 
-        let job = match job {
-            Some(job) => job,
-            None => return None,
-        };
+        let job = job?;
 
         let mut percent_override = Some(percent);
         let base_message = if let Some(stage) = stage {
@@ -259,16 +254,16 @@ impl ImagenCoordinator {
     ) -> String {
         let mut details = Vec::new();
 
-        if let Some((index, total)) = node {
-            if total > 0 {
-                details.push(format!("node {}/{}", index, total));
-            }
+        if let Some((index, total)) = node
+            && total > 0
+        {
+            details.push(format!("node {}/{}", index, total));
         }
 
-        if let Some(batch) = batch {
-            if batch.total > 1 {
-                details.push(format!("batch {}/{}", batch.position, batch.total));
-            }
+        if let Some(batch) = batch
+            && batch.total > 1
+        {
+            details.push(format!("batch {}/{}", batch.position, batch.total));
         }
 
         if details.is_empty() {
@@ -480,16 +475,16 @@ pub fn merge_prompt_settings(mut prompt: Generate, base: Generate) -> Generate {
         prompt.prompt = append_clause(&prompt.prompt, &base_prompt, ". ");
     }
 
-    if let Some(base_negative) = base_negative {
-        if !base_negative.trim().is_empty() {
-            let combined_negative = match prompt.negative_prompt.take() {
-                Some(existing_negative) if !existing_negative.trim().is_empty() => {
-                    append_clause(&existing_negative, &base_negative, ", ")
-                }
-                _ => base_negative.trim().to_string(),
-            };
-            prompt.negative_prompt = Some(combined_negative);
-        }
+    if let Some(base_negative) = base_negative
+        && !base_negative.trim().is_empty()
+    {
+        let combined_negative = match prompt.negative_prompt.take() {
+            Some(existing_negative) if !existing_negative.trim().is_empty() => {
+                append_clause(&existing_negative, &base_negative, ", ")
+            }
+            _ => base_negative.trim().to_string(),
+        };
+        prompt.negative_prompt = Some(combined_negative);
     }
 
     if prompt.seed.is_none() {
@@ -987,8 +982,8 @@ async fn generate_comfyui(
 }
 fn prettify_node_name(raw: &str) -> String {
     let mut result = String::new();
-    let mut chars = raw.chars().peekable();
-    while let Some(ch) = chars.next() {
+    let chars = raw.chars().peekable();
+    for ch in chars {
         if ch == '_' {
             result.push(' ');
             continue;

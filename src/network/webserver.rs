@@ -100,7 +100,6 @@ struct GalleryImage {
 
 /// Web server actor
 pub struct WebServer {
-    config: WebServerConfig,
     gallery_config: ModelGalleryConfig,
     redis: ConnectionManager,
     shutdown_token: CancellationToken,
@@ -123,13 +122,12 @@ struct GalleryQuery {
 
 impl WebServer {
     pub fn new(
-        config: WebServerConfig,
+        _config: WebServerConfig,
         gallery_config: ModelGalleryConfig,
         redis: ConnectionManager,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {
-            config,
             gallery_config,
             redis,
             shutdown_token,
@@ -263,7 +261,6 @@ impl Actor for WebServer {
 
         // Return an instance for the actor with shutdown token and pregen handle
         Ok(Self {
-            config,
             gallery_config,
             redis,
             shutdown_token,

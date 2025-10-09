@@ -80,7 +80,7 @@ impl Message<String> for EditActor {
 
         // Create a PromptActor and delegate to it
         let prompt_actor = PromptActor::spawn_link(
-            &ctx.actor_ref(),
+            ctx.actor_ref(),
             PromptActor::new(self.user_actor.clone(), None).await,
         )
         .await;

@@ -1187,15 +1187,6 @@ fn calculate_optimal_grid(image_count: usize, img_width: u32, img_height: u32) -
     (best_cols, best_rows)
 }
 
-/// Expose optimal gallery grid calculation for consumers that need layout data
-pub fn gallery_grid_dimensions(
-    image_count: usize,
-    image_width: u32,
-    image_height: u32,
-) -> (u32, u32) {
-    calculate_optimal_grid(image_count, image_width, image_height)
-}
-
 /// Calculate mean color across all pixels in all images
 fn calculate_mean_color<T>(images: &[T]) -> Rgb<u8>
 where

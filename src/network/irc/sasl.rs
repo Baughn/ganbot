@@ -91,7 +91,7 @@ impl SaslManager {
             Command::CAP(target, CapSubCommand::LS, parameter, capabilities) => {
                 let cap_list = capabilities
                     .as_deref()
-                    .or_else(|| target.as_ref().map(|_| parameter.as_deref()).flatten());
+                    .or(target.as_ref().and(parameter.as_deref()));
 
                 if let Some(list) = cap_list {
                     trace!(caps = %list, "Server capability list");
@@ -121,7 +121,7 @@ impl SaslManager {
                     return Ok(());
                 }
 
-                let cap_list = capabilities.as_deref().or_else(|| parameter.as_deref());
+                let cap_list = capabilities.as_deref().or(parameter.as_deref());
 
                 if cap_list
                     .map(|caps| {
@@ -140,7 +140,7 @@ impl SaslManager {
                 }
             }
             Command::CAP(target, CapSubCommand::NAK, parameter, capabilities) => {
-                let cap_list = capabilities.as_deref().or_else(|| parameter.as_deref());
+                let cap_list = capabilities.as_deref().or(parameter.as_deref());
 
                 if cap_list
                     .map(|caps| {

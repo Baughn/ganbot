@@ -349,10 +349,6 @@ Output only the monologue.",
                 .await
                 .context("while generating commentary")?;
 
-            let images_vec: Vec<Arc<image::RgbImage>> = image_entries
-                .iter()
-                .map(|(_, _, image)| image.clone())
-                .collect();
             let prompts_vec: Vec<String> = image_entries
                 .iter()
                 .map(|(_, command, _)| command.clone())
@@ -365,7 +361,6 @@ Output only the monologue.",
             Ok(PromptResult {
                 text: commentary.text,
                 image_url: Some(gallery_url),
-                images: Some(images_vec),
                 image_urls: gallery_image_urls,
                 prompts: Some(prompts_vec),
                 display_prompts: Some(display_prompts_vec),
@@ -403,7 +398,6 @@ Output only the monologue.",
             Ok(PromptResult {
                 text: commentary.text,
                 image_url: gallery_url,
-                images: None,
                 image_urls: None,
                 prompts: None,
                 display_prompts: None,

@@ -343,10 +343,10 @@ impl IrcActor {
     }
 
     fn send_quit(&self, message: impl AsRef<str>) {
-        if let Some(client) = self.client.get() {
-            if let Err(error) = client.send_quit(message.as_ref()) {
-                warn!(?error, "Failed to send IRC QUIT message");
-            }
+        if let Some(client) = self.client.get()
+            && let Err(error) = client.send_quit(message.as_ref())
+        {
+            warn!(?error, "Failed to send IRC QUIT message");
         }
     }
 
@@ -700,7 +700,7 @@ impl Message<ProcessCommand> for ReplyActor {
                 } else {
                     // Spawn ConfigActor to handle this command
                     let config_actor = actions::config::ConfigActor::spawn_link(
-                        &ctx.actor_ref(),
+                        ctx.actor_ref(),
                         actions::config::ConfigActor::new(msg.user.clone()).await,
                     )
                     .await;
@@ -731,7 +731,7 @@ impl Message<ProcessCommand> for ReplyActor {
                 } else {
                     // Spawn SelectActor to handle this command
                     let select_actor = actions::select::SelectActor::spawn_link(
-                        &ctx.actor_ref(),
+                        ctx.actor_ref(),
                         actions::select::SelectActor::new(msg.user.clone()).await,
                     )
                     .await;
@@ -745,7 +745,7 @@ impl Message<ProcessCommand> for ReplyActor {
             "edit" => {
                 // Spawn EditActor to handle this command
                 let edit_actor = actions::edit::EditActor::spawn_link(
-                    &ctx.actor_ref(),
+                    ctx.actor_ref(),
                     actions::edit::EditActor::new(msg.user.clone()).await,
                 )
                 .await;
@@ -793,7 +793,7 @@ impl Message<ProcessCommand> for ReplyActor {
                 } else {
                     // Spawn DeleteActor to handle this command
                     let delete_actor = actions::delete::DeleteActor::spawn_link(
-                        &ctx.actor_ref(),
+                        ctx.actor_ref(),
                         actions::delete::DeleteActor::new(msg.user.clone()).await,
                     )
                     .await;

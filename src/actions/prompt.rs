@@ -29,7 +29,6 @@ pub struct PromptActor {
 pub struct PromptResult {
     pub text: String,
     pub image_url: Option<String>,
-    pub images: Option<Vec<Arc<image::RgbImage>>>,
     pub image_urls: Option<Vec<String>>,
     pub prompts: Option<Vec<String>>,
     pub display_prompts: Option<Vec<String>>,
@@ -118,11 +117,6 @@ impl PromptActor {
         } = response;
 
         let mut image_url = None;
-        let mut images_opt = if images.is_empty() {
-            None
-        } else {
-            Some(images.clone())
-        };
         let mut image_urls_opt: Option<Vec<String>> = None;
         let mut prompts_opt: Option<Vec<String>> = None;
         let mut display_prompts_opt: Option<Vec<String>> = None;
@@ -200,7 +194,6 @@ impl PromptActor {
                         image_url = Some(url);
                     } else {
                         info!("No image generated, text-only response");
-                        images_opt = None;
                     }
                 }
             }
@@ -223,7 +216,6 @@ impl PromptActor {
         Ok(PromptResult {
             text: text.unwrap_or_default(),
             image_url,
-            images: images_opt,
             image_urls: image_urls_opt,
             prompts: prompts_opt,
             display_prompts: display_prompts_opt,

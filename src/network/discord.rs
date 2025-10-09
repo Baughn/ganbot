@@ -242,16 +242,15 @@ impl DiscordProgressActor {
     }
 
     async fn finish(&self, ctx: &mut Context<Self, ()>) {
-        if let Some(parent) = self.parent.upgrade() {
-            if let Err(err) = parent
+        if let Some(parent) = self.parent.upgrade()
+            && let Err(err) = parent
                 .tell(ProgressActorFinished {
                     action_id: self.action_id,
                 })
                 .send()
                 .await
-            {
-                warn!(action = %self.action_id, "Failed to notify Discord actor about completion: {err:#}");
-            }
+        {
+            warn!(action = %self.action_id, "Failed to notify Discord actor about completion: {err:#}");
         }
 
         ctx.stop();
@@ -668,8 +667,8 @@ async fn send_completion_message_impl(
         .await
         .with_context(|| "while sending Discord completion message")?;
 
-    if let Some(gallery_id) = gallery_to_associate {
-        if let Err(err) = gallery_registry
+    if let Some(gallery_id) = gallery_to_associate
+        && let Err(err) = gallery_registry
             .ask(AssociateMessage {
                 gallery_id,
                 channel_id,
@@ -677,9 +676,8 @@ async fn send_completion_message_impl(
             })
             .await
             .context("while associating gallery with message")
-        {
-            warn!("Failed to associate gallery message: {err:#}");
-        }
+    {
+        warn!("Failed to associate gallery message: {err:#}");
     }
 
     Ok(())
@@ -813,10 +811,10 @@ impl EventHandler for Handler {
             _ => None,
         };
 
-        if let Some(event) = event {
-            if let Err(err) = self.actor_ref.tell(event).send().await {
-                error!("Discord actor is unavailable: {err:#}");
-            }
+        if let Some(event) = event
+            && let Err(err) = self.actor_ref.tell(event).send().await
+        {
+            error!("Discord actor is unavailable: {err:#}");
         }
     }
 }
@@ -1232,7 +1230,7 @@ impl DiscordActor {
             }
         }
 
-        segments.retain(|segment| !(segment.prefix != "" && segment.text.is_empty()));
+        segments.retain(|segment| segment.prefix.is_empty() || !segment.text.is_empty());
 
         if Self::segments_total_len(&segments) > DISCORD_MESSAGE_LIMIT {
             let mut truncated_base = Self::truncate_text(&base_line, DISCORD_MESSAGE_LIMIT);
@@ -1268,11 +1266,7 @@ impl DiscordActor {
             segment_len
         } else {
             let others_len = current_total.saturating_sub(segment_len);
-            if others_len >= limit {
-                0
-            } else {
-                limit - others_len
-            }
+            limit.saturating_sub(others_len)
         }
     }
 
@@ -1616,10 +1610,10 @@ impl DiscordActor {
             .iter()
             .flat_map(|row| &row.components)
             .find_map(|component| {
-                if let all::ActionRowComponent::InputText(text) = component {
-                    if text.custom_id == "prompt_input" {
-                        return text.value.as_ref().map(|s| s.as_str());
-                    }
+                if let all::ActionRowComponent::InputText(text) = component
+                    && text.custom_id == "prompt_input"
+                {
+                    return text.value.as_deref();
                 }
                 None
             })

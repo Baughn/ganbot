@@ -67,7 +67,7 @@ impl Message<chat::Oneshot> for OpenRouter {
         tracing::info!("Received oneshot request from {}", msg.origin);
 
         // Spawn a new conversation actor to handle this specific request
-        let actor_ref = ConversationActor::spawn_link(&ctx.actor_ref(), self.config.clone()).await;
+        let actor_ref = ConversationActor::spawn_link(ctx.actor_ref(), self.config.clone()).await;
 
         ctx.forward(&actor_ref, msg).await
     }
@@ -88,7 +88,7 @@ where
         tracing::info!("Received structured request from {}", msg.origin);
 
         // Spawn a new conversation actor to handle this specific request
-        let actor_ref = ConversationActor::spawn_link(&ctx.actor_ref(), self.config.clone()).await;
+        let actor_ref = ConversationActor::spawn_link(ctx.actor_ref(), self.config.clone()).await;
 
         ctx.forward(&actor_ref, msg).await
     }
@@ -106,7 +106,7 @@ impl Message<NanoBanana> for OpenRouter {
         info!("Received NanoBanana request from {}", msg.origin);
 
         // Spawn a new conversation actor to handle this specific request
-        let actor_ref = ConversationActor::spawn_link(&ctx.actor_ref(), self.config.clone()).await;
+        let actor_ref = ConversationActor::spawn_link(ctx.actor_ref(), self.config.clone()).await;
 
         ctx.forward(&actor_ref, msg).await
     }

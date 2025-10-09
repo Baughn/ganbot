@@ -83,14 +83,13 @@ impl ActionBroker {
                 }
             };
 
-            if let Some(broker) = broker_ref.upgrade() {
-                if let Err(err) = broker
+            if let Some(broker) = broker_ref.upgrade()
+                && let Err(err) = broker
                     .tell(ActionLifecycleResult { request, status })
                     .send()
                     .await
-                {
-                    warn!("Failed to report completion of action: {err:#}");
-                }
+            {
+                warn!("Failed to report completion of action: {err:#}");
             }
         })
     }
@@ -509,14 +508,13 @@ async fn execute_prompt(
             created_at: Utc::now().to_rfc3339(),
         };
 
-        if let Ok(registry) = GalleryRegistry::get() {
-            if let Err(err) = registry
+        if let Ok(registry) = GalleryRegistry::get()
+            && let Err(err) = registry
                 .ask(RegisterGallery { metadata })
                 .await
                 .context("while registering gallery metadata")
-            {
-                error!("Failed to register gallery metadata: {err:#}");
-            }
+        {
+            error!("Failed to register gallery metadata: {err:#}");
         }
 
         action_response.gallery = Some(crate::actions::GalleryReference { id: gallery_id });
@@ -586,14 +584,13 @@ async fn execute_dream(
             created_at: Utc::now().to_rfc3339(),
         };
 
-        if let Ok(registry) = GalleryRegistry::get() {
-            if let Err(err) = registry
+        if let Ok(registry) = GalleryRegistry::get()
+            && let Err(err) = registry
                 .ask(RegisterGallery { metadata })
                 .await
                 .context("while registering dream gallery metadata")
-            {
-                error!("Failed to register dream gallery metadata: {err:#}");
-            }
+        {
+            error!("Failed to register dream gallery metadata: {err:#}");
         }
 
         action_response.gallery = Some(crate::actions::GalleryReference { id: gallery_id });
