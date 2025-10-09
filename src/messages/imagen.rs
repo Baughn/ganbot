@@ -5,31 +5,44 @@ use std::{fmt, sync::Arc};
 
 /// Represents a user-initiated request to generate an image.
 /// Any unset value will be based on defaults for the model.
-#[derive(Clone, Serialize, Deserialize)]
+///
+/// IMPORTANT: All Option fields MUST have `#[serde(skip_serializing_if = "Option::is_none")]`
+/// to ensure the gallery cache key remains stable when fields are unset.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Generate {
     /// The original, unparsed prompt.
     pub raw_prompt: String,
     /// The prompt for the image generation.
     pub prompt: String,
     /// Optional negative prompt to avoid certain features in the generated image.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub negative_prompt: Option<String>,
     /// The number of images to generate.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub num_images: Option<u32>,
     /// The requested aspect ratio of the generated image.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aspect: Option<(u32, u32)>,
     /// The width of the generated image.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     /// The height of the generated image.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
     /// The model to use for image generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Optional seed for reproducibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
     /// Number of inference steps to use.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
     /// Optional sampler to use for generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sampler: Option<String>,
     /// Optional scheduler to use for generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduler: Option<String>,
     /// References to images that can be used as starting points or for context.
     pub references: References,
@@ -43,6 +56,7 @@ pub struct References {
     /// A starting-point image for img2img generation.
     #[serde(skip)]
     pub img2img: Option<Arc<RgbImage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub img2img_strength: Option<f32>,
     /// A reference image for Kontext / Qwen-Image-Edit.
     #[serde(skip)]
@@ -67,27 +81,6 @@ impl fmt::Debug for Generate {
             .field("references", &self.references)
             .field("alias", &self.alias)
             .finish()
-    }
-}
-
-impl Default for Generate {
-    fn default() -> Self {
-        Self {
-            raw_prompt: String::new(),
-            prompt: String::new(),
-            negative_prompt: None,
-            num_images: None,
-            aspect: None,
-            width: None,
-            height: None,
-            model: None,
-            seed: None,
-            steps: None,
-            sampler: None,
-            scheduler: None,
-            references: References::default(),
-            alias: None,
-        }
     }
 }
 

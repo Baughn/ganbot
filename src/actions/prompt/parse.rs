@@ -249,7 +249,6 @@ impl Generate {
                 ..Default::default()
             },
             alias,
-            ..Default::default()
         })
     }
 }
