@@ -35,6 +35,7 @@
           cargo-audit
           cargo-machete
           cargo-features-manager
+          cargo-flamegraph
           bacon
 
           # JavaScript linting
