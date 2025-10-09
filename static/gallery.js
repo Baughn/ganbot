@@ -420,8 +420,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const modelColumnWidth = 150; // Approximate width of model name column
             const cellWidth = 216; // 200px image + 16px padding (from CSS)
             const scrollbarBuffer = 20; // Account for scrollbar
+            const contentPadding = 64; // 2rem * 2 (left + right padding on .content)
+            const extraBuffer = 10; // Additional safety margin
 
-            const availableWidth = viewportWidth - sidebarWidth - modelColumnWidth - scrollbarBuffer;
+            const availableWidth = viewportWidth - sidebarWidth - modelColumnWidth - scrollbarBuffer - contentPadding - extraBuffer;
             const cols = Math.max(1, Math.floor(availableWidth / cellWidth));
 
             return cols;
