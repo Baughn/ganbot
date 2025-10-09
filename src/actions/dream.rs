@@ -48,10 +48,10 @@ use crate::{
         prompt::PromptResult,
     },
     messages::{
-        chat::{Oneshot, Part, Purpose},
+        chat::{Oneshot, Part, Purpose, Structured},
         imagen::Generate,
     },
-    network::openrouter::OpenRouter,
+    network::openrouter::{OpenRouter, structured::JsonSchemaDefinition},
     persistence::{
         images::{GalleryImageInput, GalleryInput, GalleryLayout, upload_gallery},
         user::{AddGeneratedImage, UserActor},
@@ -69,6 +69,7 @@ pub struct DreamActor {
 #[derive(Debug, Serialize, Deserialize, Reply)]
 struct DreamPromptResponse {
     image_prompt: String,
+    aspect_ratio: String,
 }
 
 impl Message<String> for DreamActor {
@@ -133,12 +134,18 @@ impl Message<String> for DreamActor {
             async move {
                 let detective_prompt = format!(
                     "Transform the following request into a detailed image generation prompt.
-                    Add theme, lighting, and that distinctive story feel. 
+                    Add theme, lighting, and that distinctive story feel.
                     If there is a picture, copy the style of the picture unless requested otherwise.
 
                     Create a unique variation - don't repeat exactly the same elements.
 
-                    Output nothing except for the image prompt.
+                    Also suggest an appropriate aspect ratio for this image based on the subject and composition.
+                    Use landscape ratios (16:9, 2:1, etc.) for wide scenes, portrait ratios (9:16, 2:3, etc.) for tall subjects.
+                    Avoid 1:1 square ratios unless the composition truly demands it.
+
+                    Output JSON with two fields:
+                    - image_prompt: the image generation prompt (text only, no flags or commands)
+                    - aspect_ratio: suggested aspect ratio in \"width:height\" format (e.g., \"16:9\", \"3:2\", \"9:16\")
 
                     Original request: {} (Variation {})",
                     original_request,
@@ -146,13 +153,14 @@ impl Message<String> for DreamActor {
                 );
 
                 router
-                    .ask(Oneshot {
+                    .ask(Structured::<DreamPromptResponse> {
                         purpose: Purpose::Dream,
                         origin: "dream".to_string(),
                         text: vec![Part::Uncacheable(detective_prompt)],
+                        schema: dream_prompt_schema(),
+                        marker: std::marker::PhantomData,
                     })
                     .await
-                    .map(|response| response.text)
             }
         });
 
@@ -165,6 +173,20 @@ impl Message<String> for DreamActor {
             "Received detective prompt variations"
         );
 
+        // Parse aspect ratios from all variations and calculate average
+        let aspect_ratios: Vec<(u32, u32)> = generated_prompts
+            .iter()
+            .map(|response| parse_aspect_ratio(&response.aspect_ratio))
+            .collect::<Result<Vec<_>>>()
+            .context("while parsing aspect ratios from LLM responses")?;
+
+        let averaged_aspect = calculate_average_aspect_ratio(&aspect_ratios)?;
+        info!(
+            aspect_ratios = ?aspect_ratios,
+            averaged_aspect = ?averaged_aspect,
+            "Calculated average aspect ratio from variations"
+        );
+
         if let Some(progress) = &self.progress {
             progress.progress(Some(8.0), "Prompts locked in; dispatching to the lab…");
         }
@@ -175,33 +197,51 @@ impl Message<String> for DreamActor {
 
         let progress = self.progress.clone();
         let total_batches = generated_prompts.len() as u32;
-        let image_generation_futures = generated_prompts.iter().enumerate().map(|(idx, image_prompt)| {
+        let image_generation_futures = generated_prompts.iter().enumerate().map(|(idx, response)| {
             let user_actor = self.user_actor.clone();
-            let image_prompt = image_prompt.clone();
+            let image_prompt = response.image_prompt.clone();
             let model_token = model_for_generation.clone();
             let model = selected_model_clone.clone();
             let variation = idx + 1;
             let progress = progress.clone();
+            let aspect = averaged_aspect;
             async move {
-                let image_prompt_with_model = format!("{} -m {} -c 1", image_prompt, model_token);
                 let mut prompt_preview: String = image_prompt.chars().take(160).collect();
                 if image_prompt.len() > prompt_preview.len() {
                     prompt_preview.push_str("...");
                 }
                 let prompt_preview = prompt_preview.replace('\n', " ");
-                debug!(variation, %model_token, prompt_preview = %prompt_preview, "Preparing imagen request for dream variation");
-                let mut generate = imagen::hydrate_prompt(
-                    Generate::from_str(&image_prompt_with_model)
-                        .with_context(|| format!("while parsing generated prompt for variation {}", variation))?,
-                    &user_actor,
-                )
-                .await
-                .with_context(|| format!("while hydrating imagen prompt for variation {}", variation))?;
+                debug!(variation, %model_token, prompt_preview = %prompt_preview, aspect = ?aspect, "Preparing imagen request for dream variation");
+
+                // Build Generate struct directly with averaged aspect ratio
+                let base_generate = Generate {
+                    raw_prompt: image_prompt.clone(),
+                    prompt: image_prompt.clone(),
+                    negative_prompt: None,
+                    num_images: Some(1),
+                    aspect: Some(aspect),
+                    width: None,
+                    height: None,
+                    model: Some(model_token.clone()),
+                    seed: None,
+                    steps: None,
+                    references: crate::messages::imagen::References {
+                        img2img: None,
+                        img2img_strength: None,
+                        context: Vec::new(),
+                    },
+                    alias: None,
+                };
+
+                let mut generate = imagen::hydrate_prompt(base_generate, &user_actor)
+                    .await
+                    .with_context(|| format!("while hydrating imagen prompt for variation {}", variation))?;
                 debug!(
                     variation,
                     %model_token,
                     steps = ?generate.steps,
                     alias = ?generate.alias,
+                    aspect = ?generate.aspect,
                     "Imagen prompt hydrated"
                 );
                 imagen::apply_model_defaults(&mut generate, &model);
@@ -226,7 +266,7 @@ impl Message<String> for DreamActor {
                 .with_context(|| format!("while generating image for variation {}", variation))?;
                 debug!(variation, %model_token, backend = ?response.backend, image_count = response.images.len(), "Imagen actor responded");
 
-                Ok::<_, Error>((image_prompt, image_prompt_with_model, response))
+                Ok::<_, Error>((image_prompt, response))
             }
         });
 
@@ -243,10 +283,10 @@ impl Message<String> for DreamActor {
         }
 
         // Step 3: Create gallery with individual prompts
-        let mut image_entries: Vec<(String, String, Arc<image::RgbImage>)> = Vec::new();
+        let mut image_entries: Vec<(String, Arc<image::RgbImage>)> = Vec::new();
         let mut has_images = false;
 
-        for (display_prompt, command_prompt, response) in &image_results {
+        for (display_prompt, response) in &image_results {
             if response.images.len() != 1 {
                 error!(
                     image_count = response.images.len(),
@@ -256,11 +296,7 @@ impl Message<String> for DreamActor {
             }
 
             let first_image = response.images.first().unwrap();
-            image_entries.push((
-                display_prompt.clone(),
-                command_prompt.clone(),
-                first_image.clone(),
-            ));
+            image_entries.push((display_prompt.clone(), first_image.clone()));
             has_images = true;
         }
 
@@ -271,7 +307,7 @@ impl Message<String> for DreamActor {
         let gallery_url = if !image_entries.is_empty() {
             let gallery_images: Vec<GalleryImageInput> = image_entries
                 .iter()
-                .map(|(prompt_text, _, image)| GalleryImageInput {
+                .map(|(prompt_text, image)| GalleryImageInput {
                     image: image.clone(),
                     title: Some(prompt_text.clone()),
                 })
@@ -349,13 +385,19 @@ Output only the monologue.",
                 .await
                 .context("while generating commentary")?;
 
+            // Build command prompts with the averaged aspect ratio for storage
             let prompts_vec: Vec<String> = image_entries
                 .iter()
-                .map(|(_, command, _)| command.clone())
+                .map(|(display_prompt, _)| {
+                    format!(
+                        "{} -m {} --ar {}:{} -c 1",
+                        display_prompt, display_model_name, averaged_aspect.0, averaged_aspect.1
+                    )
+                })
                 .collect();
             let display_prompts_vec: Vec<String> = image_entries
                 .iter()
-                .map(|(display, _, _)| display.clone())
+                .map(|(display, _)| display.clone())
                 .collect();
 
             Ok(PromptResult {
@@ -407,6 +449,106 @@ Output only the monologue.",
             })
         }
     }
+}
+
+/// Create JSON schema for DreamPromptResponse
+fn dream_prompt_schema() -> JsonSchemaDefinition {
+    use serde_json::json;
+
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "image_prompt".to_string(),
+        json!({
+            "type": "string",
+            "description": "The image generation prompt (text only, no flags or commands)"
+        }),
+    );
+    properties.insert(
+        "aspect_ratio".to_string(),
+        json!({
+            "type": "string",
+            "description": "Suggested aspect ratio in 'width:height' format (e.g., '16:9', '3:2', '9:16')"
+        }),
+    );
+
+    JsonSchemaDefinition {
+        schema_type: "object".to_string(),
+        properties,
+        required: Some(vec!["image_prompt".to_string(), "aspect_ratio".to_string()]),
+        additional_properties: Some(false),
+    }
+}
+
+/// Parse an aspect ratio string like "16:9" into a tuple (16, 9)
+fn parse_aspect_ratio(s: &str) -> Result<(u32, u32)> {
+    let separators = [':', 'x', 'X', '/', '-'];
+
+    for sep in separators {
+        if s.contains(sep) {
+            let parts: Vec<&str> = s.split(sep).collect();
+            if parts.len() == 2 {
+                let width = parts[0]
+                    .trim()
+                    .parse::<u32>()
+                    .with_context(|| format!("Invalid aspect ratio width: {}", parts[0]))?;
+                let height = parts[1]
+                    .trim()
+                    .parse::<u32>()
+                    .with_context(|| format!("Invalid aspect ratio height: {}", parts[1]))?;
+
+                if width == 0 || height == 0 {
+                    bail!("Aspect ratio dimensions must be non-zero");
+                }
+
+                return Ok((width, height));
+            }
+        }
+    }
+
+    bail!(
+        "Invalid aspect ratio format: {}. Expected format like 16:9, 16x9, or 16/9",
+        s
+    )
+}
+
+/// Calculate the average aspect ratio from multiple aspect ratios
+fn calculate_average_aspect_ratio(ratios: &[(u32, u32)]) -> Result<(u32, u32)> {
+    if ratios.is_empty() {
+        bail!("Cannot calculate average aspect ratio from empty list");
+    }
+
+    // Convert each ratio to a decimal value, average them, then find closest common ratio
+    let sum: f64 = ratios.iter().map(|(w, h)| *w as f64 / *h as f64).sum();
+    let avg_ratio = sum / ratios.len() as f64;
+
+    // Common aspect ratios to consider
+    let common_ratios = [
+        (1, 1),   // 1:1 square
+        (4, 3),   // 4:3
+        (3, 2),   // 3:2
+        (16, 10), // 16:10
+        (16, 9),  // 16:9
+        (21, 9),  // 21:9 ultrawide
+        (2, 1),   // 2:1
+        (3, 4),   // 3:4 portrait
+        (2, 3),   // 2:3 portrait
+        (9, 16),  // 9:16 portrait
+    ];
+
+    // Find the closest common ratio
+    let mut best_ratio = common_ratios[0];
+    let mut best_diff = (common_ratios[0].0 as f64 / common_ratios[0].1 as f64 - avg_ratio).abs();
+
+    for &ratio in &common_ratios[1..] {
+        let ratio_value = ratio.0 as f64 / ratio.1 as f64;
+        let diff = (ratio_value - avg_ratio).abs();
+        if diff < best_diff {
+            best_diff = diff;
+            best_ratio = ratio;
+        }
+    }
+
+    Ok(best_ratio)
 }
 
 impl DreamActor {
