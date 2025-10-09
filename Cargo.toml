@@ -58,7 +58,8 @@ reqwest-middleware = "0.2.5"
 axum = "0.8"
 tower = "0.4"
 tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
-askama = { version = "0.12", features = ["with-axum"] }
+askama = "0.14"
+askama_web = { version = "0.14", features = ["axum-0.8"] }
 pulldown-cmark = "0.12"
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }

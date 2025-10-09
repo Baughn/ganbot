@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
+use askama::Template;
+use askama_web::WebTemplate;
 use axum::{
     Router,
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use kameo::{Actor, actor::ActorRef, registry::ACTOR_REGISTRY};
@@ -27,6 +29,65 @@ use crate::{
     persistence::images::upload_image_with_generation,
     supervisor::{GetModelsConfig, Supervisor},
 };
+
+/// Template for the index/home page
+#[derive(Template, WebTemplate)]
+#[template(path = "index.html")]
+struct IndexTemplate {
+    css_url: String,
+}
+
+/// Template for help pages
+#[derive(Template, WebTemplate)]
+#[template(path = "help.html")]
+struct HelpTemplate {
+    css_url: String,
+    path: String,
+    content: String,
+}
+
+/// Template for the model gallery page
+#[derive(Template, WebTemplate)]
+#[template(path = "gallery.html")]
+struct GalleryTemplate {
+    css_url: String,
+    js_url: String,
+    active_tag: String,
+    tags: Vec<TagButton>,
+    prompts: Vec<String>,
+    models: Vec<ModelRow>,
+}
+
+/// Tag filter button data
+struct TagButton {
+    name: String,
+    display_name: String,
+}
+
+/// Model row data for the gallery table
+struct ModelRow {
+    name: String,
+    tags: String,
+    aliases: Vec<String>,
+    cells: Vec<GalleryCell>,
+}
+
+/// Gallery cell data for each (model, prompt) combination
+struct GalleryCell {
+    urls_json: String,
+    offset: u32,
+    model_config: String,
+    prompt: String,
+    images: Vec<GalleryImage>,
+}
+
+/// Individual image data within a gallery cell
+struct GalleryImage {
+    url: String,
+    opacity: &'static str,
+    pointer_events: &'static str,
+    index: usize,
+}
 
 /// Web server actor
 pub struct WebServer {
@@ -221,37 +282,7 @@ impl Actor for WebServer {
 async fn index_handler() -> impl IntoResponse {
     let css_url = static_url("style.css").await;
 
-    Html(format!(
-        r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ganbot</title>
-    <link rel="stylesheet" href="{}">
-</head>
-<body>
-    <nav class="sidebar">
-        <h1>Ganbot</h1>
-        <ul>
-            <li><a href="/">Home</a></li>
-            <li><a href="/gallery/models">Model Gallery</a></li>
-            <li><a href="/help/commands">Help</a></li>
-        </ul>
-    </nav>
-    <main class="content">
-        <h1>Welcome to Ganbot</h1>
-        <ul>
-            <li><a href="/gallery/models">Browse Model Gallery</a></li>
-            <li><a href="/help/commands">View Help</a></li>
-        </ul>
-    </main>
-</body>
-</html>
-    "#,
-        css_url
-    ))
+    IndexTemplate { css_url }
 }
 
 /// Handler for help pages
@@ -265,39 +296,15 @@ async fn help_handler(Path(path): Path<String>) -> Response {
 
             // Convert markdown to HTML
             let parser = pulldown_cmark::Parser::new(&markdown_content);
-            let mut html_output = String::new();
-            pulldown_cmark::html::push_html(&mut html_output, parser);
+            let mut content = String::new();
+            pulldown_cmark::html::push_html(&mut content, parser);
 
-            // Wrap in HTML template
-            let full_html = format!(
-                r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Help - {}</title>
-    <link rel="stylesheet" href="{}">
-</head>
-<body>
-    <nav class="sidebar">
-        <h1>Ganbot</h1>
-        <ul>
-            <li><a href="/">Home</a></li>
-            <li><a href="/gallery/models">Model Gallery</a></li>
-            <li><a href="/help/commands">Help</a></li>
-        </ul>
-    </nav>
-    <main class="content">
-        {}
-    </main>
-</body>
-</html>
-            "#,
-                path, css_url, html_output
-            );
-
-            Html(full_html).into_response()
+            HelpTemplate {
+                css_url,
+                path,
+                content,
+            }
+            .into_response()
         }
         Err(_) => (StatusCode::NOT_FOUND, "Help page not found").into_response(),
     }
@@ -358,34 +365,15 @@ async fn model_gallery_handler(
 
     if models.is_empty() || state.gallery_config.prompts.is_empty() {
         let css_url = static_url("style.css").await;
-        return Html(format!(
-            r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Model Gallery</title>
-    <link rel="stylesheet" href="{}">
-</head>
-<body>
-    <nav class="sidebar">
-        <h1>Ganbot</h1>
-        <ul>
-            <li><a href="/">Home</a></li>
-            <li><a href="/gallery/models">Model Gallery</a></li>
-            <li><a href="/help/commands">Help</a></li>
-        </ul>
-    </nav>
-    <main class="content">
-        <h1>Model Gallery</h1>
-        <p>No models or prompts configured for the gallery.</p>
-    </main>
-</body>
-</html>
-            "#,
-            css_url
-        ))
+        let js_url = static_url("gallery.js").await;
+        return GalleryTemplate {
+            css_url,
+            js_url,
+            active_tag: "all".to_string(),
+            tags: vec![],
+            prompts: vec![],
+            models: vec![],
+        }
         .into_response();
     }
 
@@ -444,47 +432,22 @@ async fn model_gallery_handler(
         }
     };
 
-    let all_active = if default_tag == "all" { " active" } else { "" };
-    let mut tag_buttons = format!(
-        r#"<button class="tag-filter{}" data-tag="all">All</button>"#,
-        all_active
-    );
+    // Build tag buttons data
+    let tag_buttons: Vec<TagButton> = tags
+        .iter()
+        .map(|tag| TagButton {
+            name: tag.clone(),
+            display_name: capitalize(tag),
+        })
+        .collect();
 
-    for tag in &tags {
-        let is_active = if tag == default_tag { " active" } else { "" };
-        tag_buttons.push_str(&format!(
-            r#"<button class="tag-filter{}" data-tag="{}">{}</button>"#,
-            is_active,
-            tag,
-            capitalize(tag)
-        ));
-    }
-
-    // Build table header with prompts
-    let mut table_header = String::from("<tr><th>Model</th>");
-    for prompt in &state.gallery_config.prompts {
-        table_header.push_str(&format!("<th>{}</th>", prompt));
-    }
-    table_header.push_str("</tr>");
-
-    // Build table rows
-    let mut table_rows = String::new();
+    // Build model rows data
+    let mut model_rows = Vec::new();
     for (model_name, model) in &models {
         let tags_attr = model.tags.join(",");
-        table_rows.push_str(&format!(r#"<tr data-tags="{}">"#, tags_attr));
+        let aliases = model_aliases.get(*model_name).cloned().unwrap_or_default();
 
-        // Build model label with aliases
-        let mut label_html = format!("<td class=\"model-label\">{}", model_name);
-        if let Some(aliases) = model_aliases.get(*model_name)
-            && !aliases.is_empty()
-        {
-            label_html.push_str("<div class=\"model-aliases\">");
-            label_html.push_str(&aliases.join(", "));
-            label_html.push_str("</div>");
-        }
-        label_html.push_str("</td>");
-        table_rows.push_str(&label_html);
-
+        let mut cells = Vec::new();
         for prompt in &state.gallery_config.prompts {
             // Build a Generate struct and apply model defaults
             let mut generate = build_gallery_generate(prompt, model_name);
@@ -506,88 +469,59 @@ async fn model_gallery_handler(
 
             // Serialize URLs as JSON for data attribute
             let urls_json = serde_json::to_string(&image_urls).unwrap_or_else(|_| "[]".to_string());
-            let urls_json_escaped = urls_json.replace('"', "&quot;");
 
             // Build model config for modal display
             let model_config = build_model_config_json(model);
-            let model_config_escaped = model_config.replace('"', "&quot;");
 
-            // Build HTML with 4 images, first visible, rest hidden
-            let prompt_escaped = prompt
-                .replace('"', "&quot;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;");
-            let mut cell_html = format!(
-                r#"<td><div class="gallery-cell" data-urls="{}" data-cycle-offset="{}" data-model-config="{}" data-prompt="{}">"#,
-                urls_json_escaped, offset, model_config_escaped, prompt_escaped
-            );
+            // Build image data
+            let images: Vec<GalleryImage> = image_urls
+                .iter()
+                .enumerate()
+                .map(|(index, url)| {
+                    let (opacity, pointer_events) = if index == 0 {
+                        ("1", "auto")
+                    } else {
+                        ("0", "none")
+                    };
+                    GalleryImage {
+                        url: url.clone(),
+                        opacity,
+                        pointer_events,
+                        index,
+                    }
+                })
+                .collect();
 
-            for (index, url) in image_urls.iter().enumerate() {
-                let (opacity, pointer_events) = if index == 0 {
-                    ("1", "auto")
-                } else {
-                    ("0", "none")
-                };
-                cell_html.push_str(&format!(
-                    r#"<a href="{}" class="gallery-link" style="opacity: {}; pointer-events: {};"><img src="{}" alt="{} - {}" class="gallery-img" data-index="{}" /></a>"#,
-                    url, opacity, pointer_events, url, model_name, prompt, index
-                ));
-            }
-
-            cell_html.push_str("</div></td>");
-            table_rows.push_str(&cell_html);
+            cells.push(GalleryCell {
+                urls_json,
+                offset,
+                model_config,
+                prompt: prompt.clone(),
+                images,
+            });
         }
 
-        table_rows.push_str("</tr>");
+        model_rows.push(ModelRow {
+            name: model_name.to_string(),
+            tags: tags_attr,
+            aliases,
+            cells,
+        });
     }
 
-    // Render the full HTML
+    // Render the template
     let css_url = static_url("style.css").await;
     let js_url = static_url("gallery.js").await;
 
-    let html = format!(
-        r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Model Gallery</title>
-    <link rel="stylesheet" href="{}">
-    <script src="{}" defer></script>
-</head>
-<body>
-    <nav class="sidebar">
-        <h1>Ganbot</h1>
-        <ul>
-            <li><a href="/">Home</a></li>
-            <li><a href="/gallery/models">Model Gallery</a></li>
-            <li><a href="/help/commands">Help</a></li>
-        </ul>
-    </nav>
-    <main class="content">
-        <h1>Model Gallery</h1>
-        <div class="gallery-filters">
-            {}
-        </div>
-        <div class="gallery-comparison">
-            <table class="comparison-grid">
-                <thead>
-                    {}
-                </thead>
-                <tbody>
-                    {}
-                </tbody>
-            </table>
-        </div>
-    </main>
-</body>
-</html>
-        "#,
-        css_url, js_url, tag_buttons, table_header, table_rows
-    );
-
-    Html(html).into_response()
+    GalleryTemplate {
+        css_url,
+        js_url,
+        active_tag: default_tag.to_string(),
+        tags: tag_buttons,
+        prompts: state.gallery_config.prompts.clone(),
+        models: model_rows,
+    }
+    .into_response()
 }
 
 /// Gallery cache helper functions

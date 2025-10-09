@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Model Gallery{% endblock %}
+
+{% block extra_head %}
+<script src="{{ js_url }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<h1>Model Gallery</h1>
+<div class="gallery-filters">
+    <button class="tag-filter{% if active_tag == "all" %} active{% endif %}" data-tag="all">All</button>
+    {% for tag in tags %}
+    <button class="tag-filter{% if active_tag == tag.name %} active{% endif %}" data-tag="{{ tag.name }}">{{ tag.display_name }}</button>
+    {% endfor %}
+</div>
+<div class="gallery-comparison">
+    <table class="comparison-grid">
+        <thead>
+            <tr>
+                <th>Model</th>
+                {% for prompt in prompts %}
+                <th>{{ prompt }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for model in models %}
+            <tr data-tags="{{ model.tags }}">
+                <td class="model-label">
+                    {{ model.name }}
+                    {% if model.aliases.len() > 0 %}
+                    <div class="model-aliases">{{ model.aliases|join(", ") }}</div>
+                    {% endif %}
+                </td>
+                {% for cell in model.cells %}
+                <td>
+                    <div class="gallery-cell" data-urls="{{ cell.urls_json }}" data-cycle-offset="{{ cell.offset }}" data-model-config="{{ cell.model_config }}" data-prompt="{{ cell.prompt }}">
+                        {% for image in cell.images %}
+                        <a href="{{ image.url }}" class="gallery-link" style="opacity: {{ image.opacity }}; pointer-events: {{ image.pointer_events }};"><img src="{{ image.url }}" alt="{{ model.name }} - {{ cell.prompt }}" class="gallery-img" data-index="{{ image.index }}" /></a>
+                        {% endfor %}
+                    </div>
+                </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

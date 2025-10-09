@@ -1026,7 +1026,7 @@ async fn handle_irc_message(
 impl Message<ProcessBufferedMessages> for IrcActor {
     type Reply = ();
 
-    #[instrument(name = "IrcActor.process_buffered_messages", skip_all, fields(server = %self.name))]
+    #[instrument(name = "IrcActor.process_buffered_messages", skip_all, level = tracing::Level::TRACE, fields(server = %self.name))]
     async fn handle(
         &mut self,
         _msg: ProcessBufferedMessages,

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Ganbot{% endblock %}</title>
+    <link rel="stylesheet" href="{{ css_url }}">
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <nav class="sidebar">
+        <h1>Ganbot</h1>
+        <ul>
+            <li><a href="/">Home</a></li>
+            <li><a href="/gallery/models">Model Gallery</a></li>
+            <li><a href="/help/commands">Help</a></li>
+        </ul>
+    </nav>
+    <main class="content">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
