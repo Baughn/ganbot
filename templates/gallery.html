@@ -9,9 +9,15 @@
 {% block content %}
 <h1>Model Gallery</h1>
 <div class="gallery-filters">
-    <button class="tag-filter{% if active_tag == "all" %} active{% endif %}" data-tag="all">All</button>
+    <button class="filter{% if active_tag == "all" %} active{% endif %}" data-tag="all">All</button>
     {% for tag in tags %}
-    <button class="tag-filter{% if active_tag == tag.name %} active{% endif %}" data-tag="{{ tag.name }}">{{ tag.display_name }}</button>
+    <button class="filter{% if active_tag == tag.name %} active{% endif %}" data-tag="{{ tag.name }}">{{ tag.display_name }}</button>
+    {% endfor %}
+</div>
+<div class="gallery-filters">
+    <button class="filter{% if active_style == "default" %} active{% endif %}" data-style="default">Default</button>
+    {% for style in styles %}
+    <button class="filter{% if active_style == style.name %} active{% endif %}" data-style="{{ style.name }}">{{ style.display_name }}</button>
     {% endfor %}
 </div>
 <div class="gallery-pagination-top"></div>

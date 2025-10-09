@@ -204,7 +204,7 @@ pre code {
     padding: 0;
 }
 
-/* Gallery tag filters */
+/* Gallery filters */
 .gallery-filters {
     margin-bottom: 2rem;
     display: flex;
@@ -212,7 +212,7 @@ pre code {
     flex-wrap: wrap;
 }
 
-.tag-filter {
+.filter {
     padding: 0.5rem 1rem;
     border: 2px solid #3498db;
     background: white;
@@ -222,13 +222,21 @@ pre code {
     font-size: 0.9rem;
     font-weight: 600;
     transition: all 0.2s;
+    min-width: 40px;
 }
 
-.tag-filter:hover {
+.filter:hover:not(:disabled) {
     background: #ecf0f1;
 }
 
-.tag-filter.active {
+.filter:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    border-color: #95a5a6;
+    color: #95a5a6;
+}
+
+.filter.active {
     background: #3498db;
     color: white;
 }
@@ -617,9 +625,10 @@ pre code {
         gap: 0.25rem;
     }
 
-    .tag-filter {
-        font-size: 0.8rem;
+    .filter {
         padding: 0.4rem 0.8rem;
+        font-size: 0.8rem;
+        min-width: 35px;
     }
 
     .gallery-img {

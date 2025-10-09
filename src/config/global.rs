@@ -80,11 +80,36 @@ pub struct WebServerConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash, Default)]
+#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ModelGalleryConfig {
     #[serde(default)]
     pub prompts: Vec<String>,
+    #[serde(default)]
+    pub styles: std::collections::HashMap<String, GalleryStyle>,
+}
+
+impl std::hash::Hash for ModelGalleryConfig {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Hash prompts
+        self.prompts.hash(state);
+        // Hash styles by sorting keys and hashing (key, value) pairs
+        let mut sorted_styles: Vec<_> = self.styles.iter().collect();
+        sorted_styles.sort_by_key(|(k, _)| *k);
+        for (key, value) in sorted_styles {
+            key.hash(state);
+            value.hash(state);
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GalleryStyle {
+    #[serde(default)]
+    pub prepend_booru: String,
+    #[serde(default)]
+    pub prepend_english: String,
 }
 
 fn default_true() -> bool {

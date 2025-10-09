@@ -33,3 +33,9 @@ prompts = [
   "anime, a strawberry shaped like a penguin, natural light",
   "floating castle, scenery. Seen from below, waterfalls cascade down from this stunning architectural innovation.",
 ]
+[model_gallery.styles.Brushwork]
+prepend_booru = "brushwork, traditional media, "
+prepend_english = "In the style of brushwork: "
+[model_gallery.styles."Ink Sketch"]
+prepend_booru = "ink sketch style, "
+prepend_english = "Rendered as an ink sketch: "

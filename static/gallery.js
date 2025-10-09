@@ -1,12 +1,19 @@
-// Gallery tag filtering functionality
+// Gallery tag and style filtering functionality
 document.addEventListener('DOMContentLoaded', () => {
-    const filterButtons = document.querySelectorAll('.tag-filter');
+    const filterButtons = document.querySelectorAll('.filter[data-tag]');
+    const styleFilterButtons = document.querySelectorAll('.filter[data-style]');
     const modelRows = document.querySelectorAll('tbody tr[data-tags]');
 
     // Get tag from URL parameter
     function getTagFromURL() {
         const params = new URLSearchParams(window.location.search);
         return params.get('tag');
+    }
+
+    // Get style from URL parameter
+    function getStyleFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('style');
     }
 
     // Generic URL update function that preserves other parameters
@@ -25,6 +32,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wrapper for updating tag parameter
     function updateTagURL(tag) {
         updateURL({ tag: tag });
+    }
+
+    // Wrapper for updating style parameter
+    function updateStyleURL(style) {
+        updateURL({ style: style });
     }
 
     // Apply filter based on selected tag
@@ -55,6 +67,18 @@ document.addEventListener('DOMContentLoaded', () => {
         applyFilter(tag);
     }
 
+    // Set active style button (styles don't filter, they reload the page)
+    function setActiveStyle(style) {
+        // Update active button
+        styleFilterButtons.forEach(btn => {
+            if (btn.dataset.style === style) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+    }
+
     // Initialize: read tag from URL or use active button
     const urlTag = getTagFromURL();
     if (urlTag) {
@@ -62,7 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setActiveTag(urlTag);
     } else {
         // No URL parameter, use the server-set active button and update URL to match
-        const activeButton = document.querySelector('.tag-filter.active');
+        const activeButton = document.querySelector('.filter[data-tag].active');
         if (activeButton) {
             const serverDefaultTag = activeButton.dataset.tag;
             applyFilter(serverDefaultTag);
@@ -86,11 +110,43 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Initialize style from URL
+    const urlStyle = getStyleFromURL();
+    if (urlStyle) {
+        setActiveStyle(urlStyle);
+    } else {
+        // Use server-set default and update URL
+        const activeStyleButton = document.querySelector('.filter[data-style].active');
+        if (activeStyleButton) {
+            const serverDefaultStyle = activeStyleButton.dataset.style;
+            const url = new URL(window.location);
+            url.searchParams.set('style', serverDefaultStyle);
+            window.history.replaceState({}, '', url);
+        }
+    }
+
+    // Handle style filter button clicks (reloads the page with new style)
+    styleFilterButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const selectedStyle = button.dataset.style;
+
+            // Update URL and reload
+            updateStyleURL(selectedStyle);
+            window.location.reload();
+        });
+    });
+
     // Handle browser back/forward navigation
     window.addEventListener('popstate', () => {
         const currentTag = getTagFromURL();
         if (currentTag) {
             setActiveTag(currentTag);
+        }
+        // For style changes, we need to reload since images are different
+        const currentStyle = getStyleFromURL();
+        const activeStyleButton = document.querySelector('.filter[data-style].active');
+        if (activeStyleButton && currentStyle && activeStyleButton.dataset.style !== currentStyle) {
+            window.location.reload();
         }
     });
 

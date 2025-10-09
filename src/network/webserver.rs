@@ -22,7 +22,7 @@ use tracing::{debug, error, info, trace};
 use crate::{
     actions::imagen::{GenerateImagesRequest, submit_generation},
     config::{
-        global::{ModelGalleryConfig, WebServerConfig},
+        global::{GalleryStyle, ModelGalleryConfig, WebServerConfig},
         models::{Backend, Model},
     },
     messages::imagen::{Generate, References},
@@ -55,12 +55,20 @@ struct GalleryTemplate {
     js_url: String,
     active_tag: String,
     tags: Vec<TagButton>,
+    active_style: String,
+    styles: Vec<StyleButton>,
     prompts: Vec<String>,
     models: Vec<ModelRow>,
 }
 
 /// Tag filter button data
 struct TagButton {
+    name: String,
+    display_name: String,
+}
+
+/// Style filter button data
+struct StyleButton {
     name: String,
     display_name: String,
 }
@@ -110,6 +118,7 @@ struct AppState {
 #[derive(serde::Deserialize)]
 struct GalleryQuery {
     tag: Option<String>,
+    style: Option<String>,
 }
 
 impl WebServer {
@@ -374,6 +383,8 @@ async fn model_gallery_handler(
             js_url,
             active_tag: "all".to_string(),
             tags: vec![],
+            active_style: "default".to_string(),
+            styles: vec![],
             prompts: vec![],
             models: vec![],
         }
@@ -444,6 +455,30 @@ async fn model_gallery_handler(
         })
         .collect();
 
+    // Build style buttons data
+    let mut style_names: Vec<String> = state.gallery_config.styles.keys().cloned().collect();
+    style_names.sort();
+
+    let style_buttons: Vec<StyleButton> = style_names
+        .iter()
+        .map(|style| StyleButton {
+            name: style.clone(),
+            display_name: capitalize(style),
+        })
+        .collect();
+
+    // Determine active style (default to "default")
+    let active_style = if let Some(ref query_style) = query.style {
+        // Validate that the style exists in our style list or is "default"
+        if query_style == "default" || state.gallery_config.styles.contains_key(query_style) {
+            query_style.as_str()
+        } else {
+            "default"
+        }
+    } else {
+        "default"
+    };
+
     // Build model rows data
     let mut model_rows = Vec::new();
     for (model_name, model) in &models {
@@ -452,12 +487,21 @@ async fn model_gallery_handler(
 
         let mut cells = Vec::new();
         for prompt in &state.gallery_config.prompts {
+            // Apply style prepend to prompt
+            let styled_prompt = apply_style_to_prompt(
+                prompt,
+                active_style,
+                &state.gallery_config.styles,
+                &model.tags,
+            );
+
             // Build a Generate struct and apply model defaults
-            let mut generate = build_gallery_generate(prompt, model_name);
+            let mut generate = build_gallery_generate(&styled_prompt, model_name);
             crate::actions::imagen::apply_model_defaults(&mut generate, model);
 
             let image_urls =
-                get_gallery_image(&mut state.redis, model_name, model, &generate).await;
+                get_gallery_image(&mut state.redis, model_name, model, &generate, active_style)
+                    .await;
 
             // Generate a deterministic but varied cycle offset (0-39, representing 0-9.75s in 0.25s increments)
             // Based on hash of model+prompt to ensure different cells don't sync
@@ -493,7 +537,7 @@ async fn model_gallery_handler(
                 urls_json,
                 offset,
                 model_config,
-                prompt: prompt.clone(),
+                prompt: styled_prompt.clone(),
                 images,
             });
         }
@@ -515,6 +559,8 @@ async fn model_gallery_handler(
         js_url,
         active_tag: default_tag.to_string(),
         tags: tag_buttons,
+        active_style: active_style.to_string(),
+        styles: style_buttons,
         prompts: state.gallery_config.prompts.clone(),
         models: model_rows,
     }
@@ -787,9 +833,49 @@ fn build_model_config_json(model: &Model) -> String {
     config_obj.to_string()
 }
 
-/// Generate a stable cache key for a model+prompt combination
-fn gallery_cache_key(model_name: &str, model: &Model, generate: &Generate) -> String {
+/// Apply style prepend to a prompt based on model tags
+fn apply_style_to_prompt(
+    prompt: &str,
+    style_name: &str,
+    styles: &std::collections::HashMap<String, GalleryStyle>,
+    model_tags: &[String],
+) -> String {
+    // "default" style means no prepending
+    if style_name == "default" {
+        return prompt.to_string();
+    }
+
+    // Get the style configuration
+    let Some(style) = styles.get(style_name) else {
+        return prompt.to_string();
+    };
+
+    // Determine which prepend to use based on model tags
+    let prepend = if model_tags.contains(&"booru".to_string()) {
+        &style.prepend_booru
+    } else {
+        &style.prepend_english
+    };
+
+    // Apply prepend if it's not empty
+    if prepend.is_empty() {
+        prompt.to_string()
+    } else {
+        format!("{}{}", prepend, prompt)
+    }
+}
+
+/// Generate a stable cache key for a model+prompt combination with style
+fn gallery_cache_key(
+    model_name: &str,
+    model: &Model,
+    generate: &Generate,
+    style_name: &str,
+) -> String {
     let mut hasher = Sha256::new();
+
+    // Include the style name to differentiate cached images by style
+    hasher.update(style_name.as_bytes());
 
     // Include the model configuration (backend and prompt_defaults)
     // These are the fields that affect image generation
@@ -813,8 +899,9 @@ async fn get_gallery_image(
     model_name: &str,
     model: &Model,
     generate: &Generate,
+    style_name: &str,
 ) -> Vec<String> {
-    let cache_key = gallery_cache_key(model_name, model, generate);
+    let cache_key = gallery_cache_key(model_name, model, generate, style_name);
 
     match redis::cmd("GET")
         .arg(&cache_key)
@@ -847,9 +934,10 @@ async fn set_gallery_image(
     model_name: &str,
     model: &Model,
     generate: &Generate,
+    style_name: &str,
     image_uuids: &[String],
 ) -> Result<()> {
-    let cache_key = gallery_cache_key(model_name, model, generate);
+    let cache_key = gallery_cache_key(model_name, model, generate, style_name);
 
     let uuids_json =
         serde_json::to_string(image_uuids).context("Failed to serialize image UUIDs")?;
@@ -911,28 +999,38 @@ async fn pre_generate_gallery_task(
         return;
     }
 
-    // Collect all missing (model, prompt) combinations
+    // Build list of all styles (default + configured styles)
+    let mut all_styles = vec!["default".to_string()];
+    all_styles.extend(gallery_config.styles.keys().cloned());
+
+    // Collect all missing (model, prompt, style) combinations
     let mut missing = Vec::new();
     for (model_name, model) in &models {
-        for prompt in &gallery_config.prompts {
-            // Build Generate struct and apply model defaults
-            let mut generate = build_gallery_generate(prompt, model_name);
-            crate::actions::imagen::apply_model_defaults(&mut generate, model);
+        for style_name in &all_styles {
+            for prompt in &gallery_config.prompts {
+                // Apply style prepend to prompt
+                let styled_prompt =
+                    apply_style_to_prompt(prompt, style_name, &gallery_config.styles, &model.tags);
 
-            let cache_key = gallery_cache_key(model_name, model, &generate);
-            match redis::cmd("EXISTS")
-                .arg(&cache_key)
-                .query_async::<u8>(&mut redis)
-                .await
-            {
-                Ok(0) => {
-                    missing.push((model_name.to_string(), generate));
-                }
-                Ok(_) => {
-                    debug!("Gallery image already cached: {}", cache_key);
-                }
-                Err(e) => {
-                    error!("Failed to check cache for {}: {:#}", cache_key, e);
+                // Build Generate struct and apply model defaults
+                let mut generate = build_gallery_generate(&styled_prompt, model_name);
+                crate::actions::imagen::apply_model_defaults(&mut generate, model);
+
+                let cache_key = gallery_cache_key(model_name, model, &generate, style_name);
+                match redis::cmd("EXISTS")
+                    .arg(&cache_key)
+                    .query_async::<u8>(&mut redis)
+                    .await
+                {
+                    Ok(0) => {
+                        missing.push((model_name.to_string(), style_name.clone(), generate));
+                    }
+                    Ok(_) => {
+                        debug!("Gallery image already cached: {}", cache_key);
+                    }
+                    Err(e) => {
+                        error!("Failed to check cache for {}: {:#}", cache_key, e);
+                    }
                 }
             }
         }
@@ -947,11 +1045,11 @@ async fn pre_generate_gallery_task(
     info!("Gallery pre-generation: {} images to generate", total);
 
     // Generate each missing image serially
-    for (index, (model_name, generate_request)) in missing.iter().enumerate() {
+    for (index, (model_name, style_name, generate_request)) in missing.iter().enumerate() {
         let progress = index + 1;
         info!(
-            "Gallery: Generating {}/{} ({} / {})",
-            progress, total, model_name, generate_request.raw_prompt
+            "Gallery: Generating {}/{} ({} / {} / {})",
+            progress, total, model_name, style_name, generate_request.raw_prompt
         );
 
         // Resolve the model
@@ -1039,6 +1137,7 @@ async fn pre_generate_gallery_task(
                 model_name,
                 &model_for_cache,
                 generate_request,
+                style_name,
                 &uuids,
             )
             .await
