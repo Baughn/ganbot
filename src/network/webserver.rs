@@ -28,6 +28,7 @@ use crate::{
     messages::imagen::{Generate, References},
     persistence::images::upload_image_with_generation,
     supervisor::{GetModelsConfig, Supervisor},
+    util::image_compression::compress_jpeg,
 };
 
 /// Template for the index/home page
@@ -151,6 +152,10 @@ impl WebServer {
             .route("/", get(index_handler))
             .route("/help/{*path}", get(help_handler))
             .route("/gallery/models", get(model_gallery_handler))
+            .route(
+                "/image/{scale}/{quality}/{uuid}",
+                get(compressed_image_handler),
+            )
             .nest_service("/static", static_service)
             .with_state(state);
 
@@ -338,8 +343,6 @@ async fn model_gallery_handler(
         }
     };
 
-    let image_host_config = Supervisor::image_host().await;
-
     // Filter to ComfyUI models
     let mut models: Vec<_> = models_config
         .models
@@ -453,14 +456,8 @@ async fn model_gallery_handler(
             let mut generate = build_gallery_generate(prompt, model_name);
             crate::actions::imagen::apply_model_defaults(&mut generate, model);
 
-            let image_urls = get_gallery_image(
-                &mut state.redis,
-                model_name,
-                model,
-                &generate,
-                &image_host_config.base_url,
-            )
-            .await;
+            let image_urls =
+                get_gallery_image(&mut state.redis, model_name, model, &generate).await;
 
             // Generate a deterministic but varied cycle offset (0-39, representing 0-9.75s in 0.25s increments)
             // Based on hash of model+prompt to ensure different cells don't sync
@@ -522,6 +519,167 @@ async fn model_gallery_handler(
         models: model_rows,
     }
     .into_response()
+}
+
+/// Path parameters for compressed image endpoint
+#[derive(serde::Deserialize)]
+struct ImagePathParams {
+    uuid: String,
+    scale: String,
+    quality: String,
+}
+
+/// Handler for compressed image proxy endpoint
+async fn compressed_image_handler(
+    Path(params): Path<ImagePathParams>,
+    State(mut state): State<AppState>,
+) -> Response {
+    // Strip .jpg suffix from uuid if present
+    let uuid = params.uuid.strip_suffix(".jpg").unwrap_or(&params.uuid);
+
+    // Parse scale and quality
+    let scale: f32 = match params.scale.parse() {
+        Ok(s) if s > 0.0 && s <= 2.0 => s,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Invalid scale parameter (must be 0.0 < scale <= 2.0)",
+            )
+                .into_response();
+        }
+    };
+
+    let quality: u8 = match params.quality.parse() {
+        Ok(q) if q > 0 && q <= 100 => q,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Invalid quality parameter (must be 1-100)",
+            )
+                .into_response();
+        }
+    };
+
+    // Validate UUID format (basic check for enhanced UUIDv7 with optional suffix)
+    // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx[.N]
+    let uuid_parts: Vec<&str> = uuid.split('.').collect();
+    if uuid_parts.is_empty() || uuid_parts[0].len() < 36 {
+        return (StatusCode::BAD_REQUEST, "Invalid UUID format").into_response();
+    }
+
+    // Build cache key
+    let cache_key = format!("image:compressed:{}:{}:{}", uuid, params.scale, params.quality);
+
+    // Check Redis cache
+    let cached: Option<Vec<u8>> = match redis::cmd("GET")
+        .arg(&cache_key)
+        .query_async(&mut state.redis)
+        .await
+    {
+        Ok(data) => data,
+        Err(e) => {
+            error!("Redis error checking cache for {}: {:#}", cache_key, e);
+            None
+        }
+    };
+
+    if let Some(compressed_bytes) = cached {
+        trace!("Image cache hit: {}", cache_key);
+        return serve_jpeg_response(compressed_bytes);
+    }
+
+    // Cache miss - fetch original from remote host
+    trace!("Image cache miss: {}", cache_key);
+    let image_host_config = Supervisor::image_host().await;
+    let original_url = format!(
+        "{}/{}.jpg",
+        image_host_config.base_url.trim_end_matches('/'),
+        uuid
+    );
+
+    debug!("Fetching original image from: {}", original_url);
+
+    // Fetch original JPEG
+    let original_bytes = match reqwest::get(&original_url).await {
+        Ok(response) => {
+            if !response.status().is_success() {
+                error!("Failed to fetch original image: HTTP {}", response.status());
+                return (
+                    StatusCode::NOT_FOUND,
+                    "Original image not found on remote host",
+                )
+                    .into_response();
+            }
+            match response.bytes().await {
+                Ok(bytes) => bytes.to_vec(),
+                Err(e) => {
+                    error!("Failed to read image bytes: {:#}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to read image data",
+                    )
+                        .into_response();
+                }
+            }
+        }
+        Err(e) => {
+            error!(
+                "Failed to fetch original image from {}: {:#}",
+                original_url, e
+            );
+            return (
+                StatusCode::BAD_GATEWAY,
+                "Failed to fetch image from remote host",
+            )
+                .into_response();
+        }
+    };
+
+    // Compress the image
+    let compressed_bytes = match compress_jpeg(&original_bytes, scale, quality) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!("Failed to compress image {}: {:#}", uuid, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to compress image",
+            )
+                .into_response();
+        }
+    };
+
+    // Cache the compressed image with 1-day TTL
+    if let Err(e) = redis::cmd("SETEX")
+        .arg(&cache_key)
+        .arg(86400) // 1 day TTL
+        .arg(&compressed_bytes)
+        .query_async::<()>(&mut state.redis)
+        .await
+    {
+        error!("Failed to cache compressed image {}: {:#}", cache_key, e);
+        // Continue serving the image even if caching fails
+    } else {
+        debug!(
+            "Cached compressed image: {} ({} bytes)",
+            cache_key,
+            compressed_bytes.len()
+        );
+    }
+
+    serve_jpeg_response(compressed_bytes)
+}
+
+/// Helper to build JPEG response with appropriate headers
+fn serve_jpeg_response(jpeg_bytes: Vec<u8>) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        jpeg_bytes,
+    )
+        .into_response()
 }
 
 /// Gallery cache helper functions
@@ -652,7 +810,6 @@ async fn get_gallery_image(
     model_name: &str,
     model: &Model,
     generate: &Generate,
-    image_host_base_url: &str,
 ) -> Vec<String> {
     let cache_key = gallery_cache_key(model_name, model, generate);
 
@@ -666,9 +823,7 @@ async fn get_gallery_image(
                 trace!("Gallery cache hit: {} -> {:?}", cache_key, uuids);
                 uuids
                     .into_iter()
-                    .map(|uuid| {
-                        format!("{}/{}.jpg", image_host_base_url.trim_end_matches('/'), uuid)
-                    })
+                    .map(|uuid| format!("/image/0.5/75/{}.jpg", uuid))
                     .collect()
             }
             Err(_) => {

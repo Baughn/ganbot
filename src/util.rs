@@ -1,5 +1,6 @@
 //! Misc utility functions
 
+pub mod image_compression;
 pub mod kameo;
 pub mod token_bucket;
 

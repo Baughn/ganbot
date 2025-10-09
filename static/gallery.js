@@ -167,6 +167,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return { overlay, infoPanel, promptPanel, imageGrid };
     }
 
+    function getFullResolutionUrl(thumbnailUrl) {
+        // Convert thumbnail URL to full resolution
+        // Example: /image/0.5/75/{uuid}.jpg -> /image/1.0/90/{uuid}.jpg
+        const parts = thumbnailUrl.split('/');
+        if (parts.length >= 5 && parts[0] === '' && parts[1] === 'image') {
+            // Replace scale (index 2) and quality (index 3), keep uuid.jpg (index 4)
+            parts[2] = '1.0';  // full size
+            parts[3] = '90';   // high quality
+            return parts.join('/');
+        }
+        // Fallback for non-compressed URLs (e.g., placeholders)
+        return thumbnailUrl;
+    }
+
     function showModal(modal, imageUrls, imgAlt, modelConfig, prompt) {
         // Clear existing content
         modal.imageGrid.innerHTML = '';
@@ -185,11 +199,11 @@ document.addEventListener('DOMContentLoaded', () => {
             modal.promptPanel.innerHTML = promptHTML;
         }
 
-        // Add all images to the grid
+        // Add all images to the grid at full resolution
         imageUrls.forEach((url, index) => {
             const img = document.createElement('img');
             img.className = 'image-modal-img';
-            img.src = url;
+            img.src = getFullResolutionUrl(url);  // Convert to full-res URL
             img.alt = `${imgAlt} - ${index + 1}`;
             modal.imageGrid.appendChild(img);
         });
