@@ -14,13 +14,14 @@
     <button class="tag-filter{% if active_tag == tag.name %} active{% endif %}" data-tag="{{ tag.name }}">{{ tag.display_name }}</button>
     {% endfor %}
 </div>
+<div class="gallery-pagination-top"></div>
 <div class="gallery-comparison">
     <table class="comparison-grid">
         <thead>
             <tr>
                 <th>Model</th>
                 {% for prompt in prompts %}
-                <th>{{ prompt }}</th>
+                <th data-column-index="{{ loop.index0 }}">{{ prompt }}</th>
                 {% endfor %}
             </tr>
         </thead>
@@ -34,7 +35,7 @@
                     {% endif %}
                 </td>
                 {% for cell in model.cells %}
-                <td>
+                <td data-column-index="{{ loop.index0 }}">
                     <div class="gallery-cell" data-urls="{{ cell.urls_json }}" data-cycle-offset="{{ cell.offset }}" data-model-config="{{ cell.model_config }}" data-prompt="{{ cell.prompt }}">
                         {% for image in cell.images %}
                         <a href="{{ image.url }}" class="gallery-link" style="opacity: {{ image.opacity }}; pointer-events: {{ image.pointer_events }};"><img src="{{ image.url }}" alt="{{ model.name }} - {{ cell.prompt }}" class="gallery-img" data-index="{{ image.index }}" /></a>
@@ -47,4 +48,5 @@
         </tbody>
     </table>
 </div>
+<div class="gallery-pagination-bottom"></div>
 {% endblock %}

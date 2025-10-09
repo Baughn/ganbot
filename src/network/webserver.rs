@@ -568,7 +568,10 @@ async fn compressed_image_handler(
     }
 
     // Build cache key
-    let cache_key = format!("image:compressed:{}:{}:{}", uuid, params.scale, params.quality);
+    let cache_key = format!(
+        "image:compressed:{}:{}:{}",
+        uuid, params.scale, params.quality
+    );
 
     // Check Redis cache
     let cached: Option<Vec<u8>> = match redis::cmd("GET")

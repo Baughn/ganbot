@@ -9,11 +9,22 @@ document.addEventListener('DOMContentLoaded', () => {
         return params.get('tag');
     }
 
-    // Update URL with selected tag
-    function updateURL(tag) {
+    // Generic URL update function that preserves other parameters
+    function updateURL(params) {
         const url = new URL(window.location);
-        url.searchParams.set('tag', tag);
+        for (const [key, value] of Object.entries(params)) {
+            if (value === null || value === undefined) {
+                url.searchParams.delete(key);
+            } else {
+                url.searchParams.set(key, value);
+            }
+        }
         window.history.pushState({}, '', url);
+    }
+
+    // Wrapper for updating tag parameter
+    function updateTagURL(tag) {
+        updateURL({ tag: tag });
     }
 
     // Apply filter based on selected tag
@@ -71,15 +82,15 @@ document.addEventListener('DOMContentLoaded', () => {
             setActiveTag(selectedTag);
 
             // Update URL
-            updateURL(selectedTag);
+            updateTagURL(selectedTag);
         });
     });
 
     // Handle browser back/forward navigation
     window.addEventListener('popstate', () => {
-        const urlTag = getTagFromURL();
-        if (urlTag) {
-            setActiveTag(urlTag);
+        const currentTag = getTagFromURL();
+        if (currentTag) {
+            setActiveTag(currentTag);
         }
     });
 
@@ -181,22 +192,22 @@ document.addEventListener('DOMContentLoaded', () => {
         return thumbnailUrl;
     }
 
-    function showModal(modal, imageUrls, imgAlt, modelConfig, prompt) {
+    function showModal(modalComponents, imageUrls, imgAlt, modelConfig, prompt) {
         // Clear existing content
-        modal.imageGrid.innerHTML = '';
-        modal.infoPanel.innerHTML = '';
-        modal.promptPanel.innerHTML = '';
+        modalComponents.imageGrid.innerHTML = '';
+        modalComponents.infoPanel.innerHTML = '';
+        modalComponents.promptPanel.innerHTML = '';
 
         // Populate info panel if model config is available
         if (modelConfig) {
             const infoHTML = formatModelConfig(modelConfig);
-            modal.infoPanel.innerHTML = infoHTML;
+            modalComponents.infoPanel.innerHTML = infoHTML;
         }
 
         // Populate prompt panel if prompt is available
         if (prompt) {
             const promptHTML = `<h3>Prompt</h3><p class="prompt-text">${prompt}</p>`;
-            modal.promptPanel.innerHTML = promptHTML;
+            modalComponents.promptPanel.innerHTML = promptHTML;
         }
 
         // Add all images to the grid at full resolution
@@ -205,10 +216,10 @@ document.addEventListener('DOMContentLoaded', () => {
             img.className = 'image-modal-img';
             img.src = getFullResolutionUrl(url);  // Convert to full-res URL
             img.alt = `${imgAlt} - ${index + 1}`;
-            modal.imageGrid.appendChild(img);
+            modalComponents.imageGrid.appendChild(img);
         });
 
-        modal.overlay.classList.add('active');
+        modalComponents.overlay.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
 
@@ -306,5 +317,198 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }, 250);
+    }
+
+    // Gallery pagination functionality
+    const paginationTopContainer = document.querySelector('.gallery-pagination-top');
+    const paginationBottomContainer = document.querySelector('.gallery-pagination-bottom');
+    const comparisonGrid = document.querySelector('.comparison-grid');
+
+    if (paginationTopContainer && comparisonGrid) {
+        // Get all column headers (excluding the first "Model" column)
+        const columnHeaders = Array.from(comparisonGrid.querySelectorAll('thead th[data-column-index]'));
+        const totalColumns = columnHeaders.length;
+
+        if (totalColumns === 0) {
+            // No columns to paginate
+            return;
+        }
+
+        // Pagination state
+        let leftmostColumn = 0;
+        let columnsPerPage = 1;
+
+        // Calculate how many columns fit in the viewport
+        function calculateColumnsPerPage() {
+            const viewportWidth = window.innerWidth;
+            const sidebarWidth = 200; // From CSS
+            const modelColumnWidth = 150; // Approximate width of model name column
+            const cellWidth = 216; // 200px image + 16px padding (from CSS)
+            const scrollbarBuffer = 20; // Account for scrollbar
+
+            const availableWidth = viewportWidth - sidebarWidth - modelColumnWidth - scrollbarBuffer;
+            const cols = Math.max(1, Math.floor(availableWidth / cellWidth));
+
+            return cols;
+        }
+
+        // Get leftmost column from URL
+        function getColumnFromURL() {
+            const params = new URLSearchParams(window.location.search);
+            const col = params.get('col');
+            return col !== null ? parseInt(col, 10) : 0;
+        }
+
+        // Wrapper for updating column parameter
+        function updateColumnURL(column) {
+            updateURL({ col: column });
+        }
+
+        // Show/hide columns based on current leftmost column and columns per page
+        function updateColumnVisibility() {
+            const endColumn = Math.min(leftmostColumn + columnsPerPage, totalColumns);
+
+            columnHeaders.forEach((header) => {
+                const columnIndex = parseInt(header.dataset.columnIndex, 10);
+                const isVisible = columnIndex >= leftmostColumn && columnIndex < endColumn;
+
+                // Update header visibility
+                header.style.display = isVisible ? '' : 'none';
+
+                // Update all cells in this column
+                const cells = comparisonGrid.querySelectorAll(`tbody td[data-column-index="${columnIndex}"]`);
+                cells.forEach(cell => {
+                    cell.style.display = isVisible ? '' : 'none';
+                });
+            });
+        }
+
+        // Render pagination controls
+        function renderPagination() {
+            paginationTopContainer.innerHTML = '';
+            paginationTopContainer.appendChild(createPaginationControls());
+
+            if (paginationBottomContainer) {
+                paginationBottomContainer.innerHTML = '';
+                paginationBottomContainer.appendChild(createPaginationControls());
+            }
+        }
+
+        // Create pagination control elements
+        function createPaginationControls() {
+            const container = document.createElement('div');
+            container.className = 'pagination-controls';
+
+            // Previous button
+            const prevBtn = document.createElement('button');
+            prevBtn.className = 'pagination-btn pagination-prev';
+            prevBtn.textContent = '‹ Prev';
+            prevBtn.disabled = leftmostColumn === 0;
+            prevBtn.addEventListener('click', () => {
+                // Jump to previous aligned page boundary
+                leftmostColumn = Math.max(0, Math.floor((leftmostColumn - 1) / columnsPerPage) * columnsPerPage);
+                updateColumnURL(leftmostColumn);
+                updateColumnVisibility();
+                renderPagination();
+            });
+            container.appendChild(prevBtn);
+
+            // Page buttons
+            const pageButtonsContainer = document.createElement('div');
+            pageButtonsContainer.className = 'pagination-pages';
+
+            // Calculate natural page boundaries (multiples of columnsPerPage)
+            const totalPages = Math.ceil(totalColumns / columnsPerPage);
+            const currentPageIndex = Math.floor(leftmostColumn / columnsPerPage);
+            const isAligned = leftmostColumn % columnsPerPage === 0;
+
+            for (let page = 0; page < totalPages; page++) {
+                const pageStartColumn = page * columnsPerPage;
+
+                // If we're on an unaligned position and this is where we'd insert the indicator
+                if (!isAligned && page === currentPageIndex + 1) {
+                    const intermediateBtn = document.createElement('button');
+                    intermediateBtn.className = 'pagination-btn pagination-page pagination-intermediate active';
+                    intermediateBtn.textContent = '•';
+                    intermediateBtn.title = `Columns ${leftmostColumn + 1}-${Math.min(leftmostColumn + columnsPerPage, totalColumns)}`;
+                    pageButtonsContainer.appendChild(intermediateBtn);
+                }
+
+                const pageBtn = document.createElement('button');
+                pageBtn.className = 'pagination-btn pagination-page';
+                pageBtn.textContent = (page + 1).toString();
+
+                // Mark as active if this is the current aligned page
+                if (isAligned && page === currentPageIndex) {
+                    pageBtn.classList.add('active');
+                }
+
+                pageBtn.addEventListener('click', () => {
+                    leftmostColumn = pageStartColumn;
+                    updateColumnURL(leftmostColumn);
+                    updateColumnVisibility();
+                    renderPagination();
+                });
+
+                pageButtonsContainer.appendChild(pageBtn);
+            }
+
+            container.appendChild(pageButtonsContainer);
+
+            // Next button
+            const nextBtn = document.createElement('button');
+            nextBtn.className = 'pagination-btn pagination-next';
+            nextBtn.textContent = 'Next ›';
+            // Check if next aligned page exists
+            nextBtn.disabled = (Math.floor(leftmostColumn / columnsPerPage) + 1) * columnsPerPage >= totalColumns;
+            nextBtn.addEventListener('click', () => {
+                // Jump to next aligned page boundary
+                leftmostColumn = (Math.floor(leftmostColumn / columnsPerPage) + 1) * columnsPerPage;
+                updateColumnURL(leftmostColumn);
+                updateColumnVisibility();
+                renderPagination();
+            });
+            container.appendChild(nextBtn);
+
+            return container;
+        }
+
+        // Initialize pagination
+        function initializePagination() {
+            columnsPerPage = calculateColumnsPerPage();
+            leftmostColumn = getColumnFromURL();
+
+            // Clamp leftmost column to valid range
+            leftmostColumn = Math.max(0, Math.min(leftmostColumn, totalColumns - 1));
+
+            updateColumnVisibility();
+            renderPagination();
+        }
+
+        // Handle window resize - keep leftmost column anchored
+        let resizeTimeout;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                const newColumnsPerPage = calculateColumnsPerPage();
+                if (newColumnsPerPage !== columnsPerPage) {
+                    columnsPerPage = newColumnsPerPage;
+                    // Keep leftmost column anchored, just update visibility and controls
+                    updateColumnVisibility();
+                    renderPagination();
+                }
+            }, 250);
+        });
+
+        // Handle browser back/forward navigation
+        window.addEventListener('popstate', () => {
+            leftmostColumn = getColumnFromURL();
+            leftmostColumn = Math.max(0, Math.min(leftmostColumn, totalColumns - 1));
+            updateColumnVisibility();
+            renderPagination();
+        });
+
+        // Initialize
+        initializePagination();
     }
 });

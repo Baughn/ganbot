@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(cargo build)"
+    ]
+  },
   "hooks": {
     "Stop": [
       {
@@ -11,14 +16,13 @@
           {
             "type": "command",
             "command": "cargo fmt || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "eslint static/ || exit 2"
           }
         ]
       }
-    ]
-  },
-  "permissions": {
-    "allow": [
-      "Bash(cargo build)"
     ]
   }
 }

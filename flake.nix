@@ -26,7 +26,7 @@
 
           # For image processing
           libwebp
-          
+
           # Development tools
           rustToolchain
           cargo-watch
@@ -36,6 +36,9 @@
           cargo-machete
           cargo-features-manager
           bacon
+
+          # JavaScript linting
+          nodePackages.eslint
         ];
 
         nativeBuildInputs = with pkgs; [
@@ -69,6 +72,7 @@
             echo "  bacon          - Run bacon for continuous checking"
             echo "  cargo machete   - Remove old deps"
             echo "  cargo features prune"
+            echo "  eslint         - Lint JavaScript files"
             echo ""
           '';
         };

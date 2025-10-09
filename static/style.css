@@ -487,6 +487,77 @@ pre code {
     opacity: 0.7;
 }
 
+/* Gallery pagination controls */
+.gallery-pagination-top,
+.gallery-pagination-bottom {
+    margin: 1rem 0;
+}
+
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    justify-content: center;
+}
+
+.pagination-btn {
+    padding: 0.5rem 1rem;
+    border: 2px solid #3498db;
+    background: white;
+    color: #3498db;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: all 0.2s;
+    min-width: 40px;
+}
+
+.pagination-btn:hover:not(:disabled) {
+    background: #ecf0f1;
+}
+
+.pagination-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    border-color: #95a5a6;
+    color: #95a5a6;
+}
+
+.pagination-btn.active {
+    background: #3498db;
+    color: white;
+}
+
+.pagination-pages {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.pagination-page {
+    min-width: 40px;
+}
+
+.pagination-intermediate {
+    background: #e74c3c;
+    border-color: #e74c3c;
+    color: white;
+    font-size: 1.2rem;
+    line-height: 1;
+    padding: 0.5rem 0.8rem;
+}
+
+.pagination-intermediate:hover {
+    background: #c0392b;
+    border-color: #c0392b;
+}
+
+.pagination-prev,
+.pagination-next {
+    font-weight: 700;
+}
+
 /* Responsive design */
 @media (max-width: 768px) {
     .sidebar {
@@ -553,5 +624,19 @@ pre code {
 
     .image-modal-img {
         max-height: 40vh;
+    }
+
+    .pagination-controls {
+        gap: 0.5rem;
+    }
+
+    .pagination-btn {
+        padding: 0.4rem 0.8rem;
+        font-size: 0.8rem;
+        min-width: 35px;
+    }
+
+    .pagination-pages {
+        gap: 0.25rem;
     }
 }
