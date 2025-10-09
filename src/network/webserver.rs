@@ -509,10 +509,14 @@ async fn model_gallery_handler(
             let urls_json = serde_json::to_string(&image_urls).unwrap_or_else(|_| "[]".to_string());
             let urls_json_escaped = urls_json.replace('"', "&quot;");
 
+            // Build model config for modal display
+            let model_config = build_model_config_json(model);
+            let model_config_escaped = model_config.replace('"', "&quot;");
+
             // Build HTML with 4 images, first visible, rest hidden
             let mut cell_html = format!(
-                r#"<td><div class="gallery-cell" data-urls="{}" data-cycle-offset="{}">"#,
-                urls_json_escaped, offset
+                r#"<td><div class="gallery-cell" data-urls="{}" data-cycle-offset="{}" data-model-config="{}">"#,
+                urls_json_escaped, offset, model_config_escaped
             );
 
             for (index, url) in image_urls.iter().enumerate() {
@@ -633,6 +637,56 @@ fn build_gallery_generate(prompt: &str, model_name: &str) -> Generate {
         },
         alias: None,
     }
+}
+
+/// Build a JSON string of model configuration for display in the modal
+fn build_model_config_json(model: &Model) -> String {
+    let config_obj = match &model.backend {
+        Backend::ComfyUI {
+            checkpoint,
+            cfg,
+            sampler,
+            scheduler,
+            steps,
+            resolution,
+            two_stage,
+            upscale_factor,
+            stage2_denoise,
+            stage2_sampler,
+            stage2_scheduler,
+            ..
+        } => {
+            let checkpoint_name = match checkpoint {
+                crate::config::models::Checkpoint::Combined(name) => name.clone(),
+                crate::config::models::Checkpoint::Split { unet, .. } => unet.clone(),
+            };
+
+            serde_json::json!({
+                "name": model.name,
+                "description": model.description,
+                "checkpoint": checkpoint_name,
+                "sampler": sampler,
+                "scheduler": scheduler,
+                "steps": steps,
+                "resolution": format!("{}x{}", resolution.0, resolution.1),
+                "cfg": cfg,
+                "two_stage": two_stage,
+                "upscale_factor": upscale_factor,
+                "stage2_denoise": stage2_denoise,
+                "stage2_sampler": stage2_sampler,
+                "stage2_scheduler": stage2_scheduler,
+            })
+        }
+        Backend::NanoBanana => {
+            serde_json::json!({
+                "name": model.name,
+                "description": model.description,
+                "backend": "NanoBanana (Gemini 2.5-flash-image-preview)",
+            })
+        }
+    };
+
+    config_obj.to_string()
 }
 
 /// Generate a stable cache key for a model+prompt combination

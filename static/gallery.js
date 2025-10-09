@@ -95,15 +95,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const galleryCell = link.closest('.gallery-cell');
             if (galleryCell) {
                 const urls = JSON.parse(galleryCell.dataset.urls || '[]');
+                const modelConfig = JSON.parse(galleryCell.dataset.modelConfig || 'null');
                 const img = link.querySelector('img');
                 const imgAlt = img.alt;
-                showModal(modal, urls, imgAlt);
+                showModal(modal, urls, imgAlt, modelConfig);
             } else {
                 // Fallback for non-gallery cells
                 const img = link.querySelector('img');
                 const imgSrc = img.src;
                 const imgAlt = img.alt;
-                showModal(modal, [imgSrc], imgAlt);
+                showModal(modal, [imgSrc], imgAlt, null);
             }
         });
     });
@@ -123,12 +124,17 @@ document.addEventListener('DOMContentLoaded', () => {
         closeBtn.innerHTML = '&times;';
         closeBtn.setAttribute('aria-label', 'Close');
 
-        // Create image grid container
+        // Create model info panel (left side)
+        const infoPanel = document.createElement('div');
+        infoPanel.className = 'image-modal-info';
+
+        // Create image grid container (right side)
         const imageGrid = document.createElement('div');
         imageGrid.className = 'image-modal-grid';
 
         // Assemble modal
         container.appendChild(closeBtn);
+        container.appendChild(infoPanel);
         container.appendChild(imageGrid);
         overlay.appendChild(container);
         document.body.appendChild(overlay);
@@ -147,12 +153,19 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        return { overlay, imageGrid };
+        return { overlay, infoPanel, imageGrid };
     }
 
-    function showModal(modal, imageUrls, imgAlt) {
-        // Clear existing images
+    function showModal(modal, imageUrls, imgAlt, modelConfig) {
+        // Clear existing content
         modal.imageGrid.innerHTML = '';
+        modal.infoPanel.innerHTML = '';
+
+        // Populate info panel if model config is available
+        if (modelConfig) {
+            const infoHTML = formatModelConfig(modelConfig);
+            modal.infoPanel.innerHTML = infoHTML;
+        }
 
         // Add all images to the grid
         imageUrls.forEach((url, index) => {
@@ -165,6 +178,62 @@ document.addEventListener('DOMContentLoaded', () => {
 
         modal.overlay.classList.add('active');
         document.body.style.overflow = 'hidden';
+    }
+
+    function formatModelConfig(config) {
+        let html = `<h2>${config.name}</h2>`;
+
+        if (config.description) {
+            html += `<p class="model-description">${config.description}</p>`;
+        }
+
+        html += '<div class="model-specs">';
+
+        if (config.checkpoint) {
+            // ComfyUI model
+            html += `<div class="spec-group">`;
+            html += `<h3>Model Configuration</h3>`;
+            html += `<div class="spec-item"><span class="spec-label">Checkpoint:</span> <span class="spec-value">${config.checkpoint}</span></div>`;
+            html += `<div class="spec-item"><span class="spec-label">Resolution:</span> <span class="spec-value">${config.resolution}</span></div>`;
+            html += `</div>`;
+
+            html += `<div class="spec-group">`;
+            html += `<h3>Sampling</h3>`;
+            html += `<div class="spec-item"><span class="spec-label">Steps:</span> <span class="spec-value">${config.steps}</span></div>`;
+            html += `<div class="spec-item"><span class="spec-label">CFG:</span> <span class="spec-value">${config.cfg}</span></div>`;
+            html += `<div class="spec-item"><span class="spec-label">Sampler:</span> <span class="spec-value">${config.sampler}</span></div>`;
+            html += `<div class="spec-item"><span class="spec-label">Scheduler:</span> <span class="spec-value">${config.scheduler}</span></div>`;
+            html += `</div>`;
+
+            // Two-stage upscaling if present
+            html += `<div class="spec-group">`;
+            if (config.two_stage) {
+                html += `<h3>Two-Stage Upscaling Enabled</h3>`;
+                if (config.upscale_factor) {
+                    html += `<div class="spec-item"><span class="spec-label">Upscale Factor:</span> <span class="spec-value">${config.upscale_factor}x</span></div>`;
+                }
+                if (config.stage2_denoise) {
+                    html += `<div class="spec-item"><span class="spec-label">Stage 2 Denoise:</span> <span class="spec-value">${config.stage2_denoise}</span></div>`;
+                }
+                if (config.stage2_sampler) {
+                    html += `<div class="spec-item"><span class="spec-label">Stage 2 Sampler:</span> <span class="spec-value">${config.stage2_sampler}</span></div>`;
+                }
+                if (config.stage2_scheduler) {
+                    html += `<div class="spec-item"><span class="spec-label">Stage 2 Scheduler:</span> <span class="spec-value">${config.stage2_scheduler}</span></div>`;
+                }
+            } else {
+                html += `<h3>Two-Stage Upscaling Disabled</h3>`;
+            }
+            html += `</div>`;
+        } else if (config.backend) {
+            // NanoBanana model
+            html += `<div class="spec-group">`;
+            html += `<div class="spec-item"><span class="spec-label">Backend:</span> <span class="spec-value">${config.backend}</span></div>`;
+            html += `</div>`;
+        }
+
+        html += '</div>';
+        return html;
     }
 
     function hideModal(overlay) {
