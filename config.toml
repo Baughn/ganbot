@@ -8,10 +8,10 @@
 url = "http://localhost:9090"
 
 [openrouter]
-cheap_model = ["openrouter/sonoma-sky-alpha", "openrouter/sonoma-dusk-alpha", "google/gemini-2.5-flash-lite"]
-chat_model = "openrouter/sonoma-sky-alpha"
+cheap_model = ["google/gemini-2.5-flash"]
+chat_model = "openrouter/auto"
 image_model = "google/gemini-2.5-flash-image-preview"
-dream_model = "openrouter/sonoma-sky-alpha"
+dream_model = "openrouter/auto"
 
 [image_host]
 ssh_hostname = "direct.brage.info"
