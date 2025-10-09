@@ -96,6 +96,7 @@ struct GalleryImage {
     opacity: &'static str,
     pointer_events: &'static str,
     index: usize,
+    loading: &'static str,
 }
 
 /// Web server actor
@@ -521,11 +522,13 @@ async fn model_gallery_handler(
                     } else {
                         ("0", "none")
                     };
+                    let loading = if index == 0 { "eager" } else { "lazy" };
                     GalleryImage {
                         url: url.clone(),
                         opacity,
                         pointer_events,
                         index,
+                        loading,
                     }
                 })
                 .collect();
