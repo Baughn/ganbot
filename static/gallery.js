@@ -358,18 +358,37 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Calculate which image to show: (time + offset) / 40 % 4
                     // 40 quarter-seconds = 10 seconds = 0.1Hz period
                     const imageIndex = Math.floor((quarterSeconds + offset) / 40) % 4;
+                    const previousIndex = parseInt(cell.dataset.previousIndex);
+                    const hasPrevious = !isNaN(previousIndex);
 
-                    // Update visibility of links using opacity and pointer-events
+                    // Update visibility using z-index crossfade to prevent white flash
                     const links = cell.querySelectorAll('.gallery-link');
                     links.forEach((link, idx) => {
                         if (idx === imageIndex) {
+                            // New image: behind at full opacity, skip transition
+                            link.style.transition = 'none';
+                            link.style.zIndex = '1';
                             link.style.opacity = '1';
                             link.style.pointerEvents = 'auto';
+                            // Force reflow to apply transition: none
+                            link.offsetHeight;
+                            link.style.transition = '';
+                        } else if (hasPrevious && idx === previousIndex) {
+                            // Old image: on top, fading out with transition
+                            link.style.transition = '';
+                            link.style.zIndex = '2';
+                            link.style.opacity = '0';
+                            link.style.pointerEvents = 'none';
                         } else {
+                            // Other images: hidden behind
+                            link.style.zIndex = '1';
                             link.style.opacity = '0';
                             link.style.pointerEvents = 'none';
                         }
                     });
+
+                    // Track current image for next cycle
+                    cell.dataset.previousIndex = imageIndex;
                 }
             });
         }, 250);
