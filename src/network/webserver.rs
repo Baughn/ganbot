@@ -242,7 +242,6 @@ async fn index_handler() -> impl IntoResponse {
     </nav>
     <main class="content">
         <h1>Welcome to Ganbot</h1>
-        <p>An IRC bot with AI capabilities and image generation.</p>
         <ul>
             <li><a href="/gallery/models">Browse Model Gallery</a></li>
             <li><a href="/help/commands">View Help</a></li>
