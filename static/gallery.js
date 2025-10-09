@@ -96,15 +96,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (galleryCell) {
                 const urls = JSON.parse(galleryCell.dataset.urls || '[]');
                 const modelConfig = JSON.parse(galleryCell.dataset.modelConfig || 'null');
+                const prompt = galleryCell.dataset.prompt || '';
                 const img = link.querySelector('img');
                 const imgAlt = img.alt;
-                showModal(modal, urls, imgAlt, modelConfig);
+                showModal(modal, urls, imgAlt, modelConfig, prompt);
             } else {
                 // Fallback for non-gallery cells
                 const img = link.querySelector('img');
                 const imgSrc = img.src;
                 const imgAlt = img.alt;
-                showModal(modal, [imgSrc], imgAlt, null);
+                showModal(modal, [imgSrc], imgAlt, null, '');
             }
         });
     });
@@ -124,17 +125,27 @@ document.addEventListener('DOMContentLoaded', () => {
         closeBtn.innerHTML = '&times;';
         closeBtn.setAttribute('aria-label', 'Close');
 
-        // Create model info panel (left side)
+        // Create left side container for info and prompt
+        const leftContainer = document.createElement('div');
+        leftContainer.className = 'image-modal-left';
+
+        // Create model info panel
         const infoPanel = document.createElement('div');
         infoPanel.className = 'image-modal-info';
+
+        // Create prompt panel
+        const promptPanel = document.createElement('div');
+        promptPanel.className = 'image-modal-prompt';
 
         // Create image grid container (right side)
         const imageGrid = document.createElement('div');
         imageGrid.className = 'image-modal-grid';
 
         // Assemble modal
+        leftContainer.appendChild(infoPanel);
+        leftContainer.appendChild(promptPanel);
         container.appendChild(closeBtn);
-        container.appendChild(infoPanel);
+        container.appendChild(leftContainer);
         container.appendChild(imageGrid);
         overlay.appendChild(container);
         document.body.appendChild(overlay);
@@ -153,18 +164,25 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        return { overlay, infoPanel, imageGrid };
+        return { overlay, infoPanel, promptPanel, imageGrid };
     }
 
-    function showModal(modal, imageUrls, imgAlt, modelConfig) {
+    function showModal(modal, imageUrls, imgAlt, modelConfig, prompt) {
         // Clear existing content
         modal.imageGrid.innerHTML = '';
         modal.infoPanel.innerHTML = '';
+        modal.promptPanel.innerHTML = '';
 
         // Populate info panel if model config is available
         if (modelConfig) {
             const infoHTML = formatModelConfig(modelConfig);
             modal.infoPanel.innerHTML = infoHTML;
+        }
+
+        // Populate prompt panel if prompt is available
+        if (prompt) {
+            const promptHTML = `<h3>Prompt</h3><p class="prompt-text">${prompt}</p>`;
+            modal.promptPanel.innerHTML = promptHTML;
         }
 
         // Add all images to the grid

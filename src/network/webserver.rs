@@ -513,9 +513,13 @@ async fn model_gallery_handler(
             let model_config_escaped = model_config.replace('"', "&quot;");
 
             // Build HTML with 4 images, first visible, rest hidden
+            let prompt_escaped = prompt
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
             let mut cell_html = format!(
-                r#"<td><div class="gallery-cell" data-urls="{}" data-cycle-offset="{}" data-model-config="{}">"#,
-                urls_json_escaped, offset, model_config_escaped
+                r#"<td><div class="gallery-cell" data-urls="{}" data-cycle-offset="{}" data-model-config="{}" data-prompt="{}">"#,
+                urls_json_escaped, offset, model_config_escaped, prompt_escaped
             );
 
             for (index, url) in image_urls.iter().enumerate() {

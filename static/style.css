@@ -354,15 +354,44 @@ pre code {
     align-items: flex-start;
 }
 
-.image-modal-info {
+.image-modal-left {
     flex-shrink: 0;
     width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
     max-height: 90vh;
-    overflow-y: auto;
+}
+
+.image-modal-info {
     background: #2c3e50;
     color: #ecf0f1;
     padding: 1.5rem;
     border-radius: 8px;
+    overflow-y: auto;
+}
+
+.image-modal-prompt {
+    background: #2c3e50;
+    color: #ecf0f1;
+    padding: 1.5rem;
+    border-radius: 8px;
+    overflow-y: auto;
+}
+
+.image-modal-prompt h3 {
+    margin: 0 0 0.75rem 0;
+    font-size: 1rem;
+    color: #ecf0f1;
+    font-weight: 600;
+}
+
+.image-modal-prompt .prompt-text {
+    margin: 0;
+    font-size: 0.9rem;
+    color: #bdc3c7;
+    line-height: 1.5;
+    word-wrap: break-word;
 }
 
 .image-modal-info h2 {
@@ -499,7 +528,18 @@ pre code {
         overflow-y: auto;
     }
 
+    .image-modal-left {
+        width: 100%;
+        max-height: none;
+    }
+
     .image-modal-info {
+        width: 100%;
+        max-height: none;
+        overflow-y: visible;
+    }
+
+    .image-modal-prompt {
         width: 100%;
         max-height: none;
         overflow-y: visible;
