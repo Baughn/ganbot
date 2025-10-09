@@ -5,7 +5,7 @@ default_tagged = "chroma-aio"
 
 [aliases]
 qwen = "qwen_image_fp8"
-fanart = "oneobsession"
+fanart = "hassaku"
 fanart-cute = "monody"
 pasanctuary = "pasanctuary-5.0"
 dream = "qwen_image_fp8"
@@ -65,7 +65,7 @@ clip = "t5xxl_fp16.safetensors"
 [models.oneobsession]
 name = "oneobsession"
 inherit = "noobai"
-tags = ["booru", "fanart", "recommended"]
+tags = ["booru", "fanart"]
 backend.ComfyUI.checkpoint = "xl-noob/oneObsession_v16Noobai.safetensors"
 
 [models.qwen_image_fp8]
@@ -131,12 +131,12 @@ resolution = [1024, 1024]
 name = "hassaku"
 inherit = "illustrious"
 description = "A multi-style fanart model. Less glitchy than Quillworks."
-
+tags = ["booru", "fanart", "recommended"]
 [models.hassaku.prompt_defaults]
 negative_prepend = "bored, worst quality, bad quality"
-
-[models.hassaku.backend]
-ComfyUI.checkpoint = "xl-ill/hassakuXLIllustrious_v30.safetensors"
+[models.hassaku.backend.ComfyUI]
+checkpoint = "xl-ill/hassakuXLIllustrious_v30.safetensors"
+cfg = 5.5
 
 [models.ntrmix]
 name = "ntrmix"
