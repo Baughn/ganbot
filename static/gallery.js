@@ -163,9 +163,180 @@ document.addEventListener('DOMContentLoaded', () => {
         // This will be set up after modal creation below
     });
 
+    // Navigation helper functions (defined before modal creation so event handlers can use them)
+    function getVisibleGalleryCells() {
+        // Get all gallery cells from visible rows only
+        const visibleCells = [];
+        const rows = document.querySelectorAll('.comparison-grid tbody tr[data-tags]');
+
+        rows.forEach(row => {
+            // Skip hidden rows (filtered by tags)
+            if (row.style.display === 'none') {
+                return;
+            }
+
+            const cells = row.querySelectorAll('.gallery-cell');
+            cells.forEach(cell => {
+                const modelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
+                const prompt = cell.dataset.prompt || '';
+                if (modelConfig && prompt) {
+                    visibleCells.push({
+                        cell,
+                        modelName: modelConfig.name,
+                        prompt,
+                        modelConfig
+                    });
+                }
+            });
+        });
+
+        return visibleCells;
+    }
+
+    function findAdjacentCell(currentModelName, currentPrompt, direction) {
+        const visibleCells = getVisibleGalleryCells();
+        if (visibleCells.length === 0) {
+            return null;
+        }
+
+        // Find current cell index
+        const currentIndex = visibleCells.findIndex(
+            c => c.modelName === currentModelName && c.prompt === currentPrompt
+        );
+
+        if (currentIndex === -1) {
+            return null;
+        }
+
+        // Get all unique prompts and models in order
+        const prompts = [...new Set(visibleCells.map(c => c.prompt))];
+        const models = [...new Set(visibleCells.map(c => c.modelName))];
+
+        const currentPromptIndex = prompts.indexOf(currentPrompt);
+        const currentModelIndex = models.indexOf(currentModelName);
+
+        let targetModelName = currentModelName;
+        let targetPrompt = currentPrompt;
+
+        switch (direction) {
+        case 'up':
+            if (currentModelIndex > 0) {
+                targetModelName = models[currentModelIndex - 1];
+            }
+            break;
+        case 'down':
+            if (currentModelIndex < models.length - 1) {
+                targetModelName = models[currentModelIndex + 1];
+            }
+            break;
+        case 'left':
+            if (currentPromptIndex > 0) {
+                targetPrompt = prompts[currentPromptIndex - 1];
+            }
+            break;
+        case 'right':
+            if (currentPromptIndex < prompts.length - 1) {
+                targetPrompt = prompts[currentPromptIndex + 1];
+            }
+            break;
+        }
+
+        // Find the cell with the target model and prompt
+        return visibleCells.find(
+            c => c.modelName === targetModelName && c.prompt === targetPrompt
+        );
+    }
+
+    function updateNavigationButtons(modalComponents, currentModelName, currentPrompt) {
+        const visibleCells = getVisibleGalleryCells();
+        if (visibleCells.length === 0) {
+            return;
+        }
+
+        // Get all unique prompts and models
+        const prompts = [...new Set(visibleCells.map(c => c.prompt))];
+        const models = [...new Set(visibleCells.map(c => c.modelName))];
+
+        const currentPromptIndex = prompts.indexOf(currentPrompt);
+        const currentModelIndex = models.indexOf(currentModelName);
+
+        // Update button states
+        modalComponents.upBtn.disabled = currentModelIndex <= 0;
+        modalComponents.downBtn.disabled = currentModelIndex >= models.length - 1;
+        modalComponents.leftBtn.disabled = currentPromptIndex <= 0;
+        modalComponents.rightBtn.disabled = currentPromptIndex >= prompts.length - 1;
+
+        // Update style buttons
+        const styleButtons = document.querySelectorAll('.filter[data-style]');
+        const styles = Array.from(styleButtons).map(btn => btn.dataset.style);
+        const currentStyle = getStyleFromURL() || 'default';
+        const currentStyleIndex = styles.indexOf(currentStyle);
+
+        modalComponents.prevStyleBtn.disabled = currentStyleIndex <= 0;
+        modalComponents.nextStyleBtn.disabled = currentStyleIndex >= styles.length - 1;
+    }
+
+    function navigateModal(modalComponents, direction) {
+        // Get current cell info from modal data
+        const currentModelName = modalComponents.regenBtn.dataset.modelName;
+        const currentPrompt = modalComponents.regenBtn.dataset.prompt;
+
+        if (!currentModelName || !currentPrompt) {
+            return;
+        }
+
+        const adjacentCell = findAdjacentCell(currentModelName, currentPrompt, direction);
+        if (!adjacentCell) {
+            return;
+        }
+
+        // Update modal with new cell
+        const urls = JSON.parse(adjacentCell.cell.dataset.urls || '[]');
+        const link = adjacentCell.cell.querySelector('.gallery-link');
+        const img = link ? link.querySelector('img') : null;
+        const imgAlt = img ? img.alt : `${adjacentCell.modelName} - ${adjacentCell.prompt}`;
+
+        showModal(modalComponents, urls, imgAlt, adjacentCell.modelConfig, adjacentCell.prompt);
+    }
+
+    function navigateStyle(direction) {
+        const styleButtons = document.querySelectorAll('.filter[data-style]');
+        const styles = Array.from(styleButtons).map(btn => btn.dataset.style);
+        const currentStyle = getStyleFromURL() || 'default';
+        const currentStyleIndex = styles.indexOf(currentStyle);
+
+        let targetStyleIndex = currentStyleIndex;
+
+        if (direction === 'prev' && currentStyleIndex > 0) {
+            targetStyleIndex = currentStyleIndex - 1;
+        } else if (direction === 'next' && currentStyleIndex < styles.length - 1) {
+            targetStyleIndex = currentStyleIndex + 1;
+        }
+
+        if (targetStyleIndex !== currentStyleIndex) {
+            // Check if we're in fullscreen
+            const wasFullscreen = document.fullscreenElement !== null;
+
+            updateStyleURL(styles[targetStyleIndex]);
+
+            // Store fullscreen state for after reload
+            if (wasFullscreen) {
+                sessionStorage.setItem('galleryReturnToFullscreen', 'true');
+            }
+
+            window.location.reload();
+        }
+    }
+
     // Image zoom modal functionality
     const modal = createModal();
     const galleryLinks = document.querySelectorAll('.gallery-link');
+
+    // Track if we need to re-enter fullscreen after page load
+    const shouldReturnToFullscreen = sessionStorage.getItem('galleryReturnToFullscreen') === 'true';
+    if (shouldReturnToFullscreen) {
+        sessionStorage.removeItem('galleryReturnToFullscreen');
+    }
 
     galleryLinks.forEach(link => {
         link.addEventListener('click', (e) => {
@@ -206,6 +377,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     const img = link.querySelector('img');
                     const imgAlt = img ? img.alt : '';
                     showModal(modal, urls, imgAlt, cellModelConfig, cellPrompt);
+
+                    // Re-enter fullscreen if needed
+                    if (shouldReturnToFullscreen) {
+                        // Use requestAnimationFrame to ensure modal is fully rendered
+                        requestAnimationFrame(() => {
+                            if (modal.overlay.requestFullscreen) {
+                                modal.overlay.requestFullscreen().catch(err => {
+                                    console.log('Could not re-enter fullscreen:', err);
+                                });
+                            }
+                        });
+                    }
                 }
                 break;
             }
@@ -284,12 +467,65 @@ document.addEventListener('DOMContentLoaded', () => {
         const imageGrid = document.createElement('div');
         imageGrid.className = 'image-modal-grid';
 
+        // Create navigation button panel
+        const navPanel = document.createElement('div');
+        navPanel.className = 'image-modal-nav';
+
+        // Create navigation buttons
+        const upBtn = document.createElement('button');
+        upBtn.className = 'nav-btn nav-btn-up';
+        upBtn.innerHTML = '↑';
+        upBtn.title = 'Previous model (↑)';
+
+        const leftRightGroup = document.createElement('div');
+        leftRightGroup.className = 'nav-btn-row';
+
+        const leftBtn = document.createElement('button');
+        leftBtn.className = 'nav-btn nav-btn-left';
+        leftBtn.innerHTML = '←';
+        leftBtn.title = 'Previous prompt (←)';
+
+        const rightBtn = document.createElement('button');
+        rightBtn.className = 'nav-btn nav-btn-right';
+        rightBtn.innerHTML = '→';
+        rightBtn.title = 'Next prompt (→)';
+
+        leftRightGroup.appendChild(leftBtn);
+        leftRightGroup.appendChild(rightBtn);
+
+        const downBtn = document.createElement('button');
+        downBtn.className = 'nav-btn nav-btn-down';
+        downBtn.innerHTML = '↓';
+        downBtn.title = 'Next model (↓)';
+
+        const styleGroup = document.createElement('div');
+        styleGroup.className = 'nav-btn-group';
+
+        const prevStyleBtn = document.createElement('button');
+        prevStyleBtn.className = 'nav-btn nav-btn-prev-style';
+        prevStyleBtn.innerHTML = '⊖';
+        prevStyleBtn.title = 'Previous style (,)';
+
+        const nextStyleBtn = document.createElement('button');
+        nextStyleBtn.className = 'nav-btn nav-btn-next-style';
+        nextStyleBtn.innerHTML = '⊕';
+        nextStyleBtn.title = 'Next style (.)';
+
+        styleGroup.appendChild(prevStyleBtn);
+        styleGroup.appendChild(nextStyleBtn);
+
+        navPanel.appendChild(upBtn);
+        navPanel.appendChild(leftRightGroup);
+        navPanel.appendChild(downBtn);
+        navPanel.appendChild(styleGroup);
+
         // Assemble modal
         leftContainer.appendChild(infoPanel);
         leftContainer.appendChild(promptPanel);
         leftContainer.appendChild(regenContainer);
         container.appendChild(closeBtn);
         container.appendChild(leftContainer);
+        container.appendChild(navPanel);
         container.appendChild(imageGrid);
         overlay.appendChild(container);
         document.body.appendChild(overlay);
@@ -303,9 +539,72 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && overlay.classList.contains('active')) {
-                hideModal(overlay);
+            if (!overlay.classList.contains('active')) {
+                return;
             }
+
+            if (e.key === 'Escape') {
+                hideModal(overlay);
+                return;
+            }
+
+            // Arrow key navigation
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!upBtn.disabled) {
+                    navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'up');
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (!downBtn.disabled) {
+                    navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'down');
+                }
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                if (!leftBtn.disabled) {
+                    navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'left');
+                }
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                if (!rightBtn.disabled) {
+                    navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'right');
+                }
+            } else if (e.key === ',') {
+                e.preventDefault();
+                if (!prevStyleBtn.disabled) {
+                    navigateStyle('prev');
+                }
+            } else if (e.key === '.') {
+                e.preventDefault();
+                if (!nextStyleBtn.disabled) {
+                    navigateStyle('next');
+                }
+            }
+        });
+
+        // Navigation button click handlers
+        upBtn.addEventListener('click', () => {
+            navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'up');
+        });
+
+        downBtn.addEventListener('click', () => {
+            navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'down');
+        });
+
+        leftBtn.addEventListener('click', () => {
+            navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'left');
+        });
+
+        rightBtn.addEventListener('click', () => {
+            navigateModal({ overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus, navPanel, upBtn, downBtn, leftBtn, rightBtn, prevStyleBtn, nextStyleBtn }, 'right');
+        });
+
+        prevStyleBtn.addEventListener('click', () => {
+            navigateStyle('prev');
+        });
+
+        nextStyleBtn.addEventListener('click', () => {
+            navigateStyle('next');
         });
 
         // Regen button click handler
@@ -422,7 +721,22 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        return { overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus };
+        return {
+            overlay,
+            infoPanel,
+            promptPanel,
+            imageGrid,
+            regenBtn,
+            regenContainer,
+            regenStatus,
+            navPanel,
+            upBtn,
+            downBtn,
+            leftBtn,
+            rightBtn,
+            prevStyleBtn,
+            nextStyleBtn
+        };
     }
 
     function getFullResolutionUrl(thumbnailUrl) {
@@ -486,6 +800,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         modalComponents.overlay.classList.add('active');
         document.body.style.overflow = 'hidden';
+
+        // Update navigation button states
+        if (modelConfig && modelConfig.name && prompt) {
+            updateNavigationButtons(modalComponents, modelConfig.name, prompt);
+        }
 
         // Update URL with modal parameters if we have model config (unless skipping)
         if (!skipUrlUpdate && modelConfig && modelConfig.name && prompt) {

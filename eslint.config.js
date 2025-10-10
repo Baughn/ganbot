@@ -19,7 +19,9 @@ export default [
                 Image: 'readonly',
                 fetch: 'readonly',
                 Element: 'readonly',
-                Event: 'readonly'
+                Event: 'readonly',
+                sessionStorage: 'readonly',
+                requestAnimationFrame: 'readonly'
             }
         },
         rules: {
