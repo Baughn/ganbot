@@ -28,7 +28,7 @@ use crate::{
     messages::imagen::Generate,
     persistence::images::upload_image_with_generation,
     supervisor::{GetModelsConfig, Supervisor},
-    util::image_compression::{ResizeMode, compress_jpeg},
+    util::image_compression::{ResizeMode, compress_image},
 };
 
 /// Template for the index/home page
@@ -550,10 +550,10 @@ async fn model_gallery_handler(
                     let loading = if index == 0 { "eager" } else { "lazy" };
 
                     // Extract UUID from URL for srcset generation
-                    // URL format: /image/200/75/{uuid}.jpg
+                    // URL format: /image/200/75/{uuid}.webp
                     let srcset = if let Some(uuid) = url
                         .strip_prefix("/image/200/75/")
-                        .and_then(|s| s.strip_suffix(".jpg"))
+                        .and_then(|s| s.strip_suffix(".webp"))
                     {
                         build_srcset(uuid)
                     } else {
@@ -837,7 +837,7 @@ async fn gallery_regen_handler(
     // Return the new URLs in the format expected by the frontend
     let new_urls: Vec<String> = new_uuids
         .iter()
-        .map(|uuid| format!("/image/200/75/{}.jpg", uuid))
+        .map(|uuid| format!("/image/200/75/{}.webp", uuid))
         .collect();
 
     info!(
@@ -869,8 +869,8 @@ async fn compressed_image_handler(
     Path(params): Path<ImagePathParams>,
     State(mut state): State<AppState>,
 ) -> Response {
-    // Strip .jpg suffix from uuid if present
-    let uuid = params.uuid.strip_suffix(".jpg").unwrap_or(&params.uuid);
+    // Strip .webp suffix from uuid if present
+    let uuid = params.uuid.strip_suffix(".webp").unwrap_or(&params.uuid);
 
     // Parse size parameter (can be resolution in pixels or scale multiplier)
     let size_value: f32 = match params.size.parse() {
@@ -924,7 +924,7 @@ async fn compressed_image_handler(
 
     if let Some(compressed_bytes) = cached {
         trace!("Image cache hit: {}", cache_key);
-        return serve_jpeg_response(compressed_bytes);
+        return serve_webp_response(compressed_bytes);
     }
 
     // Cache miss - fetch original from remote host
@@ -995,7 +995,7 @@ async fn compressed_image_handler(
     };
 
     // Compress the image
-    let compressed_bytes = match compress_jpeg(&original_bytes, resize_mode, quality) {
+    let compressed_bytes = match compress_image(&original_bytes, resize_mode, quality) {
         Ok(bytes) => bytes,
         Err(e) => {
             error!("Failed to compress image {}: {:#}", uuid, e);
@@ -1025,18 +1025,18 @@ async fn compressed_image_handler(
         );
     }
 
-    serve_jpeg_response(compressed_bytes)
+    serve_webp_response(compressed_bytes)
 }
 
-/// Helper to build JPEG response with appropriate headers
-fn serve_jpeg_response(jpeg_bytes: Vec<u8>) -> Response {
+/// Helper to build WebP response with appropriate headers
+fn serve_webp_response(webp_bytes: Vec<u8>) -> Response {
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CONTENT_TYPE, "image/webp"),
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
-        jpeg_bytes,
+        webp_bytes,
     )
         .into_response()
 }
@@ -1047,7 +1047,7 @@ const PLACEHOLDER_URL: &str = "/static/placeholder.svg";
 /// Generate srcset string for responsive images
 fn build_srcset(uuid: &str) -> String {
     format!(
-        "/image/200/75/{}.jpg 1x, /image/400/85/{}.jpg 2x, /image/600/90/{}.jpg 3x",
+        "/image/200/75/{}.webp 200w, /image/400/85/{}.webp 400w, /image/600/90/{}.webp 600w",
         uuid, uuid, uuid
     )
 }
@@ -1221,7 +1221,7 @@ async fn get_gallery_image(
                 trace!("Gallery cache hit: {} -> {:?}", cache_key, uuids);
                 uuids
                     .into_iter()
-                    .map(|uuid| format!("/image/200/75/{}.jpg", uuid))
+                    .map(|uuid| format!("/image/200/75/{}.webp", uuid))
                     .collect()
             }
             Err(_) => {

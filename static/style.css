@@ -286,6 +286,11 @@ pre code {
     background: #f8f9fa;
 }
 
+.comparison-grid tbody tr[data-tags] {
+    content-visibility: auto;
+    contain-intrinsic-height: 220px;
+}
+
 .comparison-grid th:first-child,
 .comparison-grid td:first-child {
     max-width: 100px;

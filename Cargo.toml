@@ -24,6 +24,7 @@ futures = "0.3.31"
 ab_glyph = "0.2"
 image = { version = "0.25.6", features = ["gif", "jpeg", "png", "rayon", "webp"], default-features = false }
 imageproc = "0.25"
+webp = "0.3"
 indexmap = "2.6"
 lazy_static = "1.5"
 irc = "1.1.0"

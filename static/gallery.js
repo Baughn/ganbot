@@ -381,12 +381,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (links[index]) {
                                 const img = links[index].querySelector('img');
                                 if (img) {
-                                    // Extract UUID from URL: /image/200/75/{uuid}.jpg
-                                    const uuidMatch = url.match(/\/image\/200\/75\/(.+)\.jpg$/);
+                                    // Extract UUID from URL: /image/200/75/{uuid}.webp
+                                    const uuidMatch = url.match(/\/image\/200\/75\/(.+)\.webp$/);
                                     if (uuidMatch) {
                                         const uuid = uuidMatch[1];
                                         // Build srcset with responsive variants
-                                        const srcset = `/image/200/75/${uuid}.jpg 1x, /image/400/85/${uuid}.jpg 2x, /image/600/90/${uuid}.jpg 3x`;
+                                        const srcset = `/image/200/75/${uuid}.webp 1x, /image/400/85/${uuid}.webp 2x, /image/600/90/${uuid}.webp 3x`;
                                         img.srcset = srcset;
                                     }
 
@@ -427,10 +427,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function getFullResolutionUrl(thumbnailUrl) {
         // Convert thumbnail URL to full resolution
-        // Example: /image/200/75/{uuid}.jpg -> /image/1.0/90/{uuid}.jpg
+        // Example: /image/200/75/{uuid}.webp -> /image/1.0/90/{uuid}.webp
         const parts = thumbnailUrl.split('/');
         if (parts.length >= 5 && parts[0] === '' && parts[1] === 'image') {
-            // Replace size (index 2) and quality (index 3), keep uuid.jpg (index 4)
+            // Replace size (index 2) and quality (index 3), keep uuid.webp (index 4)
             parts[2] = '1.0';  // full resolution (scale 1.0)
             parts[3] = '90';   // high quality
             return parts.join('/');
