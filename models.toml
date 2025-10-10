@@ -279,7 +279,8 @@ checkpoint = "xl/animagineXLV3_v30.safetensors"
 name = "animavividxl"
 inherit = "sdxl"
 description = "AniMaVivid XL. Use tags."
-
+[models.animavividxl.prompt_defaults]
+negative_append = "(worst quality, low quality:1.6)"
 [models.animavividxl.backend.ComfyUI]
 checkpoint = "xl/animavivid_v10.safetensors"
 sampler = "euler_ancestral"

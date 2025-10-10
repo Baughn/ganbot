@@ -1016,7 +1016,7 @@ async fn pre_generate_gallery_task(
                         missing.push((model_name.to_string(), style_name.clone(), generate));
                     }
                     Ok(_) => {
-                        debug!("Gallery image already cached: {}", cache_key);
+                        trace!("Gallery image already cached: {}", cache_key);
                     }
                     Err(e) => {
                         error!("Failed to check cache for {}: {:#}", cache_key, e);
