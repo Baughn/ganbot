@@ -16,6 +16,16 @@ document.addEventListener('DOMContentLoaded', () => {
         return params.get('style');
     }
 
+    // Get modal state from URL parameters
+    function getModalFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        return {
+            active: params.get('modal') === 'true',
+            model: params.get('model'),
+            prompt: params.get('prompt')
+        };
+    }
+
     // Generic URL update function that preserves other parameters
     function updateURL(params) {
         const url = new URL(window.location);
@@ -148,6 +158,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (activeStyleButton && currentStyle && activeStyleButton.dataset.style !== currentStyle) {
             window.location.reload();
         }
+
+        // Handle modal state changes (needs modal to be created first)
+        // This will be set up after modal creation below
     });
 
     // Image zoom modal functionality
@@ -175,6 +188,57 @@ document.addEventListener('DOMContentLoaded', () => {
                 showModal(modal, [imgSrc], imgAlt, null, '');
             }
         });
+    });
+
+    // Auto-open modal if URL contains modal parameters
+    const modalState = getModalFromURL();
+    if (modalState.active && modalState.model && modalState.prompt) {
+        // Find the gallery cell matching the model and prompt
+        const galleryCells = document.querySelectorAll('.gallery-cell');
+        for (const cell of galleryCells) {
+            const cellModelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
+            const cellPrompt = cell.dataset.prompt || '';
+
+            if (cellModelConfig && cellModelConfig.name === modalState.model && cellPrompt === modalState.prompt) {
+                const urls = JSON.parse(cell.dataset.urls || '[]');
+                const link = cell.querySelector('.gallery-link');
+                if (link) {
+                    const img = link.querySelector('img');
+                    const imgAlt = img ? img.alt : '';
+                    showModal(modal, urls, imgAlt, cellModelConfig, cellPrompt);
+                }
+                break;
+            }
+        }
+    }
+
+    // Handle browser back/forward for modal state
+    window.addEventListener('popstate', () => {
+        const currentModalState = getModalFromURL();
+        const modalIsOpen = modal.overlay.classList.contains('active');
+
+        if (currentModalState.active && !modalIsOpen && currentModalState.model && currentModalState.prompt) {
+            // URL says modal should be open, but it's closed - open it
+            const galleryCells = document.querySelectorAll('.gallery-cell');
+            for (const cell of galleryCells) {
+                const cellModelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
+                const cellPrompt = cell.dataset.prompt || '';
+
+                if (cellModelConfig && cellModelConfig.name === currentModalState.model && cellPrompt === currentModalState.prompt) {
+                    const urls = JSON.parse(cell.dataset.urls || '[]');
+                    const link = cell.querySelector('.gallery-link');
+                    if (link) {
+                        const img = link.querySelector('img');
+                        const imgAlt = img ? img.alt : '';
+                        showModal(modal, urls, imgAlt, cellModelConfig, cellPrompt, true);
+                    }
+                    break;
+                }
+            }
+        } else if (!currentModalState.active && modalIsOpen) {
+            // URL says modal should be closed, but it's open - close it
+            hideModal(modal.overlay, true);
+        }
     });
 
     function createModal() {
@@ -367,7 +431,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return thumbnailUrl;
     }
 
-    function showModal(modalComponents, imageUrls, imgAlt, modelConfig, prompt) {
+    function showModal(modalComponents, imageUrls, imgAlt, modelConfig, prompt, skipUrlUpdate = false) {
         // Clear existing content
         modalComponents.imageGrid.innerHTML = '';
         modalComponents.infoPanel.innerHTML = '';
@@ -414,6 +478,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         modalComponents.overlay.classList.add('active');
         document.body.style.overflow = 'hidden';
+
+        // Update URL with modal parameters if we have model config (unless skipping)
+        if (!skipUrlUpdate && modelConfig && modelConfig.name && prompt) {
+            updateURL({
+                modal: 'true',
+                model: modelConfig.name,
+                prompt: prompt
+            });
+        }
     }
 
     function formatModelConfig(config) {
@@ -472,9 +545,18 @@ document.addEventListener('DOMContentLoaded', () => {
         return html;
     }
 
-    function hideModal(overlay) {
+    function hideModal(overlay, skipUrlUpdate = false) {
         overlay.classList.remove('active');
         document.body.style.overflow = '';
+
+        // Remove modal parameters from URL (unless skipping)
+        if (!skipUrlUpdate) {
+            updateURL({
+                modal: null,
+                model: null,
+                prompt: null
+            });
+        }
     }
 
     // Image cycling functionality for gallery cells
