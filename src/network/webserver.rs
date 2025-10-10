@@ -28,7 +28,7 @@ use crate::{
     messages::imagen::Generate,
     persistence::images::upload_image_with_generation,
     supervisor::{GetModelsConfig, Supervisor},
-    util::image_compression::compress_jpeg,
+    util::image_compression::{ResizeMode, compress_jpeg},
 };
 
 /// Template for the index/home page
@@ -94,6 +94,7 @@ struct GalleryCell {
 /// Individual image data within a gallery cell
 struct GalleryImage {
     url: String,
+    srcset: String,
     opacity: &'static str,
     pointer_events: &'static str,
     index: usize,
@@ -183,7 +184,7 @@ impl WebServer {
             .route("/gallery/models", get(model_gallery_handler))
             .route("/gallery/regen", axum::routing::post(gallery_regen_handler))
             .route(
-                "/image/{scale}/{quality}/{uuid}",
+                "/image/{size}/{quality}/{uuid}",
                 get(compressed_image_handler),
             )
             .nest_service("/static", static_service)
@@ -547,8 +548,22 @@ async fn model_gallery_handler(
                         ("0", "none")
                     };
                     let loading = if index == 0 { "eager" } else { "lazy" };
+
+                    // Extract UUID from URL for srcset generation
+                    // URL format: /image/200/75/{uuid}.jpg
+                    let srcset = if let Some(uuid) = url
+                        .strip_prefix("/image/200/75/")
+                        .and_then(|s| s.strip_suffix(".jpg"))
+                    {
+                        build_srcset(uuid)
+                    } else {
+                        // No srcset for placeholders or unexpected URL formats
+                        String::new()
+                    };
+
                     GalleryImage {
                         url: url.clone(),
+                        srcset,
                         opacity,
                         pointer_events,
                         index,
@@ -713,11 +728,11 @@ async fn gallery_regen_handler(
                 .output()
                 .await;
 
-            if let Ok(output) = output {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    error!("Failed to delete old image {}: {}", filename, stderr);
-                }
+            if let Ok(output) = output
+                && !output.status.success()
+            {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                error!("Failed to delete old image {}: {}", filename, stderr);
             }
 
             // Also remove from Redis tracking
@@ -822,7 +837,7 @@ async fn gallery_regen_handler(
     // Return the new URLs in the format expected by the frontend
     let new_urls: Vec<String> = new_uuids
         .iter()
-        .map(|uuid| format!("/image/0.5/75/{}.jpg", uuid))
+        .map(|uuid| format!("/image/200/75/{}.jpg", uuid))
         .collect();
 
     info!(
@@ -845,7 +860,7 @@ async fn gallery_regen_handler(
 #[derive(serde::Deserialize)]
 struct ImagePathParams {
     uuid: String,
-    scale: String,
+    size: String,
     quality: String,
 }
 
@@ -857,18 +872,19 @@ async fn compressed_image_handler(
     // Strip .jpg suffix from uuid if present
     let uuid = params.uuid.strip_suffix(".jpg").unwrap_or(&params.uuid);
 
-    // Parse scale and quality
-    let scale: f32 = match params.scale.parse() {
-        Ok(s) if s > 0.0 && s <= 2.0 => s,
+    // Parse size parameter (can be resolution in pixels or scale multiplier)
+    let size_value: f32 = match params.size.parse() {
+        Ok(s) if s > 0.0 => s,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                "Invalid scale parameter (must be 0.0 < scale <= 2.0)",
+                "Invalid size parameter (must be > 0.0)",
             )
                 .into_response();
         }
     };
 
+    // Parse quality
     let quality: u8 = match params.quality.parse() {
         Ok(q) if q > 0 && q <= 100 => q,
         _ => {
@@ -890,7 +906,7 @@ async fn compressed_image_handler(
     // Build cache key
     let cache_key = format!(
         "image:compressed:{}:{}:{}",
-        uuid, params.scale, params.quality
+        uuid, params.size, params.quality
     );
 
     // Check Redis cache
@@ -958,8 +974,28 @@ async fn compressed_image_handler(
         }
     };
 
+    // Determine resize mode: if size > 10.0, it's a target resolution; otherwise it's a scale multiplier
+    let resize_mode = if size_value > 10.0 {
+        debug!("Size {} interpreted as target resolution", size_value);
+        ResizeMode::TargetResolution(size_value as u32)
+    } else {
+        debug!("Size {} interpreted as scale multiplier", size_value);
+        // Validate scale is within acceptable range
+        if size_value <= 0.0 || size_value > 2.0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Scale {:.3} is out of range (must be 0.0 < scale <= 2.0)",
+                    size_value
+                ),
+            )
+                .into_response();
+        }
+        ResizeMode::Scale(size_value)
+    };
+
     // Compress the image
-    let compressed_bytes = match compress_jpeg(&original_bytes, scale, quality) {
+    let compressed_bytes = match compress_jpeg(&original_bytes, resize_mode, quality) {
         Ok(bytes) => bytes,
         Err(e) => {
             error!("Failed to compress image {}: {:#}", uuid, e);
@@ -1007,6 +1043,14 @@ fn serve_jpeg_response(jpeg_bytes: Vec<u8>) -> Response {
 
 /// Gallery cache helper functions
 const PLACEHOLDER_URL: &str = "/static/placeholder.svg";
+
+/// Generate srcset string for responsive images
+fn build_srcset(uuid: &str) -> String {
+    format!(
+        "/image/200/75/{}.jpg 1x, /image/400/85/{}.jpg 2x, /image/600/90/{}.jpg 3x",
+        uuid, uuid, uuid
+    )
+}
 
 /// Calculate SHA256 hash of a file for cache busting
 async fn calculate_file_hash(path: &str) -> Result<String> {
@@ -1177,7 +1221,7 @@ async fn get_gallery_image(
                 trace!("Gallery cache hit: {} -> {:?}", cache_key, uuids);
                 uuids
                     .into_iter()
-                    .map(|uuid| format!("/image/0.5/75/{}.jpg", uuid))
+                    .map(|uuid| format!("/image/200/75/{}.jpg", uuid))
                     .collect()
             }
             Err(_) => {

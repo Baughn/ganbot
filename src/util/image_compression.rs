@@ -4,22 +4,40 @@ use anyhow::{Context, Result};
 use image::{ImageEncoder, codecs::jpeg::JpegEncoder, imageops::FilterType};
 use std::io::Cursor;
 
+/// Resize mode for JPEG compression
+#[derive(Debug, Clone, Copy)]
+pub enum ResizeMode {
+    /// Scale by a multiplier (e.g., 0.5 for 50% size, 1.0 for original)
+    Scale(f32),
+    /// Resize to target resolution in pixels (width for square images)
+    TargetResolution(u32),
+}
+
 /// Compress and optionally resize a JPEG image
 ///
 /// # Arguments
 /// * `jpeg_bytes` - Original JPEG bytes
-/// * `scale` - Scale factor (1.0 = original size, 0.5 = 50% reduction, etc.)
+/// * `resize_mode` - How to resize the image (scale factor or target resolution)
 /// * `quality` - JPEG quality (1-100, where 100 is highest quality)
 ///
 /// # Returns
 /// Compressed JPEG bytes
-pub fn compress_jpeg(jpeg_bytes: &[u8], scale: f32, quality: u8) -> Result<Vec<u8>> {
+pub fn compress_jpeg(jpeg_bytes: &[u8], resize_mode: ResizeMode, quality: u8) -> Result<Vec<u8>> {
     // Decode the JPEG
     let img = image::load_from_memory_with_format(jpeg_bytes, image::ImageFormat::Jpeg)
         .context("Failed to decode JPEG image")?;
 
     // Convert to RGB8 for consistent encoding
     let rgb_img = img.to_rgb8();
+
+    // Calculate scale factor based on resize mode
+    let scale = match resize_mode {
+        ResizeMode::Scale(s) => s,
+        ResizeMode::TargetResolution(target_width) => {
+            let original_width = rgb_img.width() as f32;
+            target_width as f32 / original_width
+        }
+    };
 
     // Resize if scale is not 1.0
     let final_img = if (scale - 1.0).abs() > 0.001 {
@@ -83,7 +101,7 @@ mod tests {
         let original_width = original_img.width();
         let original_height = original_img.height();
 
-        let compressed = compress_jpeg(&original, 1.0, 75).unwrap();
+        let compressed = compress_jpeg(&original, ResizeMode::Scale(1.0), 75).unwrap();
 
         // Real photos should compress smaller at lower quality
         assert!(
@@ -113,7 +131,7 @@ mod tests {
         let original_width = original_img.width();
         let original_height = original_img.height();
 
-        let compressed = compress_jpeg(&original, 0.5, 75).unwrap();
+        let compressed = compress_jpeg(&original, ResizeMode::Scale(0.5), 75).unwrap();
 
         // Verify it's much smaller (both scaled and lower quality)
         assert!(
@@ -132,16 +150,30 @@ mod tests {
     }
 
     #[test]
+    fn test_compress_jpeg_with_target_resolution() {
+        let original = std::fs::read("testdata/vacation.jpg")
+            .expect("Failed to read test image (run from repository root)");
+
+        let compressed = compress_jpeg(&original, ResizeMode::TargetResolution(512), 75).unwrap();
+
+        // Verify dimensions match target
+        let decoded = image::load_from_memory_with_format(&compressed, image::ImageFormat::Jpeg);
+        assert!(decoded.is_ok());
+        let img = decoded.unwrap();
+        assert_eq!(img.width(), 512);
+    }
+
+    #[test]
     fn test_compress_jpeg_zero_scale() {
         let original = create_test_jpeg(100, 100, 95);
-        let result = compress_jpeg(&original, 0.0, 75);
+        let result = compress_jpeg(&original, ResizeMode::Scale(0.0), 75);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_compress_jpeg_invalid_input() {
         let invalid_data = vec![0u8; 100];
-        let result = compress_jpeg(&invalid_data, 1.0, 75);
+        let result = compress_jpeg(&invalid_data, ResizeMode::Scale(1.0), 75);
         assert!(result.is_err());
     }
 }

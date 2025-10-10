@@ -40,3 +40,12 @@ prepend_english = "In the style of brushwork: "
 [model_gallery.styles."Ink Sketch"]
 prepend_booru = "ink sketch style, "
 prepend_english = "Rendered as an ink sketch: "
+[model_gallery.styles.Watercolor]
+prepend_booru = "watercolor, soft colors, "
+prepend_english = "In watercolor style: "
+[model_gallery.styles."Pixel Art"]
+prepend_booru = "pixel art, 8bit, retro game style, "
+prepend_english = "In pixel art style: "
+[model_gallery.styles.Impressionist]
+prepend_booru = "impressionism, loose brushwork, light and color, "
+prepend_english = "In impressionist style: "
