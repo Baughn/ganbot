@@ -232,10 +232,13 @@ impl Message<CompletionRequest> for OpenRouterApi {
             }
         };
 
-        let model = choice
+        let model = response_json
             .get("model")
             .and_then(|model| model.as_str())
             .map(ToString::to_string);
+        if let Some(model) = &model {
+            debug!(model = %model, "OpenRouter selected model for structured request");
+        }
 
         Ok(CompletionResponse { model, text, image })
     }
@@ -305,7 +308,7 @@ where
             .and_then(|choices| choices.get(0))
             .ok_or_else(|| anyhow!("OpenRouter structured response missing choices"))?;
 
-        if let Some(model) = choice.get("model").and_then(|m| m.as_str()) {
+        if let Some(model) = response_json.get("model").and_then(|m| m.as_str()) {
             debug!(model = %model, "OpenRouter selected model for structured request");
         }
 
