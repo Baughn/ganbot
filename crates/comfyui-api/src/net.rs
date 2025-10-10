@@ -360,6 +360,55 @@ impl ComfyUIClient {
         Ok(response.bytes().await?)
     }
 
+    /// Clear the ComfyUI queue
+    pub async fn clear_queue(&self) -> Result<(), ComfyUIError> {
+        debug!("Clearing ComfyUI queue");
+
+        let data = serde_json::json!({"clear": true});
+
+        let response = self
+            .http_client
+            .post(format!("{}/queue", self.base_url()))
+            .json(&data)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(ComfyUIError::Server { status, message });
+        }
+
+        info!("ComfyUI queue cleared successfully");
+        Ok(())
+    }
+
+    /// Interrupt any ongoing ComfyUI generation
+    pub async fn interrupt(&self) -> Result<(), ComfyUIError> {
+        debug!("Interrupting ComfyUI generation");
+
+        let response = self
+            .http_client
+            .post(format!("{}/interrupt", self.base_url()))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(ComfyUIError::Server { status, message });
+        }
+
+        info!("ComfyUI generation interrupted successfully");
+        Ok(())
+    }
+
     /// Monitor workflow execution via WebSocket with an existing receiver
     async fn monitor_execution_with_receiver(
         &self,

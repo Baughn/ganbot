@@ -115,6 +115,24 @@ impl Actor for Supervisor {
             .await
             .expect("Failed to connect to Redis");
         tokio::spawn(redis_keepalive(redis_connection.clone()));
+
+        // Clear ComfyUI queue and interrupt any ongoing generation
+        // This prevents stale jobs from previous runs
+        info!("Clearing ComfyUI queue...");
+        let comfy_client = crate::network::comfyui::net::ComfyUIClient::new();
+        if let Err(e) = comfy_client.interrupt().await {
+            info!(
+                "Could not interrupt ComfyUI generation (this is normal if ComfyUI is not running): {}",
+                e
+            );
+        }
+        if let Err(e) = comfy_client.clear_queue().await {
+            info!(
+                "Could not clear ComfyUI queue (this is normal if ComfyUI is not running): {}",
+                e
+            );
+        }
+
         // Initialize the user manager.
         let user_manager = UserManager::spawn_link(&actor_ref, redis_connection.clone()).await;
         let action_broker = ActionBroker::spawn_link(&actor_ref, redis_connection.clone()).await;
