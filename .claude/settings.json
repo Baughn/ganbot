@@ -19,7 +19,7 @@
           },
           {
             "type": "command",
-            "command": "eslint static/ || exit 2"
+            "command": "eslint static/ 1>&2 || exit 2"
           }
         ]
       }

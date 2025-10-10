@@ -23,6 +23,10 @@ struct Args {
     /// Clear the model gallery cache and exit
     #[arg(long)]
     clear_gallery_cache: bool,
+
+    /// Enable the regeneration button in the gallery
+    #[arg(long)]
+    enable_regen: bool,
 }
 
 #[tokio::main]
@@ -85,7 +89,11 @@ async fn main() -> Result<()> {
     trace!("Trace logging enabled");
 
     // Initialize supervisor.
-    let config = config::load().context("while loading initial configuration")?;
+    let mut config = config::load().context("while loading initial configuration")?;
+    // Apply runtime flags to config
+    if let Some(webserver_config) = config.webserver.as_mut() {
+        webserver_config.enable_regen = args.enable_regen;
+    }
     let supervisor_ref = Supervisor::spawn(config);
     info!("Application initialized successfully");
 

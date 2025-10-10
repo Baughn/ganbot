@@ -3,7 +3,7 @@ use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
     Router,
-    extract::{Path, Query, State},
+    extract::{Json, Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -59,6 +59,7 @@ struct GalleryTemplate {
     styles: Vec<StyleButton>,
     prompts: Vec<String>,
     models: Vec<ModelRow>,
+    enable_regen: bool,
 }
 
 /// Tag filter button data
@@ -105,6 +106,7 @@ pub struct WebServer {
     redis: ConnectionManager,
     shutdown_token: CancellationToken,
     pregen_handle: Option<tokio::task::JoinHandle<()>>,
+    enable_regen: bool,
 }
 
 /// Shared application state
@@ -112,6 +114,7 @@ pub struct WebServer {
 struct AppState {
     gallery_config: ModelGalleryConfig,
     redis: ConnectionManager,
+    enable_regen: bool,
 }
 
 /// Query parameters for gallery filtering
@@ -121,9 +124,25 @@ struct GalleryQuery {
     style: Option<String>,
 }
 
+/// Request body for gallery regen endpoint
+#[derive(serde::Deserialize)]
+struct GalleryRegenRequest {
+    model_name: String,
+    prompt: String,
+    style_name: String,
+}
+
+/// Response for gallery regen endpoint
+#[derive(serde::Serialize)]
+struct GalleryRegenResponse {
+    success: bool,
+    urls: Vec<String>,
+    error: Option<String>,
+}
+
 impl WebServer {
     pub fn new(
-        _config: WebServerConfig,
+        config: WebServerConfig,
         gallery_config: ModelGalleryConfig,
         redis: ConnectionManager,
         shutdown_token: CancellationToken,
@@ -133,6 +152,7 @@ impl WebServer {
             redis,
             shutdown_token,
             pregen_handle: None,
+            enable_regen: config.enable_regen,
         }
     }
 
@@ -146,6 +166,7 @@ impl WebServer {
         let state = AppState {
             gallery_config: self.gallery_config.clone(),
             redis: self.redis.clone(),
+            enable_regen: self.enable_regen,
         };
 
         // Configure static file service with cache headers
@@ -160,6 +181,7 @@ impl WebServer {
             .route("/", get(index_handler))
             .route("/help/{*path}", get(help_handler))
             .route("/gallery/models", get(model_gallery_handler))
+            .route("/gallery/regen", axum::routing::post(gallery_regen_handler))
             .route(
                 "/image/{scale}/{quality}/{uuid}",
                 get(compressed_image_handler),
@@ -266,6 +288,7 @@ impl Actor for WebServer {
             redis,
             shutdown_token,
             pregen_handle: Some(pregen_handle),
+            enable_regen: config.enable_regen,
         })
     }
 
@@ -385,6 +408,7 @@ async fn model_gallery_handler(
             styles: vec![],
             prompts: vec![],
             models: vec![],
+            enable_regen: state.enable_regen,
         }
         .into_response();
     }
@@ -563,8 +587,258 @@ async fn model_gallery_handler(
         styles: style_buttons,
         prompts: state.gallery_config.prompts.clone(),
         models: model_rows,
+        enable_regen: state.enable_regen,
     }
     .into_response()
+}
+
+/// Handler for gallery regeneration endpoint
+async fn gallery_regen_handler(
+    State(mut state): State<AppState>,
+    Json(request): Json<GalleryRegenRequest>,
+) -> Response {
+    // Check if regen is enabled
+    if !state.enable_regen {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(GalleryRegenResponse {
+                success: false,
+                urls: vec![],
+                error: Some("Gallery regeneration is not enabled".to_string()),
+            }),
+        )
+            .into_response();
+    }
+
+    info!(
+        "Regenerating gallery cell for model={}, prompt={}, style={}",
+        request.model_name, request.prompt, request.style_name
+    );
+
+    // Get models configuration
+    let supervisor = match ACTOR_REGISTRY
+        .lock()
+        .unwrap()
+        .get::<Supervisor, str>("supervisor")
+    {
+        Ok(Some(sup)) => sup,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GalleryRegenResponse {
+                    success: false,
+                    urls: vec![],
+                    error: Some("Failed to access supervisor".to_string()),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let models_config = match supervisor.ask(GetModelsConfig).await {
+        Ok(reply) => reply.0,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GalleryRegenResponse {
+                    success: false,
+                    urls: vec![],
+                    error: Some("Failed to fetch models configuration".to_string()),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Get the model
+    let model = match models_config.models.get(&request.model_name) {
+        Some(m) => m.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(GalleryRegenResponse {
+                    success: false,
+                    urls: vec![],
+                    error: Some(format!("Model '{}' not found", request.model_name)),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Build Generate request
+    let mut generate = build_gallery_generate(&request.prompt, &request.model_name);
+    crate::actions::imagen::apply_model_defaults(&mut generate, &model);
+
+    // Calculate cache key
+    let cache_key = gallery_cache_key(&request.model_name, &model, &generate, &request.style_name);
+
+    // Get old image UUIDs from cache
+    let old_uuids: Option<Vec<String>> = match redis::cmd("GET")
+        .arg(&cache_key)
+        .query_async::<Option<String>>(&mut state.redis)
+        .await
+    {
+        Ok(Some(json_str)) => serde_json::from_str(&json_str).ok(),
+        _ => None,
+    };
+
+    // Delete old cache entry
+    let _: () = redis::cmd("DEL")
+        .arg(&cache_key)
+        .query_async(&mut state.redis)
+        .await
+        .unwrap_or_default();
+
+    // Delete old image files if they exist
+    if let Some(uuids) = old_uuids {
+        let image_host_config = Supervisor::image_host().await;
+        for uuid in &uuids {
+            // Find all files with this UUID (the 4 individual images)
+            let filename = format!("{}.jpg", uuid);
+            let remote_path = format!(
+                "{}:{}/{}",
+                image_host_config.ssh_hostname, image_host_config.ssh_directory, filename
+            );
+
+            debug!("Deleting old gallery image: {}", remote_path);
+
+            let output = tokio::process::Command::new("ssh")
+                .arg("-o")
+                .arg("StrictHostKeyChecking=no")
+                .arg(&image_host_config.ssh_hostname)
+                .arg("rm")
+                .arg("-f")
+                .arg(format!("{}/{}", image_host_config.ssh_directory, filename))
+                .output()
+                .await;
+
+            if let Ok(output) = output {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("Failed to delete old image {}: {}", filename, stderr);
+                }
+            }
+
+            // Also remove from Redis tracking
+            let _: () = redis::cmd("ZREM")
+                .arg("image:files")
+                .arg(&filename)
+                .query_async(&mut state.redis)
+                .await
+                .unwrap_or_default();
+        }
+    }
+
+    // Generate new images
+    info!("Generating new images for {}", request.model_name);
+    let imagen_request = GenerateImagesRequest {
+        prompt: generate.clone(),
+        model: model.clone(),
+        progress: None,
+        batch: None,
+    };
+
+    let result = match submit_generation(imagen_request).await {
+        Ok(response) => response,
+        Err(e) => {
+            error!("Failed to generate new images: {:#}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GalleryRegenResponse {
+                    success: false,
+                    urls: vec![],
+                    error: Some(format!("Image generation failed: {}", e)),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if result.images.len() < 4 {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(GalleryRegenResponse {
+                success: false,
+                urls: vec![],
+                error: Some(format!("Expected 4 images but got {}", result.images.len())),
+            }),
+        )
+            .into_response();
+    }
+
+    // Upload the new images
+    let backend_str = result.backend.as_str().to_string();
+    let mut new_uuids = Vec::new();
+    let image_host_base_url = Supervisor::image_host().await.base_url;
+
+    for image in result.images.iter().take(4) {
+        match upload_image_with_generation(
+            image.clone(),
+            result.workflow.clone(),
+            Some(backend_str.clone()),
+            Some(generate.clone()),
+        )
+        .await
+        {
+            Ok(url) => {
+                // Extract UUID from URL
+                let uuid = url
+                    .trim_start_matches(&image_host_base_url)
+                    .trim_start_matches('/')
+                    .trim_end_matches(".jpg")
+                    .to_string();
+                new_uuids.push(uuid);
+            }
+            Err(e) => {
+                error!("Failed to upload image: {:#}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(GalleryRegenResponse {
+                        success: false,
+                        urls: vec![],
+                        error: Some(format!("Image upload failed: {}", e)),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Store new cache entry
+    if let Err(e) = set_gallery_image(
+        &mut state.redis,
+        &request.model_name,
+        &model,
+        &generate,
+        &request.style_name,
+        &new_uuids,
+    )
+    .await
+    {
+        error!("Failed to cache new images: {:#}", e);
+    }
+
+    // Return the new URLs in the format expected by the frontend
+    let new_urls: Vec<String> = new_uuids
+        .iter()
+        .map(|uuid| format!("/image/0.5/75/{}.jpg", uuid))
+        .collect();
+
+    info!(
+        "Successfully regenerated gallery cell with {} images",
+        new_urls.len()
+    );
+
+    (
+        StatusCode::OK,
+        Json(GalleryRegenResponse {
+            success: true,
+            urls: new_urls,
+            error: None,
+        }),
+    )
+        .into_response()
 }
 
 /// Path parameters for compressed image endpoint

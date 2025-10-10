@@ -78,6 +78,8 @@ pub struct WebServerConfig {
     pub bind_address: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(skip, default)]
+    pub enable_regen: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Eq, PartialEq, Default)]
@@ -177,6 +179,7 @@ impl Default for WebServerConfig {
         Self {
             bind_address: default_bind_address(),
             port: default_port(),
+            enable_regen: false,
         }
     }
 }

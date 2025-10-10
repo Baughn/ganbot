@@ -204,6 +204,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const promptPanel = document.createElement('div');
         promptPanel.className = 'image-modal-prompt';
 
+        // Create regen button container
+        const regenContainer = document.createElement('div');
+        regenContainer.className = 'image-modal-regen';
+        const regenBtn = document.createElement('button');
+        regenBtn.className = 'regen-btn';
+        regenBtn.textContent = 'Regenerate Images';
+        regenBtn.setAttribute('aria-label', 'Regenerate this set of 4 images');
+        const regenStatus = document.createElement('div');
+        regenStatus.className = 'regen-status';
+        regenContainer.appendChild(regenBtn);
+        regenContainer.appendChild(regenStatus);
+
         // Create image grid container (right side)
         const imageGrid = document.createElement('div');
         imageGrid.className = 'image-modal-grid';
@@ -211,6 +223,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Assemble modal
         leftContainer.appendChild(infoPanel);
         leftContainer.appendChild(promptPanel);
+        leftContainer.appendChild(regenContainer);
         container.appendChild(closeBtn);
         container.appendChild(leftContainer);
         container.appendChild(imageGrid);
@@ -231,7 +244,113 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        return { overlay, infoPanel, promptPanel, imageGrid };
+        // Regen button click handler
+        regenBtn.addEventListener('click', async () => {
+            const modelName = regenBtn.dataset.modelName;
+            const prompt = regenBtn.dataset.prompt;
+
+            if (!modelName || !prompt) {
+                console.error('Cannot regenerate: missing model or prompt information');
+                regenStatus.textContent = 'Error: Missing model or prompt information';
+                regenStatus.className = 'regen-status error';
+                return;
+            }
+
+            // Extract style from URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const styleName = urlParams.get('style') || 'default';
+
+            // Show loading state
+            regenBtn.disabled = true;
+            regenBtn.textContent = 'Regenerating...';
+            regenBtn.classList.add('loading');
+            regenStatus.textContent = 'Generating 4 new images...';
+            regenStatus.className = 'regen-status info';
+
+            try {
+                const response = await fetch('/gallery/regen', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model_name: modelName,
+                        prompt: prompt,
+                        style_name: styleName,
+                    }),
+                });
+
+                // Get raw response text for better error diagnostics
+                const responseText = await response.text();
+                console.log('Regen response status:', response.status);
+                console.log('Regen response body:', responseText);
+
+                // Try to parse as JSON
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch {
+                    const preview = responseText.substring(0, 200);
+                    throw new Error(`Server returned non-JSON response (status ${response.status}): ${preview}...`);
+                }
+
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || `HTTP ${response.status}`);
+                }
+
+                // Update status
+                regenStatus.textContent = 'Updating gallery...';
+
+                // Find and update the gallery cell
+                const galleryCells = document.querySelectorAll('.gallery-cell');
+                for (const cell of galleryCells) {
+                    const cellModelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
+                    const cellPrompt = cell.dataset.prompt || '';
+
+                    if (cellModelConfig && cellModelConfig.name === modelName && cellPrompt === prompt) {
+                        // Update the cell's URLs
+                        cell.dataset.urls = JSON.stringify(data.urls);
+
+                        // Update all image elements in the cell
+                        const links = cell.querySelectorAll('.gallery-link');
+                        data.urls.forEach((url, index) => {
+                            if (links[index]) {
+                                const img = links[index].querySelector('img');
+                                if (img) {
+                                    img.src = url;
+                                    // Force reload
+                                    const cacheBuster = `?t=${Date.now()}`;
+                                    img.src = url + cacheBuster;
+                                }
+                                links[index].href = url;
+                            }
+                        });
+
+                        break;
+                    }
+                }
+
+                // Show success message
+                regenStatus.textContent = 'Success! Images regenerated.';
+                regenStatus.className = 'regen-status success';
+                console.log('Images regenerated successfully!');
+
+                // Close modal after a short delay
+                setTimeout(() => {
+                    hideModal(overlay);
+                }, 1500);
+            } catch (error) {
+                console.error('Regeneration failed:', error);
+                regenStatus.textContent = `Error: ${error.message}`;
+                regenStatus.className = 'regen-status error';
+                // Reset button state on error
+                regenBtn.disabled = false;
+                regenBtn.textContent = 'Regenerate Images';
+                regenBtn.classList.remove('loading');
+            }
+        });
+
+        return { overlay, infoPanel, promptPanel, imageGrid, regenBtn, regenContainer, regenStatus };
     }
 
     function getFullResolutionUrl(thumbnailUrl) {
@@ -264,6 +383,24 @@ document.addEventListener('DOMContentLoaded', () => {
         if (prompt) {
             const promptHTML = `<h3>Prompt</h3><p class="prompt-text">${prompt}</p>`;
             modalComponents.promptPanel.innerHTML = promptHTML;
+        }
+
+        // Show/hide regen button based on config
+        if (window.galleryConfig && window.galleryConfig.enableRegen && modelConfig) {
+            modalComponents.regenContainer.style.display = 'block';
+            // Store data needed for regeneration
+            modalComponents.regenBtn.dataset.modelName = modelConfig.name;
+            modalComponents.regenBtn.dataset.prompt = prompt || '';
+            modalComponents.regenBtn.dataset.styleUrl = window.location.search; // Contains style param
+            // Clear previous status
+            modalComponents.regenStatus.textContent = '';
+            modalComponents.regenStatus.className = 'regen-status';
+            // Reset button state
+            modalComponents.regenBtn.disabled = false;
+            modalComponents.regenBtn.textContent = 'Regenerate Images';
+            modalComponents.regenBtn.classList.remove('loading');
+        } else {
+            modalComponents.regenContainer.style.display = 'none';
         }
 
         // Add all images to the grid at full resolution

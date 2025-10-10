@@ -413,6 +413,73 @@ pre code {
     word-wrap: break-word;
 }
 
+.image-modal-regen {
+    background: #2c3e50;
+    padding: 1.5rem;
+    border-radius: 8px;
+    display: none;
+}
+
+.regen-btn {
+    width: 100%;
+    padding: 0.75rem 1.5rem;
+    border: 2px solid #e74c3c;
+    background: #e74c3c;
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.regen-btn:hover:not(:disabled) {
+    background: #c0392b;
+    border-color: #c0392b;
+}
+
+.regen-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.regen-btn.loading {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+
+.regen-status {
+    margin-top: 0.75rem;
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    text-align: center;
+    min-height: 1.5rem;
+}
+
+.regen-status.info {
+    background: #3498db;
+    color: white;
+}
+
+.regen-status.success {
+    background: #27ae60;
+    color: white;
+}
+
+.regen-status.error {
+    background: #e74c3c;
+    color: white;
+}
+
 .image-modal-info h2 {
     margin: 0 0 0.5rem 0;
     font-size: 1.5rem;
