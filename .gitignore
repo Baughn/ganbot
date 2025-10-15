@@ -1,4 +1,5 @@
 /target
+.playwright-mcp
 
 # Nix build result
 /result

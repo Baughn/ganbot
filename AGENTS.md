@@ -11,6 +11,13 @@ This file provides guidance when working with code in this repository.
 
 Ganbot3 is an IRC bot built in Rust using the Kameo actor framework for fault-tolerant message passing and concurrent operations. The bot integrates AI capabilities through OpenRouter API and image generation via ComfyUI, with Redis for persistence and state management.
 
+## Controlling the bot
+
+The bot runs under the background-process MCP, which you can use to read logs or restart it. When starting, ALWAYS make sure there isn't an instance already running; if there is, kill it. Run in debug mode. (`cd /home/svein/dev/ganbot && cargo run`)
+Do not use the Bash tool for this.
+
+When working with the webserver / image gallery, use the playwright MCP to test your work. The gallery is at https://ganbot.brage.info/. Since this is primarily visual, you should use the screenshot tool regularly. To limit token usage, all browser interactions should be done by a sub-agent.
+
 ## Architecture
 
 ### Actor-Based Design with Kameo
