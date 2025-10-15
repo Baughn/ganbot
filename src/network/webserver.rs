@@ -1153,7 +1153,7 @@ async fn compressed_image_handler(
     // Cache the compressed image with 1-day TTL
     if let Err(e) = redis::cmd("SETEX")
         .arg(&cache_key)
-        .arg(86400) // 1 day TTL
+        .arg(86400 * 7) // 1 week TTL
         .arg(&compressed_bytes)
         .query_async::<()>(&mut state.redis)
         .await
