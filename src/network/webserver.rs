@@ -1,3 +1,4 @@
+use ab_glyph::{FontRef, PxScale};
 use anyhow::{Context, Result};
 use askama::Template;
 use askama_web::WebTemplate;
@@ -8,16 +9,19 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use image::{Rgb, RgbImage};
+use imageproc::drawing::draw_text_mut;
 use kameo::{Actor, actor::ActorRef, registry::ACTOR_REGISTRY};
+use lazy_static::lazy_static;
 use redis::aio::ConnectionManager;
 use sha2::{Digest, Sha256};
 use socket2::{Domain, Socket, Type};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     actions::imagen::{GenerateImagesRequest, submit_generation},
@@ -30,6 +34,37 @@ use crate::{
     supervisor::{GetModelsConfig, Supervisor},
     util::image_compression::{ResizeMode, compress_image},
 };
+
+// Lazy-loaded font for filtered placeholder text
+lazy_static! {
+    static ref GALLERY_FONT: FontRef<'static> = {
+        let font_data = include_bytes!("../../fonts/gallery.ttf");
+        FontRef::try_from_slice(font_data).expect("Failed to load embedded gallery font")
+    };
+}
+
+/// Create a placeholder image with "Filtered" text for filtered NanoBanana results
+fn create_filtered_placeholder() -> Arc<RgbImage> {
+    let width = 1024;
+    let height = 1024;
+
+    // Create a dark gray background
+    let mut img = RgbImage::from_pixel(width, height, Rgb([60, 60, 60]));
+
+    // Draw "Filtered" text in the center
+    let text = "Filtered";
+    let font = &*GALLERY_FONT;
+    let scale = PxScale::from(80.0);
+    let text_color = Rgb([200, 200, 200]);
+
+    // Center the text (approximate)
+    let x = (width / 2) - 180; // Rough centering
+    let y = (height / 2) - 40;
+
+    draw_text_mut(&mut img, text_color, x as i32, y as i32, scale, font, text);
+
+    Arc::new(img)
+}
 
 /// Template for the index/home page
 #[derive(Template, WebTemplate)]
@@ -99,6 +134,134 @@ struct GalleryImage {
     pointer_events: &'static str,
     index: usize,
     loading: &'static str,
+}
+
+/// Generate a single NanoBanana image with retry logic for errors and filtering
+async fn generate_single_nanobanana_image(prompt: Generate, model: Model) -> Result<Arc<RgbImage>> {
+    let mut attempts = 0;
+    let max_attempts = 3;
+
+    while attempts < max_attempts {
+        let request = GenerateImagesRequest {
+            prompt: prompt.clone(),
+            model: model.clone(),
+            progress: None,
+            batch: None,
+        };
+
+        match submit_generation(request).await {
+            Ok(response) if response.images.is_empty() => {
+                // Filtered! Try once more but count as all retries
+                warn!(
+                    "NanoBanana filtered prompt '{}', trying once more (attempt {}/{})",
+                    prompt.raw_prompt,
+                    attempts + 1,
+                    max_attempts
+                );
+                attempts = (attempts + 1).max(max_attempts - 1);
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+            Ok(response) => {
+                debug!(
+                    "NanoBanana successfully generated image for prompt '{}'",
+                    prompt.raw_prompt
+                );
+                return Ok(response.images[0].clone());
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts < max_attempts {
+                    warn!(
+                        "NanoBanana generation failed (attempt {}/{}): {:#}, retrying in 30s",
+                        attempts, max_attempts, e
+                    );
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                } else {
+                    error!(
+                        "NanoBanana generation failed after {} attempts: {:#}",
+                        max_attempts, e
+                    );
+                }
+            }
+        }
+    }
+
+    // All retries exhausted, return "Filtered" placeholder
+    warn!(
+        "NanoBanana failed after {} attempts for prompt '{}', using filtered placeholder",
+        max_attempts, prompt.raw_prompt
+    );
+    Ok(create_filtered_placeholder())
+}
+
+/// Generate 4 gallery images for any backend
+async fn generate_gallery_images(prompt: Generate, model: Model) -> Result<Vec<Arc<RgbImage>>> {
+    match &model.backend {
+        Backend::ComfyUI { .. } => {
+            // ComfyUI can generate 4 images in a single batch
+            let request = GenerateImagesRequest {
+                prompt,
+                model,
+                progress: None,
+                batch: None,
+            };
+
+            let response = submit_generation(request).await?;
+            if response.images.len() < 4 {
+                anyhow::bail!(
+                    "Expected 4 images from ComfyUI but got {}",
+                    response.images.len()
+                );
+            }
+            Ok(response.images.into_iter().take(4).collect())
+        }
+        Backend::NanoBanana => {
+            // NanoBanana generates 1 image per call, so we need to call it 4 times
+            // Run all 4 generations concurrently for speed
+            info!(
+                "Generating 4 NanoBanana images concurrently for prompt '{}'",
+                prompt.raw_prompt
+            );
+
+            let mut handles = Vec::new();
+            for i in 0..4 {
+                let prompt_clone = prompt.clone();
+                let model_clone = model.clone();
+                let handle = tokio::spawn(async move {
+                    debug!("Starting NanoBanana generation {}/4", i + 1);
+                    let result = generate_single_nanobanana_image(prompt_clone, model_clone).await;
+                    debug!("Completed NanoBanana generation {}/4", i + 1);
+                    result
+                });
+                handles.push(handle);
+            }
+
+            // Wait for all 4 to complete
+            let mut images = Vec::new();
+            for (i, handle) in handles.into_iter().enumerate() {
+                match handle.await {
+                    Ok(Ok(image)) => {
+                        images.push(image);
+                    }
+                    Ok(Err(e)) => {
+                        error!("NanoBanana generation {}/4 failed: {:#}", i + 1, e);
+                        anyhow::bail!("NanoBanana generation {}/4 failed: {:#}", i + 1, e);
+                    }
+                    Err(e) => {
+                        error!("NanoBanana task {}/4 panicked: {:#}", i + 1, e);
+                        anyhow::bail!("NanoBanana task {}/4 panicked: {:#}", i + 1, e);
+                    }
+                }
+            }
+
+            info!(
+                "Successfully generated all 4 NanoBanana images for prompt '{}'",
+                prompt.raw_prompt
+            );
+            Ok(images)
+        }
+    }
 }
 
 /// Web server actor
@@ -374,12 +537,8 @@ async fn model_gallery_handler(
         }
     };
 
-    // Filter to ComfyUI models
-    let mut models: Vec<_> = models_config
-        .models
-        .iter()
-        .filter(|(_, model)| matches!(model.backend, Backend::ComfyUI { .. }))
-        .collect();
+    // Get all models
+    let mut models: Vec<_> = models_config.models.iter().collect();
 
     models.sort_by_key(|(name, _)| *name);
 
@@ -745,17 +904,10 @@ async fn gallery_regen_handler(
         }
     }
 
-    // Generate new images
-    info!("Generating new images for {}", request.model_name);
-    let imagen_request = GenerateImagesRequest {
-        prompt: generate.clone(),
-        model: model.clone(),
-        progress: None,
-        batch: None,
-    };
-
-    let result = match submit_generation(imagen_request).await {
-        Ok(response) => response,
+    // Generate new images (4 images for all backends)
+    info!("Generating 4 new images for {}", request.model_name);
+    let images = match generate_gallery_images(generate.clone(), model.clone()).await {
+        Ok(imgs) => imgs,
         Err(e) => {
             error!("Failed to generate new images: {:#}", e);
             return (
@@ -770,28 +922,19 @@ async fn gallery_regen_handler(
         }
     };
 
-    if result.images.len() < 4 {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(GalleryRegenResponse {
-                success: false,
-                urls: vec![],
-                error: Some(format!("Expected 4 images but got {}", result.images.len())),
-            }),
-        )
-            .into_response();
-    }
-
     // Upload the new images
-    let backend_str = result.backend.as_str().to_string();
+    let backend_str = match &model.backend {
+        Backend::ComfyUI { .. } => "ComfyUI",
+        Backend::NanoBanana => "NanoBanana",
+    };
     let mut new_uuids = Vec::new();
     let image_host_base_url = Supervisor::image_host().await.base_url;
 
-    for image in result.images.iter().take(4) {
+    for image in images.iter() {
         match upload_image_with_generation(
             image.clone(),
-            result.workflow.clone(),
-            Some(backend_str.clone()),
+            None, // No workflow for gallery images
+            Some(backend_str.to_string()),
             Some(generate.clone()),
         )
         .await
@@ -1290,15 +1433,11 @@ async fn pre_generate_gallery_task(
         }
     };
 
-    // Filter to ComfyUI models only (for consistency)
-    let models: Vec<_> = models_config
-        .models
-        .iter()
-        .filter(|(_, model)| matches!(model.backend, Backend::ComfyUI { .. }))
-        .collect();
+    // Get all models
+    let models: Vec<_> = models_config.models.iter().collect();
 
     if models.is_empty() {
-        info!("No ComfyUI models found for gallery");
+        info!("No models found for gallery");
         return;
     }
 
@@ -1372,19 +1511,17 @@ async fn pre_generate_gallery_task(
         // Clone model for cache operations since it will be moved into the request
         let model_for_cache = model.clone();
 
-        // Generate the image
-        let imagen_request = GenerateImagesRequest {
-            prompt: generate_request.clone(),
-            model,
-            progress: None,
-            batch: None,
-        };
-
-        let result = match submit_generation(imagen_request).await {
-            Ok(response) => response,
+        // Generate 4 gallery images
+        let images = match generate_gallery_images(
+            generate_request.clone(),
+            model_for_cache.clone(),
+        )
+        .await
+        {
+            Ok(imgs) => imgs,
             Err(e) => {
                 error!(
-                    "Failed to generate gallery image for {} / {}: {:#}",
+                    "Failed to generate gallery images for {} / {}: {:#}",
                     model_name, generate_request.raw_prompt, e
                 );
                 continue;
@@ -1392,24 +1529,17 @@ async fn pre_generate_gallery_task(
         };
 
         // Upload all 4 images
-        if result.images.len() < 4 {
-            error!(
-                "Expected 4 images but got {} for {} / {}",
-                result.images.len(),
-                model_name,
-                generate_request.raw_prompt
-            );
-            continue;
-        }
-
-        let backend_str = result.backend.as_str().to_string();
+        let backend_str = match &model_for_cache.backend {
+            Backend::ComfyUI { .. } => "ComfyUI",
+            Backend::NanoBanana => "NanoBanana",
+        };
         let mut uuids = Vec::new();
 
-        for (idx, image) in result.images.iter().take(4).enumerate() {
+        for (idx, image) in images.iter().enumerate() {
             let image_url = match upload_image_with_generation(
                 image.clone(),
-                result.workflow.clone(),
-                Some(backend_str.clone()),
+                None, // No workflow for gallery images
+                Some(backend_str.to_string()),
                 Some(generate_request.clone()),
             )
             .await
