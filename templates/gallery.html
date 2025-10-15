@@ -48,7 +48,7 @@ window.galleryConfig = {
                 </td>
                 {% for cell in model.cells %}
                 <td data-column-index="{{ loop.index0 }}">
-                    <div class="gallery-cell" data-urls="{{ cell.urls_json }}" data-cycle-offset="{{ cell.offset }}" data-model-config="{{ cell.model_config }}" data-prompt="{{ cell.prompt }}">
+                    <div class="gallery-cell" data-urls="{{ cell.urls_json }}" data-cycle-offset="{{ cell.offset }}" data-model-config="{{ cell.model_config }}" data-prompt="{{ cell.prompt }}" data-base-prompt="{{ cell.base_prompt }}">
                         {% for image in cell.images %}
                         <a href="{{ image.url }}" class="gallery-link" style="opacity: {{ image.opacity }}; pointer-events: {{ image.pointer_events }};"><img src="{{ image.url }}" srcset="{{ image.srcset }}" sizes="200px" alt="{{ model.name }} - {{ cell.prompt }}" class="gallery-img" data-index="{{ image.index }}" loading="{{ image.loading }}" /></a>
                         {% endfor %}

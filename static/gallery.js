@@ -178,12 +178,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const cells = row.querySelectorAll('.gallery-cell');
             cells.forEach(cell => {
                 const modelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
-                const prompt = cell.dataset.prompt || '';
-                if (modelConfig && prompt) {
+                const basePrompt = cell.dataset.basePrompt || '';
+                if (modelConfig && basePrompt) {
                     visibleCells.push({
                         cell,
                         modelName: modelConfig.name,
-                        prompt,
+                        prompt: basePrompt,
                         modelConfig
                     });
                 }
@@ -277,26 +277,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function navigateModal(modalComponents, direction) {
-        // Get current cell info from modal data
+        // Get current cell info from modal data (base prompt for matching)
         const currentModelName = modalComponents.regenBtn.dataset.modelName;
-        const currentPrompt = modalComponents.regenBtn.dataset.prompt;
+        const currentBasePrompt = modalComponents.regenBtn.dataset.basePrompt;
 
-        if (!currentModelName || !currentPrompt) {
+        if (!currentModelName || !currentBasePrompt) {
             return;
         }
 
-        const adjacentCell = findAdjacentCell(currentModelName, currentPrompt, direction);
+        const adjacentCell = findAdjacentCell(currentModelName, currentBasePrompt, direction);
         if (!adjacentCell) {
             return;
         }
 
         // Update modal with new cell
         const urls = JSON.parse(adjacentCell.cell.dataset.urls || '[]');
+        const basePrompt = adjacentCell.cell.dataset.basePrompt || '';
+        const displayPrompt = adjacentCell.cell.dataset.prompt || '';
         const link = adjacentCell.cell.querySelector('.gallery-link');
         const img = link ? link.querySelector('img') : null;
-        const imgAlt = img ? img.alt : `${adjacentCell.modelName} - ${adjacentCell.prompt}`;
+        const imgAlt = img ? img.alt : `${adjacentCell.modelName} - ${displayPrompt}`;
 
-        showModal(modalComponents, urls, imgAlt, adjacentCell.modelConfig, adjacentCell.prompt);
+        showModal(modalComponents, urls, imgAlt, adjacentCell.modelConfig, basePrompt, displayPrompt);
     }
 
     function navigateStyle(direction) {
@@ -347,16 +349,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (galleryCell) {
                 const urls = JSON.parse(galleryCell.dataset.urls || '[]');
                 const modelConfig = JSON.parse(galleryCell.dataset.modelConfig || 'null');
-                const prompt = galleryCell.dataset.prompt || '';
+                const basePrompt = galleryCell.dataset.basePrompt || '';
+                const displayPrompt = galleryCell.dataset.prompt || '';
                 const img = link.querySelector('img');
                 const imgAlt = img.alt;
-                showModal(modal, urls, imgAlt, modelConfig, prompt);
+                showModal(modal, urls, imgAlt, modelConfig, basePrompt, displayPrompt);
             } else {
                 // Fallback for non-gallery cells
                 const img = link.querySelector('img');
                 const imgSrc = img.src;
                 const imgAlt = img.alt;
-                showModal(modal, [imgSrc], imgAlt, null, '');
+                showModal(modal, [imgSrc], imgAlt, null, '', '');
             }
         });
     });
@@ -364,19 +367,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Auto-open modal if URL contains modal parameters
     const modalState = getModalFromURL();
     if (modalState.active && modalState.model && modalState.prompt) {
-        // Find the gallery cell matching the model and prompt
+        // Find the gallery cell matching the model and base prompt
         const galleryCells = document.querySelectorAll('.gallery-cell');
         for (const cell of galleryCells) {
             const cellModelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
-            const cellPrompt = cell.dataset.prompt || '';
+            const cellBasePrompt = cell.dataset.basePrompt || '';
+            const cellDisplayPrompt = cell.dataset.prompt || '';
 
-            if (cellModelConfig && cellModelConfig.name === modalState.model && cellPrompt === modalState.prompt) {
+            if (cellModelConfig && cellModelConfig.name === modalState.model && cellBasePrompt === modalState.prompt) {
                 const urls = JSON.parse(cell.dataset.urls || '[]');
                 const link = cell.querySelector('.gallery-link');
                 if (link) {
                     const img = link.querySelector('img');
                     const imgAlt = img ? img.alt : '';
-                    showModal(modal, urls, imgAlt, cellModelConfig, cellPrompt);
+                    showModal(modal, urls, imgAlt, cellModelConfig, cellBasePrompt, cellDisplayPrompt);
 
                     // Re-enter fullscreen if needed
                     if (shouldReturnToFullscreen) {
@@ -405,15 +409,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const galleryCells = document.querySelectorAll('.gallery-cell');
             for (const cell of galleryCells) {
                 const cellModelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
-                const cellPrompt = cell.dataset.prompt || '';
+                const cellBasePrompt = cell.dataset.basePrompt || '';
+                const cellDisplayPrompt = cell.dataset.prompt || '';
 
-                if (cellModelConfig && cellModelConfig.name === currentModalState.model && cellPrompt === currentModalState.prompt) {
+                if (cellModelConfig && cellModelConfig.name === currentModalState.model && cellBasePrompt === currentModalState.prompt) {
                     const urls = JSON.parse(cell.dataset.urls || '[]');
                     const link = cell.querySelector('.gallery-link');
                     if (link) {
                         const img = link.querySelector('img');
                         const imgAlt = img ? img.alt : '';
-                        showModal(modal, urls, imgAlt, cellModelConfig, cellPrompt, true);
+                        showModal(modal, urls, imgAlt, cellModelConfig, cellBasePrompt, cellDisplayPrompt, true);
                     }
                     break;
                 }
@@ -610,9 +615,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Regen button click handler
         regenBtn.addEventListener('click', async () => {
             const modelName = regenBtn.dataset.modelName;
-            const prompt = regenBtn.dataset.prompt;
+            const displayPrompt = regenBtn.dataset.prompt; // Use display prompt with style prefix
 
-            if (!modelName || !prompt) {
+            if (!modelName || !displayPrompt) {
                 console.error('Cannot regenerate: missing model or prompt information');
                 regenStatus.textContent = 'Error: Missing model or prompt information';
                 regenStatus.className = 'regen-status error';
@@ -638,7 +643,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     },
                     body: JSON.stringify({
                         model_name: modelName,
-                        prompt: prompt,
+                        prompt: displayPrompt,
                         style_name: styleName,
                     }),
                 });
@@ -664,13 +669,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Update status
                 regenStatus.textContent = 'Updating gallery...';
 
-                // Find and update the gallery cell
+                // Find and update the gallery cell (use display prompt to match)
                 const galleryCells = document.querySelectorAll('.gallery-cell');
                 for (const cell of galleryCells) {
                     const cellModelConfig = JSON.parse(cell.dataset.modelConfig || 'null');
-                    const cellPrompt = cell.dataset.prompt || '';
+                    const cellDisplayPrompt = cell.dataset.prompt || '';
 
-                    if (cellModelConfig && cellModelConfig.name === modelName && cellPrompt === prompt) {
+                    if (cellModelConfig && cellModelConfig.name === modelName && cellDisplayPrompt === displayPrompt) {
                         // Update the cell's URLs
                         cell.dataset.urls = JSON.stringify(data.urls);
 
@@ -753,7 +758,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return thumbnailUrl;
     }
 
-    function showModal(modalComponents, imageUrls, imgAlt, modelConfig, prompt, skipUrlUpdate = false) {
+    function showModal(modalComponents, imageUrls, imgAlt, modelConfig, basePrompt, displayPrompt, skipUrlUpdate = false) {
         // Clear existing content
         modalComponents.imageGrid.innerHTML = '';
         modalComponents.infoPanel.innerHTML = '';
@@ -765,19 +770,23 @@ document.addEventListener('DOMContentLoaded', () => {
             modalComponents.infoPanel.innerHTML = infoHTML;
         }
 
-        // Populate prompt panel if prompt is available
-        if (prompt) {
-            const promptHTML = `<h3>Prompt</h3><p class="prompt-text">${prompt}</p>`;
+        // Populate prompt panel if display prompt is available
+        if (displayPrompt) {
+            const promptHTML = `<h3>Prompt</h3><p class="prompt-text">${displayPrompt}</p>`;
             modalComponents.promptPanel.innerHTML = promptHTML;
+        }
+
+        // Store data needed for navigation (always set, regardless of regen feature)
+        if (modelConfig) {
+            modalComponents.regenBtn.dataset.modelName = modelConfig.name;
+            modalComponents.regenBtn.dataset.basePrompt = basePrompt || '';
+            modalComponents.regenBtn.dataset.prompt = displayPrompt || '';
+            modalComponents.regenBtn.dataset.styleUrl = window.location.search; // Contains style param
         }
 
         // Show/hide regen button based on config
         if (window.galleryConfig && window.galleryConfig.enableRegen && modelConfig) {
             modalComponents.regenContainer.style.display = 'block';
-            // Store data needed for regeneration
-            modalComponents.regenBtn.dataset.modelName = modelConfig.name;
-            modalComponents.regenBtn.dataset.prompt = prompt || '';
-            modalComponents.regenBtn.dataset.styleUrl = window.location.search; // Contains style param
             // Clear previous status
             modalComponents.regenStatus.textContent = '';
             modalComponents.regenStatus.className = 'regen-status';
@@ -801,17 +810,18 @@ document.addEventListener('DOMContentLoaded', () => {
         modalComponents.overlay.classList.add('active');
         document.body.style.overflow = 'hidden';
 
-        // Update navigation button states
-        if (modelConfig && modelConfig.name && prompt) {
-            updateNavigationButtons(modalComponents, modelConfig.name, prompt);
+        // Update navigation button states (use base prompt for matching)
+        if (modelConfig && modelConfig.name && basePrompt) {
+            updateNavigationButtons(modalComponents, modelConfig.name, basePrompt);
         }
 
         // Update URL with modal parameters if we have model config (unless skipping)
-        if (!skipUrlUpdate && modelConfig && modelConfig.name && prompt) {
+        // Use base prompt in URL so it works across style changes
+        if (!skipUrlUpdate && modelConfig && modelConfig.name && basePrompt) {
             updateURL({
                 modal: 'true',
                 model: modelConfig.name,
-                prompt: prompt
+                prompt: basePrompt
             });
         }
     }

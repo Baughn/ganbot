@@ -123,6 +123,7 @@ struct GalleryCell {
     offset: u32,
     model_config: String,
     prompt: String,
+    base_prompt: String,
     images: Vec<GalleryImage>,
 }
 
@@ -736,6 +737,7 @@ async fn model_gallery_handler(
                 offset,
                 model_config,
                 prompt: styled_prompt.clone(),
+                base_prompt: prompt.clone(),
                 images,
             });
         }
