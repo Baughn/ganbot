@@ -1,0 +1,23 @@
+# Configuration for background-process-manager
+# Manages the ganbot Rust web server
+
+# Port for the MCP server to listen on
+mcp_port = 3001
+
+# Time in hours before switching to release mode (default: 3)
+dev_timeout_hours = 3
+
+# Wait time in seconds after a crash in dev mode (default: 120)
+dev_crash_wait_seconds = 120
+
+# Initial backoff in seconds for crash recovery in release mode (default: 1)
+release_crash_backoff_initial_seconds = 1
+
+# Maximum backoff in seconds for crash recovery in release mode (default: 300)
+release_crash_backoff_max_seconds = 300
+
+# Define the main ganbot process
+[process.main]
+type = "rust"
+# Ganbot reads configuration from config.toml, so no additional arguments needed
+args = []

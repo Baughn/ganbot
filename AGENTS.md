@@ -13,7 +13,7 @@ Ganbot3 is an IRC bot built in Rust using the Kameo actor framework for fault-to
 
 ## Controlling the bot
 
-The bot runs under the background-process MCP, which you can use to read logs or restart it. When starting, ALWAYS make sure there isn't an instance already running; if there is, kill it. Run in debug mode. (`cd /home/svein/dev/ganbot && cargo run`)
+The bot runs under the `ganbot` MCP, which you can use to read logs or restart it.
 Do not use the Bash tool for this.
 
 When working with the webserver / image gallery, use the playwright MCP to test your work. The gallery is at https://ganbot.brage.info/. Since this is primarily visual, you should use the screenshot tool regularly. To limit token usage, all browser interactions should be done by a sub-agent.
