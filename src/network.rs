@@ -3,3 +3,4 @@ pub(crate) mod discord;
 pub(crate) mod irc;
 pub(crate) mod openrouter;
 pub(crate) mod webserver;
+pub(crate) mod webserver_htmx;

@@ -107,6 +107,7 @@ impl Actor for Supervisor {
         actor_ref: ActorRef<Self>,
     ) -> std::result::Result<Self, Self::Error> {
         actor_ref.register("supervisor").unwrap();
+        info!("Starting Supervisor");
         // Connect to Redis
         let client =
             redis::Client::open(args.redis_url.as_str()).expect("Failed to create Redis client");
@@ -114,6 +115,7 @@ impl Actor for Supervisor {
             .get_connection_manager()
             .await
             .expect("Failed to connect to Redis");
+        info!("Connected to Redis");
         tokio::spawn(redis_keepalive(redis_connection.clone()));
 
         // Clear ComfyUI queue and interrupt any ongoing generation
@@ -161,7 +163,9 @@ impl Actor for Supervisor {
             _config_watcher,
         };
 
+        info!("Applying config");
         supervisor.apply_config(&actor_ref).await;
+        info!("Config applied");
 
         Ok(supervisor)
     }

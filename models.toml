@@ -102,7 +102,7 @@ negative_append = "This low quality greyscale unfinished sketch is inaccurate an
 checkpoint = "chroma/Chroma-Anime-AIO.safetensors"
 cfg = 4.0
 sampler = "euler_ancestral"
-scheduler = "sgm_uniform"
+scheduler = "sigmoid_offset"
 steps = 24
 resolution = [1024, 1024]
 
@@ -124,7 +124,7 @@ unet = "chroma/Chroma1-HD.safetensors"
 clip = "chroma/t5xxl_fp16.safetensors"
 cfg = 4.0
 sampler = "euler_ancestral"
-scheduler = "sgm_uniform"
+scheduler = "sigmoid_offset"
 steps = 40
 resolution = [1024, 1024]
 
