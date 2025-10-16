@@ -370,7 +370,8 @@ impl DiscordCommandActor {
             get_user_actor_impl(&self.user_manager, command.user.id, &command.user.name).await?;
 
         let preface = format!("**{}**: {}", label, input);
-        let initial_content = format!("{preface}\nStatus: preparing request…");
+        let status_line = "Status: preparing request…";
+        let initial_content = DiscordActor::truncate_message_with_status(&preface, status_line);
 
         let followup_builder = CreateInteractionResponseFollowup::new()
             .content(initial_content)
@@ -505,6 +506,7 @@ impl DiscordCommandActor {
             "An error occurred while processing **{}** (`{}`):\n{:#}",
             label, input, err
         );
+        let content = DiscordActor::truncate_message(&content);
 
         let followup_builder = CreateInteractionResponseFollowup::new()
             .content(content)
@@ -580,12 +582,10 @@ async fn update_progress_message_impl(
     preface: Option<String>,
     status_line: String,
 ) -> Result<()> {
-    let mut lines = Vec::new();
-    if let Some(preface) = preface {
-        lines.push(preface);
-    }
-    lines.push(status_line);
-    let content = lines.join("\n");
+    let content = match preface {
+        Some(preface) => DiscordActor::truncate_message_with_status(&preface, &status_line),
+        None => DiscordActor::truncate_message(&status_line),
+    };
 
     let edit = EditMessage::new().content(content);
 
@@ -630,6 +630,7 @@ async fn send_completion_message_impl(
     }
     lines.extend(response_lines);
     let content = lines.join("\n");
+    let content = DiscordActor::truncate_message(&content);
 
     let user = all::UserId::new(user_id);
     let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
@@ -701,6 +702,7 @@ async fn send_failure_message_impl(
         lines.push("A retry has been scheduled.".to_string());
     }
     let content = lines.join("\n");
+    let content = DiscordActor::truncate_message(&content);
 
     let user = all::UserId::new(user_id);
     let allowed_mentions = CreateAllowedMentions::new().users(vec![user]);
@@ -1323,6 +1325,45 @@ impl DiscordActor {
         text[..end].to_string()
     }
 
+    /// Truncate a message to fit Discord's message limit, preserving a status line if provided.
+    /// The status line is always preserved, and the preface is truncated if necessary.
+    fn truncate_message_with_status(preface: &str, status_line: &str) -> String {
+        let newline_len = 1; // "\n"
+        let total_len = preface.len() + newline_len + status_line.len();
+
+        if total_len <= DISCORD_MESSAGE_LIMIT {
+            return format!("{}\n{}", preface, status_line);
+        }
+
+        // Reserve space for status line, newline, and ellipsis
+        let ellipsis = "...";
+        let reserved = status_line.len() + newline_len + ellipsis.len();
+
+        if reserved >= DISCORD_MESSAGE_LIMIT {
+            // If even the status line is too long, just truncate everything
+            return Self::truncate_text(status_line, DISCORD_MESSAGE_LIMIT);
+        }
+
+        let max_preface_len = DISCORD_MESSAGE_LIMIT - reserved;
+        let truncated_preface = Self::truncate_text(preface, max_preface_len);
+        format!("{}{}\n{}", truncated_preface, ellipsis, status_line)
+    }
+
+    /// Truncate any message to fit Discord's message limit
+    fn truncate_message(content: &str) -> String {
+        if content.len() <= DISCORD_MESSAGE_LIMIT {
+            content.to_string()
+        } else {
+            let ellipsis = "...\n[Message truncated to fit Discord's 2000 character limit]";
+            if ellipsis.len() >= DISCORD_MESSAGE_LIMIT {
+                return Self::truncate_text(content, DISCORD_MESSAGE_LIMIT);
+            }
+            let max_len = DISCORD_MESSAGE_LIMIT - ellipsis.len();
+            let truncated = Self::truncate_text(content, max_len);
+            format!("{}{}", truncated, ellipsis)
+        }
+    }
+
     async fn handle_gallery_component(&self, component: &ComponentInteraction) -> Result<()> {
         let Some((gallery_id, image_index)) =
             Self::parse_gallery_custom_id(&component.data.custom_id)
@@ -1398,8 +1439,9 @@ impl DiscordActor {
         component: &ComponentInteraction,
         content: &str,
     ) -> Result<()> {
+        let content = Self::truncate_message(content);
         let response = CreateInteractionResponseMessage::new()
-            .content(content.to_owned())
+            .content(content)
             .flags(InteractionResponseFlags::EPHEMERAL);
 
         component
@@ -1544,8 +1586,9 @@ impl DiscordActor {
         let user_id_key = UserId::Discord(component.user.id).key();
         match delete_image(&gallery_id, &user_id_key).await {
             Ok(result) => {
+                let content = Self::truncate_message(&result.message);
                 let response = CreateInteractionResponseMessage::new()
-                    .content(result.message)
+                    .content(content)
                     .components(vec![]);
 
                 component
@@ -1653,6 +1696,8 @@ impl DiscordActor {
             .context("while deferring retry modal response")?;
 
         let preface = format!("**Prompt**: {}", edited_prompt);
+        let status_line = "Status: preparing request…";
+        let initial_content = Self::truncate_message_with_status(&preface, status_line);
 
         // Submit a new action with the edited prompt
         let payload = ActionPayload::Prompt {
@@ -1663,7 +1708,7 @@ impl DiscordActor {
 
         // Create a followup message for progress tracking
         let followup_builder = CreateInteractionResponseFollowup::new()
-            .content(format!("{preface}\nStatus: preparing request…"))
+            .content(initial_content)
             .allowed_mentions(CreateAllowedMentions::new());
 
         let followup = modal
@@ -1729,8 +1774,9 @@ impl DiscordActor {
     }
 
     async fn respond_modal_error(&self, modal: &ModalInteraction, content: &str) -> Result<()> {
+        let content = Self::truncate_message(content);
         let response = CreateInteractionResponseMessage::new()
-            .content(content.to_owned())
+            .content(content)
             .flags(InteractionResponseFlags::EPHEMERAL);
 
         modal
