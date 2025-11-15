@@ -183,6 +183,9 @@ impl Message<CompletionRequest> for OpenRouterApi {
                     "content": content,
                 }
             ],
+            "reasoning": {
+                "effort": "medium"
+            },
             "models": msg.models,
             "stream": false,
         });
@@ -273,6 +276,9 @@ where
                     "content": content,
                 }
             ],
+            "reasoning": {
+                "effort": "medium"
+            },
             "models": msg.models,
             "stream": false,
         });

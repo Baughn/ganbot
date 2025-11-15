@@ -736,12 +736,12 @@ fn select_auto_model(prompt_text: &str, config: &ModelsConfig) -> String {
 async fn generate_nanobanana(prompt: Generate, model: &Model) -> Result<ImagenResponse> {
     let formatted_prompt = if prompt.references.img2img.is_some() {
         format!(
-            "Edit this image according to these instructions: {}\nAlways generate an edited image. In addition to the image, comment on the changes in the style of a hard-boiled noir detective.",
+            "Edit this image according to these instructions: {}",
             prompt.prompt
         )
     } else {
         format!(
-            "Generate an image: {}\nAlways generate an image. In addition to the image, comment on it in the style of a hard-boiled noir detective.",
+            "{}\nAfter generating the image, feel free to comment on what you have wrought.",
             prompt.prompt
         )
     };

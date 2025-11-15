@@ -9,9 +9,9 @@ url = "http://localhost:9090"
 
 [openrouter]
 cheap_model = ["google/gemini-2.5-flash"]
-chat_model = "openrouter/auto"
-image_model = "google/gemini-2.5-flash-image-preview"
-dream_model = "openrouter/auto"
+chat_model = "google/gemini-3-pro-preview"
+image_model = "google/gemini-2.5-flash-image"
+dream_model = "google/gemini-3-pro-preview"
 
 [image_host]
 ssh_hostname = "direct.brage.info"
