@@ -4,11 +4,12 @@ default_tagged = "chroma-aio"
 #default_edit = "nanobanana"
 
 [aliases]
-qwen = "qwen_image_fp8"
+qwen = "qwen_image_2512"
+qwen1 = "qwen_image_fp8"
 fanart = "hassaku"
 fanart-cute = "monody"
 pasanctuary = "pasanctuary-5.0"
-dream = "qwen_image_fp8"
+dream = "qwen_image_2512"
 animavivid = "animavividxl"
 
 [templates.sdxl]
@@ -81,6 +82,24 @@ sampler = "euler_ancestral"
 scheduler = "beta"
 steps = 20
 resolution = [1280, 1280]
+
+[models.qwen_image_2512]
+name = "qwen_image_2512"
+description = "Qwen-Image 2512. A general-purpose model; use English."
+tags = ["english", "booru", "recommended"]
+[models.qwen_image_2512.prompt_defaults]
+negative_append = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲"
+[models.qwen_image_2512.backend.ComfyUI]
+unet = "qwen_image_2512_fp8_e4m3fn.safetensors"
+clip = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+vae = "qwen_image_vae.safetensors"
+default_lora = ["Qwen-Image-Lightning-4steps-V1.0.safetensors"]
+shift = 3.1
+cfg = 1.0
+sampler = "euler"
+scheduler = "simple"
+steps = 4
+resolution = [1328, 1328]
 
 [models.walnut]
 name = "walnut"

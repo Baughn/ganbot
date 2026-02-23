@@ -407,6 +407,29 @@ impl Graph {
         NodeOutput::new(node_id, 0)
     }
 
+    pub fn lora_loader_model_only(
+        &mut self,
+        model: &ModelOutput,
+        lora_name: &str,
+        strength_model: f64,
+    ) -> ModelOutput {
+        let mut inputs = Map::new();
+        inputs.insert(
+            "lora_name".to_string(),
+            Value::String(lora_name.to_string()),
+        );
+        inputs.insert(
+            "strength_model".to_string(),
+            serde_json::Number::from_f64(strength_model)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
+        inputs.insert("model".to_string(), Self::node_reference(model));
+
+        let node_id = self.add_node("LoraLoaderModelOnly", inputs);
+        NodeOutput::new(node_id, 0)
+    }
+
     pub fn model_sampling_aura_flow(&mut self, model: &ModelOutput, shift: f64) -> ModelOutput {
         let mut inputs = Map::new();
         inputs.insert(

@@ -354,6 +354,8 @@ impl Message<GenerateImages> for ImagenActor {
                 stage2_denoise,
                 stage2_sampler,
                 stage2_scheduler,
+                default_lora,
+                shift,
             } => {
                 let count = prompt
                     .num_images
@@ -385,6 +387,8 @@ impl Message<GenerateImages> for ImagenActor {
                     stage2_denoise: stage2_denoise.unwrap_or(0.5),
                     stage2_sampler: stage2_sampler.as_deref().unwrap_or("euler"),
                     stage2_scheduler: stage2_scheduler.as_deref().unwrap_or("beta"),
+                    default_lora: default_lora.as_deref().unwrap_or(&[]),
+                    shift: *shift,
                 };
 
                 generate_comfyui(params, progress.as_ref(), &job).await
@@ -800,6 +804,8 @@ struct ComfyParams<'a> {
     stage2_denoise: f32,
     stage2_sampler: &'a str,
     stage2_scheduler: &'a str,
+    default_lora: &'a [String],
+    shift: Option<f64>,
 }
 
 async fn generate_comfyui(
@@ -860,6 +866,7 @@ async fn generate_comfyui(
             let clip_type = match params.clip_type {
                 Some(ct) => ct,
                 None => match unet.split('/').next().unwrap() {
+                    "qwen_image_2512_fp8_e4m3fn.safetensors" => "qwen_image",
                     "qwen" => "qwen_image",
                     "chroma" => "chroma",
                     _ => bail!(
@@ -878,6 +885,14 @@ async fn generate_comfyui(
 
     if params.use_torch_compile {
         model = graph.torch_compile_model(&model, "inductor");
+    }
+
+    for lora_name in params.default_lora {
+        model = graph.lora_loader_model_only(&model, lora_name, 1.0);
+    }
+
+    if let Some(shift) = params.shift {
+        model = graph.model_sampling_aura_flow(&model, shift);
     }
 
     let positive = graph.clip_text_encode(&clip, &prompt.prompt);

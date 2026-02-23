@@ -53,6 +53,8 @@ pub enum Backend {
         stage2_denoise: Option<f32>,
         stage2_sampler: Option<String>,
         stage2_scheduler: Option<String>,
+        default_lora: Option<Vec<String>>,
+        shift: Option<f64>,
     },
 }
 
@@ -124,6 +126,8 @@ enum LoadingBackend {
         stage2_denoise: Option<f32>,
         stage2_sampler: Option<String>,
         stage2_scheduler: Option<String>,
+        default_lora: Option<Vec<String>>,
+        shift: Option<f64>,
     },
 }
 
@@ -207,6 +211,8 @@ impl LoadingBackend {
                     stage2_denoise: p_stage2_denoise,
                     stage2_sampler: p_stage2_sampler,
                     stage2_scheduler: p_stage2_scheduler,
+                    default_lora: p_default_lora,
+                    shift: p_shift,
                 },
                 LoadingBackend::ComfyUI {
                     checkpoint: c_checkpoint,
@@ -226,6 +232,8 @@ impl LoadingBackend {
                     stage2_denoise: c_stage2_denoise,
                     stage2_sampler: c_stage2_sampler,
                     stage2_scheduler: c_stage2_scheduler,
+                    default_lora: c_default_lora,
+                    shift: c_shift,
                 },
             ) => {
                 inherit_if_none(c_checkpoint, p_checkpoint);
@@ -245,6 +253,8 @@ impl LoadingBackend {
                 inherit_if_none(c_stage2_denoise, p_stage2_denoise);
                 inherit_if_none(c_stage2_sampler, p_stage2_sampler);
                 inherit_if_none(c_stage2_scheduler, p_stage2_scheduler);
+                inherit_if_none(c_default_lora, p_default_lora);
+                inherit_if_none(c_shift, p_shift);
                 Ok(())
             }
             (LoadingBackend::NanoBanana, LoadingBackend::ComfyUI { .. }) => {
@@ -338,6 +348,8 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     stage2_denoise,
                     stage2_sampler,
                     stage2_scheduler,
+                    default_lora,
+                    shift,
                 } => Backend::ComfyUI {
                     checkpoint: match (checkpoint, unet, vae, clip) {
                         (Some(ckpt), None, None, None) => Checkpoint::Combined(ckpt.clone()),
@@ -422,6 +434,8 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     stage2_denoise: *stage2_denoise,
                     stage2_sampler: stage2_sampler.clone(),
                     stage2_scheduler: stage2_scheduler.clone(),
+                    default_lora: default_lora.clone(),
+                    shift: *shift,
                 },
             },
             None => {
@@ -578,6 +592,8 @@ ComfyUI = { checkpoint = "child.safetensors" }
             stage2_denoise,
             stage2_sampler,
             stage2_scheduler,
+            default_lora,
+            shift,
         } = &child_model.backend
         {
             assert_eq!(
@@ -596,6 +612,8 @@ ComfyUI = { checkpoint = "child.safetensors" }
             assert_eq!(stage2_denoise, &None); // Not specified
             assert_eq!(stage2_sampler, &None); // Not specified
             assert_eq!(stage2_scheduler, &None); // Not specified
+            assert_eq!(default_lora, &None); // Not specified
+            assert_eq!(shift, &None); // Not specified
         } else {
             panic!("Expected ComfyUI backend");
         }
