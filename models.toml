@@ -289,6 +289,24 @@ scheduler = "karras"
 stage2_sampler = "euler_ancestral"
 stage2_scheduler = "karras"
 
+[models.anima]
+name = "anima"
+description = "Anima Preview. Use tags."
+tags = ["booru", "fanart", "english"]
+[models.anima.prompt_defaults]
+positive_prepend = "score_9, score_8, score_7"
+negative_append = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+[models.anima.backend.ComfyUI]
+unet = "anima-preview3-base.safetensors"
+clip = "qwen_3_06b_base.safetensors"
+clip_type = "stable_diffusion"
+vae = "qwen_image_vae.safetensors"
+cfg = 4
+sampler = "er_sde"
+scheduler = "simple"
+steps = 30
+resolution = [1024, 1024]
+
 [models.nanobanana]
 name = "nanobanana"
 description = "NanoBanana, aka. Gemini-2.5-flash-image-preview"

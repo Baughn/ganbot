@@ -39,7 +39,7 @@ impl Message<String> for AskActor {
 
         // Format the question with noir detective persona
         let noir_prompt = format!(
-            "Answer the following question in the style of a hard-boiled noir detective. Be dramatic, cynical, and use classic noir language and metaphors: {}",
+            "You have the soul of a true pirate, but also, answer this question: {}",
             msg.trim()
         );
 

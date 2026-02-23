@@ -347,6 +347,7 @@ impl Message<GenerateImages> for ImagenActor {
                 steps,
                 resolution,
                 resolutions,
+                clip_type,
                 use_torch_compile,
                 two_stage,
                 upscale_factor,
@@ -371,6 +372,7 @@ impl Message<GenerateImages> for ImagenActor {
                     model_name: &model.name,
                     count,
                     checkpoint,
+                    clip_type: clip_type.as_deref(),
                     cfg: *cfg,
                     sampler: selected_sampler,
                     scheduler: selected_scheduler,
@@ -785,6 +787,7 @@ struct ComfyParams<'a> {
     model_name: &'a str,
     count: u32,
     checkpoint: &'a models::Checkpoint,
+    clip_type: Option<&'a str>,
     cfg: f32,
     sampler: &'a str,
     scheduler: &'a str,
@@ -854,10 +857,16 @@ async fn generate_comfyui(
     let (mut model, clip, vae) = match params.checkpoint {
         models::Checkpoint::Combined(name) => graph.checkpoint_loader(name),
         models::Checkpoint::Split { unet, clip, vae } => {
-            let clip_type = match unet.split('/').next().unwrap() {
-                "qwen" => "qwen_image",
-                "chroma" => "chroma",
-                _ => bail!("Unknown CLIP type for checkpoint: {}", unet),
+            let clip_type = match params.clip_type {
+                Some(ct) => ct,
+                None => match unet.split('/').next().unwrap() {
+                    "qwen" => "qwen_image",
+                    "chroma" => "chroma",
+                    _ => bail!(
+                        "Unknown CLIP type for split checkpoint: {}. Set clip_type in models.toml.",
+                        unet
+                    ),
+                },
             };
             (
                 graph.unet_loader(unet),

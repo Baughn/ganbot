@@ -46,6 +46,7 @@ pub enum Backend {
         steps: u32,
         resolution: (u32, u32),
         resolutions: Option<Vec<(u32, u32)>>,
+        clip_type: Option<String>,
         use_torch_compile: Option<bool>,
         two_stage: Option<bool>,
         upscale_factor: Option<f32>,
@@ -110,6 +111,7 @@ enum LoadingBackend {
         unet: Option<String>,
         vae: Option<String>,
         clip: Option<String>,
+        clip_type: Option<String>,
         cfg: Option<f32>,
         sampler: Option<String>,
         scheduler: Option<String>,
@@ -192,6 +194,7 @@ impl LoadingBackend {
                     unet: p_unet,
                     vae: p_vae,
                     clip: p_clip,
+                    clip_type: p_clip_type,
                     cfg: p_cfg,
                     sampler: p_sampler,
                     scheduler: p_scheduler,
@@ -210,6 +213,7 @@ impl LoadingBackend {
                     unet: c_unet,
                     vae: c_vae,
                     clip: c_clip,
+                    clip_type: c_clip_type,
                     cfg: c_cfg,
                     sampler: c_sampler,
                     scheduler: c_scheduler,
@@ -227,6 +231,7 @@ impl LoadingBackend {
                 inherit_if_none(c_checkpoint, p_checkpoint);
                 inherit_if_none(c_unet, p_unet);
                 inherit_if_none(c_clip, p_clip);
+                inherit_if_none(c_clip_type, p_clip_type);
                 inherit_if_none(c_vae, p_vae);
                 inherit_if_none(c_cfg, p_cfg);
                 inherit_if_none(c_sampler, p_sampler);
@@ -320,6 +325,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     unet,
                     vae,
                     clip,
+                    clip_type,
                     cfg,
                     sampler,
                     scheduler,
@@ -409,6 +415,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                     } else {
                         None
                     },
+                    clip_type: clip_type.clone(),
                     use_torch_compile: *use_torch_compile,
                     two_stage: *two_stage,
                     upscale_factor: *upscale_factor,
@@ -564,6 +571,7 @@ ComfyUI = { checkpoint = "child.safetensors" }
             steps,
             resolution,
             resolutions: _,
+            clip_type,
             use_torch_compile,
             two_stage,
             upscale_factor,
@@ -581,6 +589,7 @@ ComfyUI = { checkpoint = "child.safetensors" }
             assert_eq!(scheduler, "normal"); // Inherited
             assert_eq!(steps, &25); // Inherited
             assert_eq!(resolution, &(512, 512)); // Inherited
+            assert_eq!(clip_type, &None); // Not specified
             assert_eq!(use_torch_compile, &None); // Not specified
             assert_eq!(two_stage, &None); // Not specified
             assert_eq!(upscale_factor, &None); // Not specified
