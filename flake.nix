@@ -5,29 +5,60 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, crane, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
           inherit system overlays;
         };
+        lib = pkgs.lib;
 
         rustToolchain = pkgs.rust-bin.nightly.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
         };
 
-        buildInputs = with pkgs; [
-          # System dependencies
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+
+        # Keep Cargo sources plus the assets that `include_str!` / `include_bytes!`
+        # pull in at compile time (prompts, fonts).
+        src = lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            (craneLib.filterCargoSources path type)
+            || (lib.hasInfix "/prompts/" path)
+            || (lib.hasInfix "/fonts/" path)
+            || (lib.hasInfix "/templates/" path);
+          name = "ganbot-source";
+        };
+
+        commonArgs = {
+          inherit src;
+          strictDeps = true;
+
+          nativeBuildInputs = with pkgs; [ pkg-config ];
+          buildInputs = with pkgs; [ openssl libwebp ];
+
+          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+        };
+
+        # Build *only* the dependencies. Cached until Cargo.lock changes.
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        # Build the workspace, reusing the pre-built dependency artifacts.
+        ganbot = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+          doCheck = false;
+        });
+
+        devBuildInputs = with pkgs; [
           pkg-config
           openssl
-
-          # For image processing
           libwebp
 
-          # Development tools
           rustToolchain
           cargo-watch
           cargo-edit
@@ -38,25 +69,20 @@
           cargo-flamegraph
           bacon
 
-          # JavaScript linting
           nodePackages.eslint
-        ];
-
-        nativeBuildInputs = with pkgs; [
-          rustToolchain
         ];
       in
       {
-        # Development shell
+        packages.default = ganbot;
+
+        # Dev shell keeps mold + clang for fast incremental local builds.
         devShells.default = pkgs.mkShell.override {
           stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.clangStdenv;
         } {
-          inherit buildInputs nativeBuildInputs;
+          buildInputs = devBuildInputs;
+          nativeBuildInputs = [ rustToolchain ];
 
-          # Environment variables for compilation
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
-          
-          # Rust environment variables
           RUST_BACKTRACE = 1;
           RUST_LOG = "ganbot=debug";
 
@@ -78,27 +104,22 @@
           '';
         };
 
-        # Package definition (for building the bot)
-        packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "ganbot";
-          version = "0.1.0";
-
-          src = ./.;
-
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-          };
-
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = with pkgs; [ openssl ];
-
-          # Skip tests during build (run them separately)
-          doCheck = false;
+        apps.default = flake-utils.lib.mkApp {
+          drv = ganbot;
         };
 
-        # App for running the bot
-        apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.default;
+        # Useful extra checks you can run with `nix flake check`.
+        checks = {
+          inherit ganbot;
+
+          ganbot-clippy = craneLib.cargoClippy (commonArgs // {
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "--all-targets -- -D warnings";
+          });
+
+          ganbot-fmt = craneLib.cargoFmt {
+            inherit src;
+          };
         };
       });
 }
