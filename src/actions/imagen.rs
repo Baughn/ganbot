@@ -16,6 +16,7 @@ use crate::{
     messages::imagen::Generate,
     network::{
         comfyui::{self, api::KSamplerParams, net::ComfyUIClient},
+        openai,
         openrouter::OpenRouter,
     },
     persistence::user::{GetAlias, GetDefaultPrompt, UserActor},
@@ -298,6 +299,7 @@ impl NodePlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImagenBackend {
     OpenRouter,
+    OpenAI,
     StableDiffusion,
 }
 
@@ -305,6 +307,7 @@ impl ImagenBackend {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenRouter => "OpenRouter",
+            Self::OpenAI => "OpenAI",
             Self::StableDiffusion => "StableDiffusion",
         }
     }
@@ -343,6 +346,21 @@ impl Message<GenerateImages> for ImagenActor {
                 image_size,
                 payment: _,
             } => generate_openrouter(prompt, &model, openrouter_model, image_size.as_deref()).await,
+            models::Backend::OpenAI {
+                model: openai_model,
+                size,
+                quality,
+                payment: _,
+            } => {
+                generate_openai(
+                    prompt,
+                    &model,
+                    openai_model,
+                    size.as_deref(),
+                    quality.as_deref(),
+                )
+                .await
+            }
             models::Backend::ComfyUI {
                 checkpoint,
                 cfg,
@@ -741,6 +759,52 @@ fn select_auto_model(prompt_text: &str, config: &ModelsConfig) -> String {
     );
 
     selected_model
+}
+
+async fn generate_openai(
+    prompt: Generate,
+    model: &Model,
+    openai_model: &str,
+    size: Option<&str>,
+    quality: Option<&str>,
+) -> Result<ImagenResponse> {
+    use tower::ServiceExt as _;
+
+    let svc = openai::image_service().context("OpenAI image service not initialised at startup")?;
+
+    let origin = format!("prompt:{}", model.name);
+    let req = openai::ImageRequest {
+        origin,
+        model: openai_model.to_string(),
+        prompt: prompt.prompt.clone(),
+        size: size.map(str::to_string),
+        quality: quality.map(str::to_string),
+        input_image: prompt.references.img2img.clone(),
+    };
+
+    let response = svc
+        .oneshot(req)
+        .await
+        .context("while generating response with OpenAI image backend")?;
+
+    let workflow = serde_json::json!({
+        "model": model.name,
+        "openai_model": openai_model,
+        "size": size,
+        "quality": quality,
+        "prompt": prompt.prompt,
+        "raw_prompt": prompt.raw_prompt,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+
+    Ok(ImagenResponse {
+        images: vec![Arc::new(response.image)],
+        text: None,
+        workflow: Some(workflow),
+        backend: ImagenBackend::OpenAI,
+        model_name: model.name.clone(),
+        seed: None,
+    })
 }
 
 async fn generate_openrouter(

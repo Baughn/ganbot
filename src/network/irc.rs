@@ -614,6 +614,7 @@ impl ReplyActor {
 
         let payment = match &model.backend {
             Backend::OpenRouter { payment, .. } => payment.unwrap_or(0.0),
+            Backend::OpenAI { payment, .. } => payment.unwrap_or(0.0),
             Backend::ComfyUI { .. } => 0.0,
         };
         if payment <= 0.0 {

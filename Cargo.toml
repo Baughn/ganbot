@@ -36,7 +36,7 @@ redis = { version = "0.32.5", features = [
     "tcp_nodelay",
     "tokio-comp",
 ] }
-reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.11", features = ["json", "multipart", "rustls-tls"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serenity = "0.12.4"
@@ -60,7 +60,7 @@ rvcr = "0.2.1"
 reqwest-middleware = "0.2.5"
 axum = "0.8"
 axum-htmx = "0.7"
-tower = "0.4"
+tower = { version = "0.4", features = ["timeout", "retry", "util"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
 askama = "0.14"
 askama_web = { version = "0.14", features = ["axum-0.8"] }
@@ -70,3 +70,6 @@ clap = { version = "4", features = ["derive"] }
 socket2 = "0.5"
 dirs = "6.0.0"
 fs2 = "0.4"
+
+[dev-dependencies]
+wiremock = "0.6"

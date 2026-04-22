@@ -167,7 +167,7 @@ impl PromptActor {
                     gallery_id = Some(uploaded.id.clone());
                     gallery_layout = Some(uploaded.layout.clone());
                 }
-                ImagenBackend::OpenRouter => {
+                ImagenBackend::OpenRouter | ImagenBackend::OpenAI => {
                     if let Some(first_image) = images.first() {
                         let url = upload_image_with_generation(
                             Arc::clone(first_image),
@@ -197,7 +197,7 @@ impl PromptActor {
                     }
                 }
             }
-        } else if matches!(backend, ImagenBackend::OpenRouter) {
+        } else if matches!(backend, ImagenBackend::OpenRouter | ImagenBackend::OpenAI) {
             info!("No image generated, text-only response");
         }
 

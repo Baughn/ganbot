@@ -217,11 +217,11 @@ async fn generate_gallery_images(prompt: Generate, model: Model) -> Result<Vec<A
             }
             Ok(response.images.into_iter().take(4).collect())
         }
-        Backend::OpenRouter { .. } => {
-            // OpenRouter generates 1 image per call, so we need to call it 4 times
+        Backend::OpenRouter { .. } | Backend::OpenAI { .. } => {
+            // OpenRouter/OpenAI generate 1 image per call, so we need to call it 4 times
             // Run all 4 generations concurrently for speed
             info!(
-                "Generating 4 OpenRouter images concurrently for prompt '{}'",
+                "Generating 4 single-call images concurrently for prompt '{}'",
                 prompt.raw_prompt
             );
 
@@ -932,6 +932,7 @@ async fn gallery_regen_handler(
     let backend_str = match &model.backend {
         Backend::ComfyUI { .. } => "ComfyUI",
         Backend::OpenRouter { .. } => "OpenRouter",
+        Backend::OpenAI { .. } => "OpenAI",
     };
     let mut new_uuids = Vec::new();
     let image_host_base_url = Supervisor::image_host().await.base_url;
@@ -1287,6 +1288,15 @@ fn build_model_config_json(model: &Model) -> String {
                 "backend": format!("OpenRouter ({})", or_model),
             })
         }
+        Backend::OpenAI {
+            model: oa_model, ..
+        } => {
+            serde_json::json!({
+                "name": model.name,
+                "description": model.description,
+                "backend": format!("OpenAI ({})", oa_model),
+            })
+        }
     };
 
     config_obj.to_string()
@@ -1544,6 +1554,7 @@ async fn pre_generate_gallery_task(
         let backend_str = match &model_for_cache.backend {
             Backend::ComfyUI { .. } => "ComfyUI",
             Backend::OpenRouter { .. } => "OpenRouter",
+            Backend::OpenAI { .. } => "OpenAI",
         };
         let mut uuids = Vec::new();
 

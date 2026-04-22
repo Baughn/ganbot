@@ -7,6 +7,8 @@ pub struct Config {
     // Backend configurations
     pub invokeai: InvokeaiConfig,
     pub openrouter: OpenrouterConfig,
+    #[serde(default)]
+    pub openai: OpenaiConfig,
     pub redis_url: String,
     pub image_host: ImageHostConfig,
     // Client configurations
@@ -31,6 +33,13 @@ pub struct ImageHostConfig {
     pub ssh_hostname: String,
     pub ssh_directory: String,
     pub base_url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
+#[serde(deny_unknown_fields)]
+pub struct OpenaiConfig {
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]

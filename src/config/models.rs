@@ -47,6 +47,17 @@ pub enum Backend {
         /// image generation API (e.g. "1K", "2K", "4K").
         image_size: Option<String>,
     },
+    OpenAI {
+        /// OpenAI image model, e.g. "gpt-image-2".
+        model: String,
+        /// Same cost signal as `OpenRouter::payment`.
+        payment: Option<f32>,
+        /// Literal `size` param passed to OpenAI's image endpoint, e.g.
+        /// "1024x1024", "1536x1024", "2048x2048".
+        size: Option<String>,
+        /// Quality tier: "low" | "medium" | "high" | "auto".
+        quality: Option<String>,
+    },
     ComfyUI {
         checkpoint: Checkpoint,
         cfg: f32,
@@ -121,6 +132,12 @@ enum LoadingBackend {
         model: Option<String>,
         payment: Option<f32>,
         image_size: Option<String>,
+    },
+    OpenAI {
+        model: Option<String>,
+        payment: Option<f32>,
+        size: Option<String>,
+        quality: Option<String>,
     },
     ComfyUI {
         checkpoint: Option<String>,
@@ -272,12 +289,6 @@ impl LoadingBackend {
                 inherit_if_none(c_shift, p_shift);
                 Ok(())
             }
-            (LoadingBackend::OpenRouter { .. }, LoadingBackend::ComfyUI { .. }) => {
-                bail!("Can't inherit from OpenRouter to ComfyUI")
-            }
-            (LoadingBackend::ComfyUI { .. }, LoadingBackend::OpenRouter { .. }) => {
-                bail!("Can't inherit from ComfyUI to OpenRouter")
-            }
             (
                 LoadingBackend::OpenRouter {
                     model: p_model,
@@ -295,7 +306,42 @@ impl LoadingBackend {
                 inherit_if_none(c_image_size, p_image_size);
                 Ok(())
             }
+            (
+                LoadingBackend::OpenAI {
+                    model: p_model,
+                    payment: p_payment,
+                    size: p_size,
+                    quality: p_quality,
+                },
+                LoadingBackend::OpenAI {
+                    model: c_model,
+                    payment: c_payment,
+                    size: c_size,
+                    quality: c_quality,
+                },
+            ) => {
+                inherit_if_none(c_model, p_model);
+                inherit_if_none(c_payment, p_payment);
+                inherit_if_none(c_size, p_size);
+                inherit_if_none(c_quality, p_quality);
+                Ok(())
+            }
+            (parent, child) => {
+                bail!(
+                    "Can't inherit from {} backend to {} backend",
+                    backend_kind(parent),
+                    backend_kind(child)
+                )
+            }
         }
+    }
+}
+
+fn backend_kind(b: &LoadingBackend) -> &'static str {
+    match b {
+        LoadingBackend::OpenRouter { .. } => "OpenRouter",
+        LoadingBackend::OpenAI { .. } => "OpenAI",
+        LoadingBackend::ComfyUI { .. } => "ComfyUI",
     }
 }
 
@@ -373,6 +419,25 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                         .clone(),
                     payment: *payment,
                     image_size: image_size.clone(),
+                },
+                LoadingBackend::OpenAI {
+                    model,
+                    payment,
+                    size,
+                    quality,
+                } => Backend::OpenAI {
+                    model: model
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Model '{}' OpenAI backend is missing required field 'model'",
+                                name
+                            )
+                        })?
+                        .clone(),
+                    payment: *payment,
+                    size: size.clone(),
+                    quality: quality.clone(),
                 },
                 LoadingBackend::ComfyUI {
                     checkpoint,

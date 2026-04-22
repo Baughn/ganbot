@@ -118,6 +118,14 @@ async fn main() -> Result<()> {
     if let Some(webserver_config) = config.webserver.as_mut() {
         webserver_config.enable_regen = args.enable_regen;
     }
+    // Build the OpenAI Tower service (demo of Tower layers; used by
+    // `Backend::OpenAI` models in models.toml).
+    if !config.openai.token.is_empty() {
+        network::openai::set_image_service(network::openai::build_image_service(&config.openai));
+        info!("OpenAI image service ready");
+    } else {
+        info!("openai.token absent; Backend::OpenAI models will fail if invoked");
+    }
     let supervisor_ref = Supervisor::spawn(config);
     info!("Application initialized successfully");
 
