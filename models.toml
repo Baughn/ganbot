@@ -334,9 +334,23 @@ tags = ["english"]
 [models.nanobanana.backend]
 OpenRouter = { model = "google/gemini-3.1-flash-image-preview" }
 
-[models.gpt]
+[models.gpt-1k]
+name = "gpt-1k"
+description = "GPT-Image-2"
+gallery = false
+[models.gpt-1k.backend]
+OpenRouter = { model = "openai/gpt-5.4-image-2", payment = 0.3, image_size = "1K" }
+
+[models.gpt-2k]
 name = "gpt"
 description = "GPT-Image-2"
-
-[models.gpt.backend]
+gallery = false
+[models.gpt-2k.backend]
 OpenRouter = { model = "openai/gpt-5.4-image-2", payment = 0.3, image_size = "2K" }
+
+[models.gpt-4k]
+name = "gpt"
+description = "GPT-Image-2"
+gallery = false
+[models.gpt-4k.backend]
+OpenRouter = { model = "openai/gpt-5.4-image-2", payment = 1.2, image_size = "4K" }

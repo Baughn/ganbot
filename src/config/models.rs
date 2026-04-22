@@ -23,6 +23,7 @@ pub struct Model {
     pub tags: Vec<String>,
     pub backend: Backend,
     pub prompt_defaults: PromptDefaults,
+    pub gallery: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,6 +100,7 @@ struct LoadingModel {
     pub tags: Option<Vec<String>>,
     pub backend: Option<LoadingBackend>,
     pub prompt_defaults: Option<LoadingPromptDefaults>,
+    pub gallery: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +156,7 @@ fn apply_inheritance(child: &mut LoadingModel, parent: &LoadingModel) -> Result<
     inherit_if_none(&mut child.name, &parent.name);
     inherit_if_none(&mut child.description, &parent.description);
     inherit_if_none(&mut child.tags, &parent.tags);
+    inherit_if_none(&mut child.gallery, &parent.gallery);
 
     // Merge prompt_defaults
     match (&parent.prompt_defaults, &mut child.prompt_defaults) {
@@ -510,6 +513,7 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
             tags: loading_model.tags.clone().unwrap_or_default(),
             backend,
             prompt_defaults,
+            gallery: loading_model.gallery.unwrap_or(true),
         };
 
         models.insert(name.clone(), model);

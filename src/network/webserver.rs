@@ -539,7 +539,11 @@ async fn model_gallery_handler(
     };
 
     // Get all models
-    let mut models: Vec<_> = models_config.models.iter().collect();
+    let mut models: Vec<_> = models_config
+        .models
+        .iter()
+        .filter(|(_, m)| m.gallery)
+        .collect();
 
     models.sort_by_key(|(name, _)| *name);
 
@@ -1438,7 +1442,11 @@ async fn pre_generate_gallery_task(
     };
 
     // Get all models
-    let models: Vec<_> = models_config.models.iter().collect();
+    let models: Vec<_> = models_config
+        .models
+        .iter()
+        .filter(|(_, m)| m.gallery)
+        .collect();
 
     if models.is_empty() {
         info!("No models found for gallery");
