@@ -75,7 +75,7 @@ pub struct ImageGenerationRequest {
     pub prompt: Generate,
     /// When the image was generated
     pub timestamp: String,
-    /// Which backend was used (StableDiffusion, NanoBanana, etc.)
+    /// Which backend was used (StableDiffusion, OpenRouter, etc.)
     pub backend: String,
     /// Optional ComfyUI workflow JSON
     pub workflow: Option<serde_json::Value>,

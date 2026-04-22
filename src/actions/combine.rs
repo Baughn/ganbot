@@ -8,6 +8,7 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::{
+    config::models::Backend,
     fuzzy::{FuzzyResult, find_fuzzy_match},
     messages::chat::Structured,
     network::openrouter::OpenRouter,
@@ -162,9 +163,18 @@ impl CombineActor {
         let response: CombineChatResponse = response.await.context("while asking OpenRouter")?;
 
         // Generate image.
+        let models_config = Supervisor::models_config().await;
+        let openrouter_model = match models_config.models.get("nanobanana").map(|m| &m.backend) {
+            Some(Backend::OpenRouter { model }) => model.clone(),
+            _ => {
+                bail!("combine: expected 'nanobanana' model in models.toml with OpenRouter backend")
+            }
+        };
+
         let image_response = router
-            .ask(crate::messages::chat::NanoBanana {
+            .ask(crate::messages::chat::OpenRouterImage {
                 origin: "combination game".to_string(),
+                model: openrouter_model,
                 prompt: response.image_prompt,
                 input_image: None,
             })

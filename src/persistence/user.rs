@@ -59,7 +59,7 @@ pub struct GeneratedImage {
     pub prompt: String,
     pub timestamp: String, // ISO 8601 datetime string
     pub model: Option<String>,
-    pub backend: String, // "StableDiffusion" or "NanoBanana"
+    pub backend: String, // "StableDiffusion" or "OpenRouter"
 }
 
 /// Add a generated image to the user's history

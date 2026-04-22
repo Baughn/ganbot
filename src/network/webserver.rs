@@ -43,7 +43,7 @@ lazy_static! {
     };
 }
 
-/// Create a placeholder image with "Filtered" text for filtered NanoBanana results
+/// Create a placeholder image with "Filtered" text for filtered OpenRouter results
 fn create_filtered_placeholder() -> Arc<RgbImage> {
     let width = 1024;
     let height = 1024;
@@ -137,8 +137,8 @@ struct GalleryImage {
     loading: &'static str,
 }
 
-/// Generate a single NanoBanana image with retry logic for errors and filtering
-async fn generate_single_nanobanana_image(prompt: Generate, model: Model) -> Result<Arc<RgbImage>> {
+/// Generate a single OpenRouter image with retry logic for errors and filtering
+async fn generate_single_openrouter_image(prompt: Generate, model: Model) -> Result<Arc<RgbImage>> {
     let mut attempts = 0;
     let max_attempts = 3;
 
@@ -154,7 +154,7 @@ async fn generate_single_nanobanana_image(prompt: Generate, model: Model) -> Res
             Ok(response) if response.images.is_empty() => {
                 // Filtered! Try once more but count as all retries
                 warn!(
-                    "NanoBanana filtered prompt '{}', trying once more (attempt {}/{})",
+                    "OpenRouter filtered prompt '{}', trying once more (attempt {}/{})",
                     prompt.raw_prompt,
                     attempts + 1,
                     max_attempts
@@ -165,7 +165,7 @@ async fn generate_single_nanobanana_image(prompt: Generate, model: Model) -> Res
             }
             Ok(response) => {
                 debug!(
-                    "NanoBanana successfully generated image for prompt '{}'",
+                    "OpenRouter successfully generated image for prompt '{}'",
                     prompt.raw_prompt
                 );
                 return Ok(response.images[0].clone());
@@ -174,13 +174,13 @@ async fn generate_single_nanobanana_image(prompt: Generate, model: Model) -> Res
                 attempts += 1;
                 if attempts < max_attempts {
                     warn!(
-                        "NanoBanana generation failed (attempt {}/{}): {:#}, retrying in 30s",
+                        "OpenRouter generation failed (attempt {}/{}): {:#}, retrying in 30s",
                         attempts, max_attempts, e
                     );
                     tokio::time::sleep(Duration::from_secs(30)).await;
                 } else {
                     error!(
-                        "NanoBanana generation failed after {} attempts: {:#}",
+                        "OpenRouter generation failed after {} attempts: {:#}",
                         max_attempts, e
                     );
                 }
@@ -190,7 +190,7 @@ async fn generate_single_nanobanana_image(prompt: Generate, model: Model) -> Res
 
     // All retries exhausted, return "Filtered" placeholder
     warn!(
-        "NanoBanana failed after {} attempts for prompt '{}', using filtered placeholder",
+        "OpenRouter failed after {} attempts for prompt '{}', using filtered placeholder",
         max_attempts, prompt.raw_prompt
     );
     Ok(create_filtered_placeholder())
@@ -217,11 +217,11 @@ async fn generate_gallery_images(prompt: Generate, model: Model) -> Result<Vec<A
             }
             Ok(response.images.into_iter().take(4).collect())
         }
-        Backend::NanoBanana => {
-            // NanoBanana generates 1 image per call, so we need to call it 4 times
+        Backend::OpenRouter { .. } => {
+            // OpenRouter generates 1 image per call, so we need to call it 4 times
             // Run all 4 generations concurrently for speed
             info!(
-                "Generating 4 NanoBanana images concurrently for prompt '{}'",
+                "Generating 4 OpenRouter images concurrently for prompt '{}'",
                 prompt.raw_prompt
             );
 
@@ -230,9 +230,9 @@ async fn generate_gallery_images(prompt: Generate, model: Model) -> Result<Vec<A
                 let prompt_clone = prompt.clone();
                 let model_clone = model.clone();
                 let handle = tokio::spawn(async move {
-                    debug!("Starting NanoBanana generation {}/4", i + 1);
-                    let result = generate_single_nanobanana_image(prompt_clone, model_clone).await;
-                    debug!("Completed NanoBanana generation {}/4", i + 1);
+                    debug!("Starting OpenRouter generation {}/4", i + 1);
+                    let result = generate_single_openrouter_image(prompt_clone, model_clone).await;
+                    debug!("Completed OpenRouter generation {}/4", i + 1);
                     result
                 });
                 handles.push(handle);
@@ -246,18 +246,18 @@ async fn generate_gallery_images(prompt: Generate, model: Model) -> Result<Vec<A
                         images.push(image);
                     }
                     Ok(Err(e)) => {
-                        error!("NanoBanana generation {}/4 failed: {:#}", i + 1, e);
-                        anyhow::bail!("NanoBanana generation {}/4 failed: {:#}", i + 1, e);
+                        error!("OpenRouter generation {}/4 failed: {:#}", i + 1, e);
+                        anyhow::bail!("OpenRouter generation {}/4 failed: {:#}", i + 1, e);
                     }
                     Err(e) => {
-                        error!("NanoBanana task {}/4 panicked: {:#}", i + 1, e);
-                        anyhow::bail!("NanoBanana task {}/4 panicked: {:#}", i + 1, e);
+                        error!("OpenRouter task {}/4 panicked: {:#}", i + 1, e);
+                        anyhow::bail!("OpenRouter task {}/4 panicked: {:#}", i + 1, e);
                     }
                 }
             }
 
             info!(
-                "Successfully generated all 4 NanoBanana images for prompt '{}'",
+                "Successfully generated all 4 OpenRouter images for prompt '{}'",
                 prompt.raw_prompt
             );
             Ok(images)
@@ -927,7 +927,7 @@ async fn gallery_regen_handler(
     // Upload the new images
     let backend_str = match &model.backend {
         Backend::ComfyUI { .. } => "ComfyUI",
-        Backend::NanoBanana => "NanoBanana",
+        Backend::OpenRouter { .. } => "OpenRouter",
     };
     let mut new_uuids = Vec::new();
     let image_host_base_url = Supervisor::image_host().await.base_url;
@@ -1274,11 +1274,11 @@ fn build_model_config_json(model: &Model) -> String {
                 "stage2_scheduler": stage2_scheduler,
             })
         }
-        Backend::NanoBanana => {
+        Backend::OpenRouter { model: or_model } => {
             serde_json::json!({
                 "name": model.name,
                 "description": model.description,
-                "backend": "NanoBanana (Gemini 2.5-flash-image-preview)",
+                "backend": format!("OpenRouter ({})", or_model),
             })
         }
     };
@@ -1533,7 +1533,7 @@ async fn pre_generate_gallery_task(
         // Upload all 4 images
         let backend_str = match &model_for_cache.backend {
             Backend::ComfyUI { .. } => "ComfyUI",
-            Backend::NanoBanana => "NanoBanana",
+            Backend::OpenRouter { .. } => "OpenRouter",
         };
         let mut uuids = Vec::new();
 

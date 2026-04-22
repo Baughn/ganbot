@@ -297,14 +297,14 @@ impl NodePlan {
 /// Backend classification for generated images.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImagenBackend {
-    NanoBanana,
+    OpenRouter,
     StableDiffusion,
 }
 
 impl ImagenBackend {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::NanoBanana => "NanoBanana",
+            Self::OpenRouter => "OpenRouter",
             Self::StableDiffusion => "StableDiffusion",
         }
     }
@@ -338,7 +338,9 @@ impl Message<GenerateImages> for ImagenActor {
         } = msg;
 
         match &model.backend {
-            models::Backend::NanoBanana => generate_nanobanana(prompt, &model).await,
+            models::Backend::OpenRouter {
+                model: openrouter_model,
+            } => generate_openrouter(prompt, &model, openrouter_model).await,
             models::Backend::ComfyUI {
                 checkpoint,
                 cfg,
@@ -739,7 +741,11 @@ fn select_auto_model(prompt_text: &str, config: &ModelsConfig) -> String {
     selected_model
 }
 
-async fn generate_nanobanana(prompt: Generate, model: &Model) -> Result<ImagenResponse> {
+async fn generate_openrouter(
+    prompt: Generate,
+    model: &Model,
+    openrouter_model: &str,
+) -> Result<ImagenResponse> {
     let formatted_prompt = if prompt.references.img2img.is_some() {
         format!(
             "Edit this image according to these instructions: {}",
@@ -755,16 +761,18 @@ async fn generate_nanobanana(prompt: Generate, model: &Model) -> Result<ImagenRe
     let router = OpenRouter::get().context("while fetching OpenRouter instance")?;
 
     let response = router
-        .ask(crate::messages::chat::NanoBanana {
+        .ask(crate::messages::chat::OpenRouterImage {
             origin: "prompt command".to_string(),
+            model: openrouter_model.to_string(),
             prompt: formatted_prompt.clone(),
             input_image: prompt.references.img2img.clone(),
         })
         .await
-        .context("while generating response with NanoBanana")?;
+        .context("while generating response with OpenRouter image backend")?;
 
     let workflow = serde_json::json!({
         "model": model.name,
+        "openrouter_model": openrouter_model,
         "original_prompt": prompt.prompt,
         "raw_prompt": prompt.raw_prompt,
         "formatted_prompt": formatted_prompt,
@@ -780,7 +788,7 @@ async fn generate_nanobanana(prompt: Generate, model: &Model) -> Result<ImagenRe
         images,
         text: Some(response.text),
         workflow: Some(workflow),
-        backend: ImagenBackend::NanoBanana,
+        backend: ImagenBackend::OpenRouter,
         model_name: model.name.clone(),
         seed: None,
     })

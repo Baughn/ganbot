@@ -48,9 +48,11 @@ pub struct Structured<T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct NanoBanana {
+pub struct OpenRouterImage {
     /// The origin of the message, i.e. "user@channel@server". For logging and debugging.
     pub origin: String,
+    /// OpenRouter model identifier (e.g. "google/gemini-3.1-flash-image-preview").
+    pub model: String,
     /// The image prompt.
     pub prompt: String,
     /// Optional input image for editing mode.
@@ -58,7 +60,7 @@ pub struct NanoBanana {
 }
 
 #[derive(Debug, Clone)]
-pub struct NanoBananaResponse {
+pub struct OpenRouterImageResponse {
     /// The text response from the AI.
     pub text: String,
     /// Optional image if one was generated.

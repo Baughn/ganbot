@@ -17,7 +17,7 @@ use self::api::{
 };
 
 use crate::config::global::OpenrouterConfig;
-use crate::messages::chat::{self, NanoBanana, NanoBananaResponse};
+use crate::messages::chat::{self, OpenRouterImage, OpenRouterImageResponse};
 
 /// Singleton actor that manages OpenRouter API access
 pub struct OpenRouter {
@@ -94,16 +94,16 @@ where
     }
 }
 
-impl Message<NanoBanana> for OpenRouter {
-    type Reply = ForwardedReply<NanoBanana, Result<NanoBananaResponse>>;
+impl Message<OpenRouterImage> for OpenRouter {
+    type Reply = ForwardedReply<OpenRouterImage, Result<OpenRouterImageResponse>>;
 
-    #[instrument(name = "OpenRouter.nanobanana", skip_all)]
+    #[instrument(name = "OpenRouter.image", skip_all)]
     async fn handle(
         &mut self,
-        msg: NanoBanana,
+        msg: OpenRouterImage,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        info!("Received NanoBanana request from {}", msg.origin);
+        info!("Received OpenRouter image request from {}", msg.origin);
 
         // Spawn a new conversation actor to handle this specific request
         let actor_ref = ConversationActor::spawn_link(ctx.actor_ref(), self.config.clone()).await;
@@ -154,10 +154,6 @@ fn select_models(purpose: &chat::Purpose, config: &OpenrouterConfig) -> Vec<Stri
     }
 
     models
-}
-
-fn select_image_models(config: &OpenrouterConfig) -> Vec<String> {
-    vec![config.image_model.clone()]
 }
 
 fn combine_parts(parts: Vec<chat::Part>) -> String {
@@ -264,26 +260,27 @@ impl Message<chat::Oneshot> for ConversationActor {
     }
 }
 
-impl Message<NanoBanana> for ConversationActor {
-    type Reply = Result<NanoBananaResponse>;
+impl Message<OpenRouterImage> for ConversationActor {
+    type Reply = Result<OpenRouterImageResponse>;
 
-    #[instrument(name = "ConversationActor.nanobanana", skip_all)]
+    #[instrument(name = "ConversationActor.image", skip_all)]
     async fn handle(
         &mut self,
-        msg: NanoBanana,
+        msg: OpenRouterImage,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let NanoBanana {
+        let OpenRouterImage {
             origin,
+            model,
             prompt,
             input_image,
         } = msg;
 
-        info!("Handling NanoBanana image request");
+        info!("Handling OpenRouter image request");
 
-        let models = select_image_models(&self.config);
+        let models = vec![model];
 
-        debug!(origin = %origin, models = ?models, "Dispatching NanoBanana OpenRouter request");
+        debug!(origin = %origin, models = ?models, "Dispatching OpenRouter image request");
 
         let image_attachment = input_image.map(|image| RequestImage::Data {
             name: Some("input-image".to_string()),
@@ -303,7 +300,7 @@ impl Message<NanoBanana> for ConversationActor {
             .api
             .ask(request)
             .await
-            .map_err(|err| anyhow!("OpenRouter NanoBanana request failed: {err:#}"))?;
+            .map_err(|err| anyhow!("OpenRouter image request failed: {err:#}"))?;
 
         if let Some(ref model) = response.model {
             debug!(model = %model, "OpenRouter selected model");
@@ -313,7 +310,7 @@ impl Message<NanoBanana> for ConversationActor {
             .text
             .unwrap_or_else(|| "Generated an image for you.".to_string());
 
-        Ok(NanoBananaResponse {
+        Ok(OpenRouterImageResponse {
             text,
             image: response.image,
         })

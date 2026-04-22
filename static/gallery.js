@@ -872,7 +872,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             html += `</div>`;
         } else if (config.backend) {
-            // NanoBanana model
+            // OpenRouter model
             html += `<div class="spec-group">`;
             html += `<div class="spec-item"><span class="spec-label">Backend:</span> <span class="spec-value">${config.backend}</span></div>`;
             html += `</div>`;

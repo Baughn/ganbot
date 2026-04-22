@@ -37,7 +37,9 @@ pub struct PromptDefaults {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Backend {
-    NanoBanana,
+    OpenRouter {
+        model: String,
+    },
     ComfyUI {
         checkpoint: Checkpoint,
         cfg: f32,
@@ -107,7 +109,9 @@ struct LoadingPromptDefaults {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum LoadingBackend {
-    NanoBanana,
+    OpenRouter {
+        model: Option<String>,
+    },
     ComfyUI {
         checkpoint: Option<String>,
         unet: Option<String>,
@@ -257,14 +261,17 @@ impl LoadingBackend {
                 inherit_if_none(c_shift, p_shift);
                 Ok(())
             }
-            (LoadingBackend::NanoBanana, LoadingBackend::ComfyUI { .. }) => {
-                bail!("Can't inherit from NanoBanana to ComfyUI")
+            (LoadingBackend::OpenRouter { .. }, LoadingBackend::ComfyUI { .. }) => {
+                bail!("Can't inherit from OpenRouter to ComfyUI")
             }
-            (LoadingBackend::ComfyUI { .. }, LoadingBackend::NanoBanana) => {
-                bail!("Can't inherit from ComfyUI to NanoBanana")
+            (LoadingBackend::ComfyUI { .. }, LoadingBackend::OpenRouter { .. }) => {
+                bail!("Can't inherit from ComfyUI to OpenRouter")
             }
-            (LoadingBackend::NanoBanana, LoadingBackend::NanoBanana) => {
-                // Both are NanoBanana, nothing to inherit
+            (
+                LoadingBackend::OpenRouter { model: p_model },
+                LoadingBackend::OpenRouter { model: c_model },
+            ) => {
+                inherit_if_none(c_model, p_model);
                 Ok(())
             }
         }
@@ -329,7 +336,17 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
 
         let backend = match &loading_model.backend {
             Some(backend) => match backend {
-                LoadingBackend::NanoBanana => Backend::NanoBanana,
+                LoadingBackend::OpenRouter { model } => Backend::OpenRouter {
+                    model: model
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Model '{}' OpenRouter backend is missing required field 'model'",
+                                name
+                            )
+                        })?
+                        .clone(),
+                },
                 LoadingBackend::ComfyUI {
                     checkpoint,
                     unet,
@@ -525,7 +542,7 @@ name = "simple"
 description = "A simple test model"
 
 [models.simple.backend]
-NanoBanana = {}
+OpenRouter = { model = "google/gemini-3.1-flash-image-preview" }
 "#;
 
         let temp_file = create_temp_models_file(content);
@@ -540,7 +557,7 @@ NanoBanana = {}
         assert_eq!(model.name, "simple");
         assert_eq!(model.description, Some("A simple test model".to_string()));
         assert!(model.tags.is_empty());
-        assert!(matches!(model.backend, Backend::NanoBanana));
+        assert!(matches!(model.backend, Backend::OpenRouter { .. }));
     }
 
     #[test]
@@ -664,7 +681,7 @@ name = "orphan"
 inherit = "nonexistent"
 
 [models.orphan.backend]
-NanoBanana = {}
+OpenRouter = { model = "google/gemini-3.1-flash-image-preview" }
 "#;
 
         let temp_file = create_temp_models_file(content);
@@ -707,7 +724,7 @@ default_edit = "nameless"
 description = "No name field"
 
 [models.nameless.backend]
-NanoBanana = {}
+OpenRouter = { model = "google/gemini-3.1-flash-image-preview" }
 "#;
 
         let temp_file = create_temp_models_file(content);

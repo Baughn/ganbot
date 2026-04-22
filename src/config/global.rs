@@ -40,8 +40,6 @@ pub struct OpenrouterConfig {
     // Per-purpose model choices will be listed here.
     #[serde(default = "default_chat_model")]
     pub chat_model: String,
-    #[serde(default = "default_image_model")]
-    pub image_model: String,
     #[serde(default = "default_dream_model")]
     pub dream_model: String,
     #[serde(default = "default_cheap_models")]
@@ -126,10 +124,6 @@ fn default_chat_model() -> String {
     "anthropic/claude-3-5-sonnet".to_string()
 }
 
-fn default_image_model() -> String {
-    "openai/gpt-4o".to_string()
-}
-
 fn default_dream_model() -> String {
     default_chat_model()
 }
@@ -151,7 +145,6 @@ impl Default for OpenrouterConfig {
         Self {
             token: String::new(),
             chat_model: default_chat_model(),
-            image_model: default_image_model(),
             dream_model: default_dream_model(),
             cheap_model: default_cheap_models(),
         }
