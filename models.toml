@@ -339,4 +339,4 @@ name = "gpt"
 description = "GPT-Image-2"
 
 [models.gpt.backend]
-OpenRouter = { model = "openai/gpt-5.4-image-2" }
+OpenRouter = { model = "openai/gpt-5.4-image-2", payment = 0.3, image_size = "2K" }

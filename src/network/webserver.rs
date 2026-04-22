@@ -1274,7 +1274,9 @@ fn build_model_config_json(model: &Model) -> String {
                 "stage2_scheduler": stage2_scheduler,
             })
         }
-        Backend::OpenRouter { model: or_model } => {
+        Backend::OpenRouter {
+            model: or_model, ..
+        } => {
             serde_json::json!({
                 "name": model.name,
                 "description": model.description,

@@ -10,10 +10,18 @@ use tracing::{error, info, instrument, trace, warn};
 
 use crate::actions;
 use crate::actions::broker::{ActionBroker, RegisterIrc};
+use crate::actions::imagen;
 use crate::actions::{ActionId, ActionOrigin, ActionPayload, ActionResponse, SubmitAction};
 use crate::config::global::IrcConfig;
+use crate::config::models::Backend;
+use crate::messages::imagen::Generate;
 use crate::persistence::user::{self, GetUserId, UserActor, UserManager};
+use crate::supervisor::Supervisor;
 use crate::util::token_bucket::TokenBucket;
+
+/// Nickname allowed to use paid OpenRouter models while there is no credits system.
+/// The user must additionally be identified with NickServ.
+const PAID_MODEL_OWNER: &str = "Baughn";
 
 mod sasl;
 use self::sasl::SaslManager;
@@ -583,6 +591,53 @@ impl ReplyActor {
 
         Ok(is_identified)
     }
+
+    /// If the requested model is gated behind a positive `payment` value, only the
+    /// hardcoded owner may use it, and only while identified with NickServ. Returns
+    /// `Ok(None)` when the request should proceed, or `Ok(Some(message))` with a
+    /// user-facing denial string. Parse/resolve failures return `Ok(None)` so the
+    /// normal execution path reports them.
+    async fn check_paid_model_access(
+        irc_actor: &ActorRef<IrcActor>,
+        nickname: &str,
+        args: &str,
+    ) -> Option<String> {
+        let Ok(prompt) = Generate::from_str(args) else {
+            return None;
+        };
+        let models_config = Supervisor::models_config().await;
+        let Ok((model, _)) =
+            imagen::resolve_model(&prompt.prompt, &models_config, prompt.model.as_deref())
+        else {
+            return None;
+        };
+
+        let payment = match &model.backend {
+            Backend::OpenRouter { payment, .. } => payment.unwrap_or(0.0),
+            Backend::ComfyUI { .. } => 0.0,
+        };
+        if payment <= 0.0 {
+            return None;
+        }
+
+        let is_owner = nickname.eq_ignore_ascii_case(PAID_MODEL_OWNER);
+        let identified = if is_owner {
+            Self::check_user_identified_with_retry(irc_actor, nickname.to_string())
+                .await
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if is_owner && identified {
+            None
+        } else {
+            Some(format!(
+                "Model '{}' requires credits. No credits system is in place yet; only the owner can use this model (and only while identified with NickServ).",
+                model.name
+            ))
+        }
+    }
 }
 
 impl Message<ProcessCommand> for ReplyActor {
@@ -644,42 +699,68 @@ impl Message<ProcessCommand> for ReplyActor {
                 Ok(action_id) => Some(format!("Queued combination ({action_id}). Hang tight.")),
                 Err(e) => Some(format!("Error queuing action: {e:#}")),
             },
-            "prompt" => match msg.user.ask(GetUserId).await {
-                Ok(user_id) => {
-                    let payload = ActionPayload::Prompt {
-                        user_id,
-                        user_name: msg.privmsg.user.clone(),
-                        input: args.to_string(),
-                    };
-                    match Self::enqueue_action(&msg.server, &msg.privmsg, reply_privately, payload)
-                        .await
-                    {
-                        Ok(action_id) => Some(format!(
-                            "Queued generation ({action_id}). I'll update with results."
-                        )),
-                        Err(e) => Some(format!("Error queuing action: {e:#}")),
+            "prompt" => {
+                if let Some(denial) =
+                    Self::check_paid_model_access(&msg.irc_actor, &msg.privmsg.user, args).await
+                {
+                    Some(denial)
+                } else {
+                    match msg.user.ask(GetUserId).await {
+                        Ok(user_id) => {
+                            let payload = ActionPayload::Prompt {
+                                user_id,
+                                user_name: msg.privmsg.user.clone(),
+                                input: args.to_string(),
+                            };
+                            match Self::enqueue_action(
+                                &msg.server,
+                                &msg.privmsg,
+                                reply_privately,
+                                payload,
+                            )
+                            .await
+                            {
+                                Ok(action_id) => Some(format!(
+                                    "Queued generation ({action_id}). I'll update with results."
+                                )),
+                                Err(e) => Some(format!("Error queuing action: {e:#}")),
+                            }
+                        }
+                        Err(e) => Some(format!("Error resolving user: {e:#}")),
                     }
                 }
-                Err(e) => Some(format!("Error resolving user: {e:#}")),
-            },
-            "dream" => match msg.user.ask(GetUserId).await {
-                Ok(user_id) => {
-                    let payload = ActionPayload::Dream {
-                        user_id,
-                        user_name: msg.privmsg.user.clone(),
-                        input: args.to_string(),
-                    };
-                    match Self::enqueue_action(&msg.server, &msg.privmsg, reply_privately, payload)
-                        .await
-                    {
-                        Ok(action_id) => Some(format!(
-                            "Queued dream sequence ({action_id}). Updates coming soon."
-                        )),
-                        Err(e) => Some(format!("Error queuing action: {e:#}")),
+            }
+            "dream" => {
+                if let Some(denial) =
+                    Self::check_paid_model_access(&msg.irc_actor, &msg.privmsg.user, args).await
+                {
+                    Some(denial)
+                } else {
+                    match msg.user.ask(GetUserId).await {
+                        Ok(user_id) => {
+                            let payload = ActionPayload::Dream {
+                                user_id,
+                                user_name: msg.privmsg.user.clone(),
+                                input: args.to_string(),
+                            };
+                            match Self::enqueue_action(
+                                &msg.server,
+                                &msg.privmsg,
+                                reply_privately,
+                                payload,
+                            )
+                            .await
+                            {
+                                Ok(action_id) => Some(format!(
+                                    "Queued dream sequence ({action_id}). Updates coming soon."
+                                )),
+                                Err(e) => Some(format!("Error queuing action: {e:#}")),
+                            }
+                        }
+                        Err(e) => Some(format!("Error resolving user: {e:#}")),
                     }
                 }
-                Err(e) => Some(format!("Error resolving user: {e:#}")),
-            },
+            }
             "config" => {
                 // Check if user is identified before allowing config command
                 let is_identified = match Self::check_user_identified_with_retry(

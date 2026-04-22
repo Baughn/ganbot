@@ -57,6 +57,8 @@ pub struct OpenRouterImage {
     pub prompt: String,
     /// Optional input image for editing mode.
     pub input_image: Option<std::sync::Arc<image::RgbImage>>,
+    /// Optional `image_config.image_size` override (e.g. "1K", "2K", "4K").
+    pub image_size: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -165,7 +165,7 @@ impl CombineActor {
         // Generate image.
         let models_config = Supervisor::models_config().await;
         let openrouter_model = match models_config.models.get("nanobanana").map(|m| &m.backend) {
-            Some(Backend::OpenRouter { model }) => model.clone(),
+            Some(Backend::OpenRouter { model, .. }) => model.clone(),
             _ => {
                 bail!("combine: expected 'nanobanana' model in models.toml with OpenRouter backend")
             }
@@ -177,6 +177,7 @@ impl CombineActor {
                 model: openrouter_model,
                 prompt: response.image_prompt,
                 input_image: None,
+                image_size: None,
             })
             .await
             .context("while asking OpenRouter for image")?;

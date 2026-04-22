@@ -240,6 +240,7 @@ impl Message<chat::Oneshot> for ConversationActor {
             text: Some(prompt),
             image: None,
             expect_image: false,
+            image_size: None,
         };
 
         let response = self
@@ -274,6 +275,7 @@ impl Message<OpenRouterImage> for ConversationActor {
             model,
             prompt,
             input_image,
+            image_size,
         } = msg;
 
         info!("Handling OpenRouter image request");
@@ -294,6 +296,7 @@ impl Message<OpenRouterImage> for ConversationActor {
             text: Some(prompt),
             image: image_attachment,
             expect_image: true,
+            image_size,
         };
 
         let response = self

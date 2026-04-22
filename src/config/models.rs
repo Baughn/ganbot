@@ -39,6 +39,12 @@ pub struct PromptDefaults {
 pub enum Backend {
     OpenRouter {
         model: String,
+        /// Per-call cost signal. `None` or values <= 0.0 are free; a positive
+        /// value marks the model as paid and subject to access gating.
+        payment: Option<f32>,
+        /// Optional `image_config.image_size` override passed to OpenRouter's
+        /// image generation API (e.g. "1K", "2K", "4K").
+        image_size: Option<String>,
     },
     ComfyUI {
         checkpoint: Checkpoint,
@@ -111,6 +117,8 @@ struct LoadingPromptDefaults {
 enum LoadingBackend {
     OpenRouter {
         model: Option<String>,
+        payment: Option<f32>,
+        image_size: Option<String>,
     },
     ComfyUI {
         checkpoint: Option<String>,
@@ -268,10 +276,20 @@ impl LoadingBackend {
                 bail!("Can't inherit from ComfyUI to OpenRouter")
             }
             (
-                LoadingBackend::OpenRouter { model: p_model },
-                LoadingBackend::OpenRouter { model: c_model },
+                LoadingBackend::OpenRouter {
+                    model: p_model,
+                    payment: p_payment,
+                    image_size: p_image_size,
+                },
+                LoadingBackend::OpenRouter {
+                    model: c_model,
+                    payment: c_payment,
+                    image_size: c_image_size,
+                },
             ) => {
                 inherit_if_none(c_model, p_model);
+                inherit_if_none(c_payment, p_payment);
+                inherit_if_none(c_image_size, p_image_size);
                 Ok(())
             }
         }
@@ -336,7 +354,11 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
 
         let backend = match &loading_model.backend {
             Some(backend) => match backend {
-                LoadingBackend::OpenRouter { model } => Backend::OpenRouter {
+                LoadingBackend::OpenRouter {
+                    model,
+                    payment,
+                    image_size,
+                } => Backend::OpenRouter {
                     model: model
                         .as_ref()
                         .ok_or_else(|| {
@@ -346,6 +368,8 @@ pub fn load_models_config_from_path(path: &str) -> Result<ModelsConfig> {
                             )
                         })?
                         .clone(),
+                    payment: *payment,
+                    image_size: image_size.clone(),
                 },
                 LoadingBackend::ComfyUI {
                     checkpoint,

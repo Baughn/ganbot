@@ -98,6 +98,8 @@ pub struct CompletionRequest {
     pub image: Option<RequestImage>,
     /// When true, request both textual and image outputs.
     pub expect_image: bool,
+    /// Optional `image_config.image_size` (e.g. "1K", "2K", "4K").
+    pub image_size: Option<String>,
 }
 
 impl CompletionRequest {
@@ -192,6 +194,10 @@ impl Message<CompletionRequest> for OpenRouterApi {
 
         if msg.expect_image {
             payload["modalities"] = json!(["text", "image"]);
+        }
+
+        if let Some(image_size) = msg.image_size.as_deref() {
+            payload["image_config"] = json!({ "image_size": image_size });
         }
 
         let response_body = self
@@ -662,6 +668,7 @@ mod tests {
                 ),
                 image: None,
                 expect_image: false,
+                image_size: None,
             })
             .await?;
 

@@ -340,7 +340,9 @@ impl Message<GenerateImages> for ImagenActor {
         match &model.backend {
             models::Backend::OpenRouter {
                 model: openrouter_model,
-            } => generate_openrouter(prompt, &model, openrouter_model).await,
+                image_size,
+                payment: _,
+            } => generate_openrouter(prompt, &model, openrouter_model, image_size.as_deref()).await,
             models::Backend::ComfyUI {
                 checkpoint,
                 cfg,
@@ -745,6 +747,7 @@ async fn generate_openrouter(
     prompt: Generate,
     model: &Model,
     openrouter_model: &str,
+    image_size: Option<&str>,
 ) -> Result<ImagenResponse> {
     let formatted_prompt = if prompt.references.img2img.is_some() {
         format!(
@@ -766,6 +769,7 @@ async fn generate_openrouter(
             model: openrouter_model.to_string(),
             prompt: formatted_prompt.clone(),
             input_image: prompt.references.img2img.clone(),
+            image_size: image_size.map(str::to_string),
         })
         .await
         .context("while generating response with OpenRouter image backend")?;
