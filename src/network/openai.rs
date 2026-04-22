@@ -106,11 +106,13 @@ impl OpenAIHttp {
     }
 
     async fn call_generations(&self, req: &ImageRequest) -> Result<ImageResponse, OpenAIError> {
+        // NOTE: `gpt-image-*` always returns `b64_json`; it rejects the
+        // `response_format` parameter with HTTP 400 "Unknown parameter".
+        // This diverges from the legacy DALL-E API.
         let url = format!("{}/v1/images/generations", self.base_url);
         let mut body = serde_json::Map::new();
         body.insert("model".into(), serde_json::json!(req.model));
         body.insert("prompt".into(), serde_json::json!(req.prompt));
-        body.insert("response_format".into(), serde_json::json!("b64_json"));
         body.insert("n".into(), serde_json::json!(1));
         if let Some(sz) = &req.size {
             body.insert("size".into(), serde_json::json!(sz));
@@ -147,10 +149,11 @@ impl OpenAIHttp {
             .mime_str("image/png")
             .map_err(|e| OpenAIError::EncodeImage(e.to_string()))?;
 
+        // NOTE: like /v1/images/generations, edits on `gpt-image-*` always
+        // return `b64_json`; no `response_format` field.
         let mut form = Form::new()
             .text("model", req.model.clone())
             .text("prompt", req.prompt.clone())
-            .text("response_format", "b64_json")
             .part("image", image_part);
         if let Some(sz) = &req.size {
             form = form.text("size", sz.clone());

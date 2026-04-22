@@ -380,7 +380,6 @@ async fn regenerate_openai_fixtures() {
             "prompt": "a single red pixel on pure white background, minimal, flat",
             "size": "1024x1024",
             "quality": "low",
-            "response_format": "b64_json",
             "n": 1,
         }))
         .send()
@@ -413,6 +412,124 @@ async fn regenerate_openai_fixtures() {
         .expect("write image fixture");
 
     println!("wrote fixtures to {}", dir.display());
+}
+
+/// Live-API parameter probe.
+///
+/// The v1/images/generations API for `gpt-image-*` is fussier than the docs
+/// imply — `response_format`, for example, is rejected with HTTP 400. This
+/// test walks a matrix of parameter combinations against the live endpoint
+/// and reports which succeed. Keep each cell cheap (`quality=low`,
+/// `size=1024x1024`) so a full run costs roughly one image per combination.
+///
+/// Run manually:
+///   cargo test -p ganbot --bin ganbot probe_openai_parameters -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "hits the live OpenAI API many times; run with --ignored --nocapture"]
+async fn probe_openai_parameters() {
+    let cfg = load_openai_config_from_local();
+    assert!(!cfg.token.is_empty(), "openai.token missing");
+
+    let client = reqwest::Client::new();
+    let base_body = json!({
+        "model": "gpt-image-2",
+        "prompt": "a single red pixel on white",
+        "size": "1024x1024",
+        "quality": "low",
+        "n": 1,
+    });
+
+    // Each probe is (label, body-mutator). Empty mutation = baseline.
+    type Mut = Box<dyn Fn(&mut serde_json::Value)>;
+    let probes: Vec<(&str, Mut)> = vec![
+        ("baseline", Box::new(|_| {})),
+        (
+            "with response_format=b64_json",
+            Box::new(|b| {
+                b["response_format"] = json!("b64_json");
+            }),
+        ),
+        (
+            "with response_format=url",
+            Box::new(|b| {
+                b["response_format"] = json!("url");
+            }),
+        ),
+        (
+            "with output_format=png",
+            Box::new(|b| {
+                b["output_format"] = json!("png");
+            }),
+        ),
+        (
+            "size=1536x1024",
+            Box::new(|b| {
+                b["size"] = json!("1536x1024");
+            }),
+        ),
+        (
+            "size=2048x2048",
+            Box::new(|b| {
+                b["size"] = json!("2048x2048");
+            }),
+        ),
+        (
+            "size=3840x2160 quality=high",
+            Box::new(|b| {
+                b["size"] = json!("3840x2160");
+                b["quality"] = json!("high");
+            }),
+        ),
+        (
+            "quality=medium",
+            Box::new(|b| {
+                b["quality"] = json!("medium");
+            }),
+        ),
+        (
+            "model=gpt-image-1",
+            Box::new(|b| {
+                b["model"] = json!("gpt-image-1");
+            }),
+        ),
+        (
+            "model=gpt-image-1-mini",
+            Box::new(|b| {
+                b["model"] = json!("gpt-image-1-mini");
+            }),
+        ),
+    ];
+
+    println!("\n=== OpenAI parameter probe ===");
+    for (label, mutate) in probes.iter() {
+        let mut body = base_body.clone();
+        mutate(&mut body);
+        let resp = client
+            .post(format!("{}/v1/images/generations", DEFAULT_BASE_URL))
+            .bearer_auth(&cfg.token)
+            .json(&body)
+            .send()
+            .await
+            .expect("send");
+        let status = resp.status();
+        let bytes = resp.bytes().await.expect("bytes");
+        let short: String = if status.is_success() {
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            let has_b64 = json["data"][0]["b64_json"].is_string();
+            let has_url = json["data"][0]["url"].is_string();
+            format!("OK (b64_json={has_b64}, url={has_url})")
+        } else {
+            // Pull the message out succinctly.
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            json["error"]["message"]
+                .as_str()
+                .unwrap_or_else(|| std::str::from_utf8(&bytes).unwrap_or("<binary>"))
+                .chars()
+                .take(160)
+                .collect()
+        };
+        println!("  {:<40}  {}  {}", label, status, short);
+    }
 }
 
 fn load_openai_config_from_local() -> OpenaiConfig {
