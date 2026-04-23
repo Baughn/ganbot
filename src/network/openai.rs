@@ -113,6 +113,7 @@ impl OpenAIHttp {
         let mut body = serde_json::Map::new();
         body.insert("model".into(), serde_json::json!(req.model));
         body.insert("prompt".into(), serde_json::json!(req.prompt));
+        body.insert("moderation".into(), serde_json::json!("low"));
         body.insert("n".into(), serde_json::json!(1));
         if let Some(sz) = &req.size {
             body.insert("size".into(), serde_json::json!(sz));

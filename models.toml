@@ -329,7 +329,7 @@ resolution = [1024, 1024]
 [models.nanobanana]
 name = "nanobanana"
 description = "NanoBanana, aka. Gemini-2.5-flash-image-preview"
-tags = ["english"]
+tags = ["booru", "english"]
 
 [models.nanobanana.backend]
 OpenRouter = { model = "google/gemini-3.1-flash-image-preview" }
@@ -338,6 +338,7 @@ OpenRouter = { model = "google/gemini-3.1-flash-image-preview" }
 name = "gpt-1k"
 description = "GPT-Image-2"
 gallery = false
+tags = ["booru", "english"]
 [models.gpt-1k.backend]
 OpenAI = { model = "gpt-image-2", payment = 0.3, size = "1024x1024", quality = "medium" }
 
@@ -345,6 +346,7 @@ OpenAI = { model = "gpt-image-2", payment = 0.3, size = "1024x1024", quality = "
 name = "gpt"
 description = "GPT-Image-2"
 gallery = false
+tags = ["booru", "english"]
 [models.gpt-2k.backend]
 OpenAI = { model = "gpt-image-2", payment = 0.3, size = "2048x2048", quality = "medium" }
 
@@ -352,5 +354,6 @@ OpenAI = { model = "gpt-image-2", payment = 0.3, size = "2048x2048", quality = "
 name = "gpt"
 description = "GPT-Image-2"
 gallery = false
+tags = ["booru", "english"]
 [models.gpt-4k.backend]
 OpenAI = { model = "gpt-image-2", payment = 1.2, size = "3840x2160", quality = "high" }
