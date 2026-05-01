@@ -579,8 +579,15 @@ fn append_clause(existing: &str, addition: &str, default_separator: &str) -> Str
 
 #[cfg(test)]
 mod tests {
-    use super::merge_prompt_settings;
+    use super::{
+        compute_size_at_target_pixels, merge_prompt_settings, parse_size_to_pixels,
+        resolve_implicit_image_from_urls, resolve_openai_size,
+    };
     use crate::messages::imagen::Generate;
+    use image::{DynamicImage, ImageFormat, RgbImage};
+    use std::io::Cursor;
+    use wiremock::matchers::{method, path as path_matcher};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn generate_with_prompt(prompt: &str) -> Generate {
         Generate {
@@ -672,6 +679,185 @@ mod tests {
         assert_eq!(merged.seed, Some(1234));
         assert_eq!(merged.aspect, Some((16, 9)));
     }
+
+    #[test]
+    fn parse_size_to_pixels_handles_known_presets() {
+        assert_eq!(parse_size_to_pixels("1024x1024"), Some(1_048_576));
+        assert_eq!(parse_size_to_pixels("2048x2048"), Some(4_194_304));
+        assert_eq!(parse_size_to_pixels("3840x2160"), Some(8_294_400));
+        assert_eq!(parse_size_to_pixels("auto"), None);
+        assert_eq!(parse_size_to_pixels(""), None);
+    }
+
+    #[test]
+    fn compute_size_at_target_pixels_snaps_to_multiples_of_16() {
+        // gpt-1k (~1MP) at 16:9 → multiples of 16, near 1MP, ratio ~16:9.
+        let s = compute_size_at_target_pixels((16, 9), 1_048_576);
+        let (w, h) = s.split_once('x').unwrap();
+        let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
+        assert_eq!(w % 16, 0, "{s} width must be multiple of 16");
+        assert_eq!(h % 16, 0, "{s} height must be multiple of 16");
+        let ratio = w as f64 / h as f64;
+        assert!((ratio - 16.0 / 9.0).abs() < 0.05, "{s} ratio off");
+        let pixels = w as u64 * h as u64;
+        assert!((900_000..=1_200_000).contains(&pixels), "{s} ≈ {pixels} px");
+    }
+
+    #[test]
+    fn compute_size_at_target_pixels_4k_landscape_matches_popular_size() {
+        // gpt-4k preset at 16:9 should land exactly on 3840x2160.
+        let s = compute_size_at_target_pixels((16, 9), 8_294_400);
+        assert_eq!(s, "3840x2160");
+    }
+
+    #[test]
+    fn compute_size_at_target_pixels_clamps_max_edge_to_3840() {
+        // Stretched aspect at high target pixel count would push width past
+        // 3840 if uncapped. Verify the clamp.
+        let s = compute_size_at_target_pixels((16, 9), 16_000_000);
+        let (w, _h) = s.split_once('x').unwrap();
+        let w: u32 = w.parse().unwrap();
+        assert!(w <= 3840, "{s} width {w} > 3840");
+    }
+
+    #[test]
+    fn resolve_openai_size_explicit_dimensions_win() {
+        let mut prompt = generate_with_prompt("a cat");
+        prompt.width = Some(2048);
+        prompt.height = Some(1024);
+        prompt.aspect = Some((16, 9)); // should be ignored
+        assert_eq!(
+            resolve_openai_size(&prompt, Some("1024x1024")).as_deref(),
+            Some("2048x1024")
+        );
+    }
+
+    #[test]
+    fn resolve_openai_size_aspect_uses_config_pixel_target() {
+        let mut prompt = generate_with_prompt("a cat");
+        prompt.aspect = Some((16, 9));
+        // gpt-2k preset → 4 MP target → 16:9 size near 4 MP.
+        let s = resolve_openai_size(&prompt, Some("2048x2048")).unwrap();
+        let (w, h) = s.split_once('x').unwrap();
+        let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
+        let pixels = w as u64 * h as u64;
+        assert!(
+            (3_500_000..=4_500_000).contains(&pixels),
+            "{s} ≈ {pixels} px (expected ~4MP for gpt-2k)"
+        );
+        assert!(((w as f64 / h as f64) - 16.0 / 9.0).abs() < 0.05, "{s}");
+    }
+
+    #[test]
+    fn resolve_openai_size_4k_aspect_picks_4k() {
+        let mut prompt = generate_with_prompt("a cat");
+        prompt.aspect = Some((16, 9));
+        assert_eq!(
+            resolve_openai_size(&prompt, Some("3840x2160")).as_deref(),
+            Some("3840x2160")
+        );
+    }
+
+    #[test]
+    fn resolve_openai_size_no_aspect_passes_through_config() {
+        let prompt = generate_with_prompt("a cat");
+        assert_eq!(
+            resolve_openai_size(&prompt, Some("1536x1024")).as_deref(),
+            Some("1536x1024")
+        );
+    }
+
+    #[test]
+    fn resolve_openai_size_no_inputs_returns_none() {
+        let prompt = generate_with_prompt("a cat");
+        assert_eq!(resolve_openai_size(&prompt, None), None);
+    }
+
+    #[test]
+    fn resolve_openai_size_aspect_without_config_falls_back_to_1mp() {
+        let mut prompt = generate_with_prompt("a cat");
+        prompt.aspect = Some((1, 1));
+        assert_eq!(
+            resolve_openai_size(&prompt, None).as_deref(),
+            Some("1024x1024")
+        );
+    }
+
+    fn tiny_png_bytes() -> Vec<u8> {
+        let img = RgbImage::from_pixel(2, 2, image::Rgb([0, 128, 255]));
+        let mut bytes = Vec::new();
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .expect("encode tiny PNG");
+        bytes
+    }
+
+    #[tokio::test]
+    async fn implicit_url_downloads_strips_and_attaches() {
+        let mock = MockServer::start().await;
+        let png = tiny_png_bytes();
+        Mock::given(method("GET"))
+            .and(path_matcher("/cat.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(png, "image/png"))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let mut prompt = generate_with_prompt(&format!("brighten this {}/cat.png", mock.uri()));
+        resolve_implicit_image_from_urls(&mut prompt)
+            .await
+            .expect("download succeeds");
+
+        assert_eq!(prompt.prompt, "brighten this");
+        let img = prompt.references.img2img.as_ref().expect("image attached");
+        assert_eq!(img.dimensions(), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn implicit_url_no_url_in_prompt_is_noop() {
+        let mut prompt = generate_with_prompt("just a cat");
+        resolve_implicit_image_from_urls(&mut prompt)
+            .await
+            .expect("noop succeeds");
+        assert_eq!(prompt.prompt, "just a cat");
+        assert!(prompt.references.img2img.is_none());
+    }
+
+    #[tokio::test]
+    async fn implicit_url_skips_when_img2img_already_set() {
+        let mock = MockServer::start().await;
+        // No mock served — the mockserver stays empty so any HTTP call would
+        // surface as a 404 from wiremock's default.
+        let mut prompt = generate_with_prompt(&format!("edit {}/should-not-fetch.png", mock.uri()));
+        let preset = std::sync::Arc::new(RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])));
+        prompt.references.img2img = Some(preset.clone());
+
+        resolve_implicit_image_from_urls(&mut prompt)
+            .await
+            .expect("skip succeeds");
+
+        // Prompt and image both unchanged.
+        assert!(prompt.prompt.contains("should-not-fetch.png"));
+        let img = prompt.references.img2img.as_ref().unwrap();
+        assert!(std::sync::Arc::ptr_eq(img, &preset));
+    }
+
+    #[tokio::test]
+    async fn implicit_url_404_is_an_error() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/missing.png"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock)
+            .await;
+
+        let mut prompt = generate_with_prompt(&format!("edit {}/missing.png", mock.uri()));
+        let err = resolve_implicit_image_from_urls(&mut prompt)
+            .await
+            .expect_err("404 should fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("missing.png"), "got: {msg}");
+    }
 }
 
 /// Resolve the requested model token to actual configuration, with fuzzy matching support.
@@ -762,7 +948,7 @@ fn select_auto_model(prompt_text: &str, config: &ModelsConfig) -> String {
 }
 
 async fn generate_openai(
-    prompt: Generate,
+    mut prompt: Generate,
     model: &Model,
     openai_model: &str,
     size: Option<&str>,
@@ -770,14 +956,18 @@ async fn generate_openai(
 ) -> Result<ImagenResponse> {
     use tower::ServiceExt as _;
 
+    resolve_implicit_image_from_urls(&mut prompt).await?;
+
     let svc = openai::image_service().context("OpenAI image service not initialised at startup")?;
+
+    let resolved_size = resolve_openai_size(&prompt, size);
 
     let origin = format!("prompt:{}", model.name);
     let req = openai::ImageRequest {
         origin,
         model: openai_model.to_string(),
         prompt: prompt.prompt.clone(),
-        size: size.map(str::to_string),
+        size: resolved_size.clone(),
         quality: quality.map(str::to_string),
         input_image: prompt.references.img2img.clone(),
     };
@@ -790,7 +980,7 @@ async fn generate_openai(
     let workflow = serde_json::json!({
         "model": model.name,
         "openai_model": openai_model,
-        "size": size,
+        "size": resolved_size,
         "quality": quality,
         "prompt": prompt.prompt,
         "raw_prompt": prompt.raw_prompt,
@@ -805,6 +995,95 @@ async fn generate_openai(
         model_name: model.name.clone(),
         seed: None,
     })
+}
+
+/// If the prompt text contains a URL, download the first one, decode it as
+/// an image, and attach it as `references.img2img`. The URL is stripped from
+/// the prompt text.
+///
+/// Skips work if `references.img2img` is already populated (e.g. by `/edit`).
+async fn resolve_implicit_image_from_urls(prompt: &mut Generate) -> Result<()> {
+    if prompt.references.img2img.is_some() {
+        return Ok(());
+    }
+    let urls = crate::network::urls::extract_urls(&prompt.prompt);
+    let Some(url) = urls.first().cloned() else {
+        return Ok(());
+    };
+
+    let bytes = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("downloading reference image: {url}"))?
+        .error_for_status()
+        .with_context(|| format!("downloading reference image: {url}"))?
+        .bytes()
+        .await
+        .context("reading reference image body")?;
+
+    let img = image::load_from_memory(&bytes)
+        .with_context(|| format!("decoding reference image at {url}"))?
+        .to_rgb8();
+
+    info!(
+        url = %url,
+        "Loaded implicit reference image: {}x{}",
+        img.width(),
+        img.height()
+    );
+
+    prompt.prompt = prompt
+        .prompt
+        .replace(&url, "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    prompt.references.img2img = Some(Arc::new(img));
+    Ok(())
+}
+
+/// Decide what `size` string to send to the OpenAI image API.
+///
+/// Priority:
+/// 1. Explicit `prompt.width` and `prompt.height` from the user — sent literally.
+/// 2. `prompt.aspect` with `config_size` — compute dimensions matching the
+///    aspect at roughly `config_size`'s pixel count, snapped to multiples of 16.
+/// 3. `config_size` alone — sent literally.
+/// 4. Nothing — `None`, letting OpenAI default to `auto`.
+fn resolve_openai_size(prompt: &Generate, config_size: Option<&str>) -> Option<String> {
+    if let (Some(w), Some(h)) = (prompt.width, prompt.height) {
+        return Some(format!("{w}x{h}"));
+    }
+    let Some(aspect) = prompt.aspect else {
+        return config_size.map(str::to_string);
+    };
+    let target_pixels = config_size
+        .and_then(parse_size_to_pixels)
+        .unwrap_or(1024 * 1024);
+    Some(compute_size_at_target_pixels(aspect, target_pixels))
+}
+
+fn parse_size_to_pixels(s: &str) -> Option<u64> {
+    let (w, h) = s.split_once('x')?;
+    let w: u64 = w.trim().parse().ok()?;
+    let h: u64 = h.trim().parse().ok()?;
+    w.checked_mul(h)
+}
+
+/// Compute (w, h) matching `aspect` with roughly `target_pixels` total pixels,
+/// snapped to multiples of 16, clamped to OpenAI's 3840px max edge.
+fn compute_size_at_target_pixels((aw, ah): (u32, u32), target_pixels: u64) -> String {
+    let ratio = aw as f64 / ah as f64;
+    let h_f = (target_pixels as f64 / ratio).sqrt();
+    let w_f = h_f * ratio;
+
+    let snap = |x: f64| {
+        let units = ((x / 16.0).round() as i64).max(1);
+        let pixels = (units as u32).saturating_mul(16);
+        pixels.min(3840)
+    };
+    format!("{}x{}", snap(w_f), snap(h_f))
 }
 
 async fn generate_openrouter(
