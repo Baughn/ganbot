@@ -69,7 +69,7 @@
           cargo-flamegraph
           bacon
 
-          nodePackages.eslint
+          eslint
         ];
       in
       {
