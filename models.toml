@@ -6,7 +6,7 @@ default_tagged = "chroma-aio"
 [aliases]
 qwen = "qwen_image_2512"
 qwen1 = "qwen_image_fp8"
-fanart = "hassaku"
+fanart = "anima"
 fanart-cute = "monody"
 pasanctuary = "pasanctuary-5.0"
 dream = "qwen_image_2512"
@@ -313,10 +313,10 @@ name = "anima"
 description = "Anima Preview. Use tags."
 tags = ["booru", "fanart", "english"]
 [models.anima.prompt_defaults]
-positive_prepend = "score_9, score_8, score_7"
-negative_append = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+positive_prepend = "safe, best quality, score_7, "
+negative_append = "worst quality, low quality, score_1, score_2, score_3, artist name, bored"
 [models.anima.backend.ComfyUI]
-unet = "anima-preview3-base.safetensors"
+unet = "anima-base-v1.0.safetensors"
 clip = "qwen_3_06b_base.safetensors"
 clip_type = "stable_diffusion"
 vae = "qwen_image_vae.safetensors"
